@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import { SafeGuard } from "../../src/safe/SafeGuard.sol";
 
-contract BuybackImplScript is Script {
+contract SafeGuardScript is Script {
   function setUp() public {}
 
   function run() public {
