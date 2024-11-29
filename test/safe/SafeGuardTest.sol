@@ -18,7 +18,7 @@ contract SafeGuardTest is Test {
     // fork mainnet
     vm.createSelectFork("https://rpc.ankr.com/bsc", 43797673);
 
-    safeGuard = new SafeGuard(manager, new address[](0));
+    safeGuard = new SafeGuard(manager);
     assertEq(safeGuard.manager(), manager);
 
     vm.startPrank(address(safe));
@@ -53,7 +53,7 @@ contract SafeGuardTest is Test {
 
     // add executor
     vm.startPrank(manager);
-    safeGuard.addExecutor(executor);
+    safeGuard.addExecutor(address(safe), executor);
     vm.stopPrank();
 
     // call execTransaction with executor
@@ -101,7 +101,7 @@ contract SafeGuardTest is Test {
 
     // add executor
     vm.startPrank(manager);
-    safeGuard.addExecutor(executor2);
+    safeGuard.addExecutor(address(safe), executor2);
     vm.stopPrank();
 
     // call execTransaction with executor
@@ -127,26 +127,26 @@ contract SafeGuardTest is Test {
    */
   function testMangerExecutor() public {
     // only manager can add executor
-    vm.expectRevert(bytes("SafeGuard: Not Authorized"));
-    safeGuard.addExecutor(executor);
+    vm.expectRevert(bytes("SafeGuard: NotAuthorized"));
+    safeGuard.addExecutor(address(safe), executor);
 
     // manager can add executor
     vm.startPrank(manager);
-    safeGuard.addExecutor(executor);
+    safeGuard.addExecutor(address(safe), executor);
     vm.stopPrank();
     // check executor
-    assertEq(safeGuard.executors()[0], executor);
+    assertEq(safeGuard.executors(address(safe))[0], executor);
 
     // only manager can remove executor
-    vm.expectRevert(bytes("SafeGuard: Not Authorized"));
-    safeGuard.removeExecutor(executor);
+    vm.expectRevert(bytes("SafeGuard: NotAuthorized"));
+    safeGuard.removeExecutor(address(safe), executor);
 
     // manager can remove executor
     vm.startPrank(manager);
-    safeGuard.removeExecutor(executor);
+    safeGuard.removeExecutor(address(safe), executor);
     vm.stopPrank();
     // check executor
-    assertEq(safeGuard.executors().length, 0);
+    assertEq(safeGuard.executors(address(safe)).length, 0);
 
     // manager batch add executors
     address[] memory executors = new address[](2);
@@ -154,17 +154,17 @@ contract SafeGuardTest is Test {
     executors[1] = executor2;
 
     // only manager can add executor
-    vm.expectRevert(bytes("SafeGuard: Not Authorized"));
-    safeGuard.addExecutors(executors);
+    vm.expectRevert(bytes("SafeGuard: NotAuthorized"));
+    safeGuard.addExecutors(address(safe), executors);
 
     // only manager can add executor
     vm.startPrank(manager);
-    safeGuard.addExecutors(executors);
+    safeGuard.addExecutors(address(safe), executors);
     vm.stopPrank();
     // check executor
-    assertEq(safeGuard.executors().length, 2);
-    assertEq(safeGuard.executors()[0], executors[0]);
-    assertEq(safeGuard.executors()[1], executors[1]);
+    assertEq(safeGuard.executors(address(safe)).length, 2);
+    assertEq(safeGuard.executors(address(safe))[0], executors[0]);
+    assertEq(safeGuard.executors(address(safe))[1], executors[1]);
   }
 
   /**
@@ -172,7 +172,7 @@ contract SafeGuardTest is Test {
    */
   function testChangeManager() public {
     // only manager can set pending manager
-    vm.expectRevert(bytes("SafeGuard: Not Authorized"));
+    vm.expectRevert(bytes("SafeGuard: NotAuthorized"));
     safeGuard.setPendingManager(executor);
 
     // manager can set pending manager
@@ -183,12 +183,12 @@ contract SafeGuardTest is Test {
     assertEq(safeGuard.pendingManager(), executor);
 
     // only pending manager can accept manager
-    vm.expectRevert(bytes("SafeGuard: Not Authorized"));
+    vm.expectRevert(bytes("SafeGuard: NotAuthorized"));
     safeGuard.acceptManager();
 
     // pending manager only can accept manager after delay time
     vm.startPrank(executor);
-    vm.expectRevert(bytes("SafeGuard: No Delay End"));
+    vm.expectRevert(bytes("SafeGuard: DelayNotEnd"));
     safeGuard.acceptManager();
     vm.stopPrank();
 

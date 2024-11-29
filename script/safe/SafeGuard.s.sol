@@ -16,14 +16,8 @@ contract SafeGuardScript is Script {
     address admin = vm.envOr("ADMIN", deployer);
     console.log("Admin: %s", admin);
 
-    address[] memory executors = vm.envAddress("EXECUTORS", ",");
-    for (uint256 i = 0; i < executors.length; i++) {
-      require(executors[i] != address(0), "Executor address cannot be null");
-      console.log("Executor address: %s, %s", i, executors[i]);
-    }
-
     vm.startBroadcast(deployerPrivateKey);
-    SafeGuard safe = new SafeGuard(admin, executors);
+    SafeGuard safe = new SafeGuard(admin);
     vm.stopBroadcast();
     console.log("SafeGuard address: %s", address(safe));
   }
