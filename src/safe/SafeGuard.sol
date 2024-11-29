@@ -13,7 +13,8 @@ import { Enum } from "./libraries/Enum.sol";
 contract SafeGuard is BaseTransactionGuard {
   using EnumerableSet for EnumerableSet.AddressSet;
 
-  EnumerableSet.AddressSet internal _executors;
+  // account => executors
+  mapping(address => EnumerableSet.AddressSet) private _executors;
 
   address public manager;
   address public pendingManager;
@@ -21,21 +22,15 @@ contract SafeGuard is BaseTransactionGuard {
   uint256 public constant DELAY = 7200;
 
   /* ============ Events ============ */
-  event ExecutorAdded(address indexed executor);
-  event ExecutorRemoved(address indexed executor);
+  event ExecutorAdded(address indexed account, address indexed executor);
+  event ExecutorRemoved(address indexed account, address indexed executor);
   event PendingManagerChanged(address indexed pendingManager);
   event ManagerChanged(address indexed previousManager, address indexed newManager);
 
-  constructor(address _manager, address[] memory _executorList) {
-    if (_manager == address(0)) revert("SafeGuard: ZeroAddress");
+  constructor(address _manager) {
+    require(_manager != address(0), "SafeGuard: ZeroAddress");
     manager = _manager;
     emit ManagerChanged(address(0), manager);
-
-    for (uint256 i; i < _executorList.length; i++) {
-      if (_executorList[i] == address(0)) revert("SafeGuard: ZeroAddress");
-      if (!_executors.add(_executorList[i])) revert("SafeGuard: InvalidExecutor");
-      emit ExecutorAdded(_executorList[i]);
-    }
   }
 
   // solhint-disable-next-line payable-fallback
@@ -44,28 +39,35 @@ contract SafeGuard is BaseTransactionGuard {
     // E.g. The expected check method might change and then the Safe would be locked.
   }
 
-  function executors() external view returns (address[] memory _executorsArray) {
-    return _executors.values();
+  function executors(address _account) external view returns (address[] memory _executorsArray) {
+    return _executors[_account].values();
   }
 
-  function addExecutors(address[] calldata _executorsList) external onlyManager {
+  function addExecutors(address _account, address[] calldata _executorsList) external onlyManager {
+    require(_account != address(0), "SafeGuard: InvalidAccount");
+    require(_executorsList.length > 0, "SafeGuard: InvalidExecutors");
+    EnumerableSet.AddressSet storage executors = _executors[_account];
     for (uint256 i; i < _executorsList.length; i++) {
-      if (_executorsList[i] == address(0)) revert("SafeGuard: ZeroAddress");
-      if (!_executors.add(_executorsList[i])) revert("SafeGuard: InvalidExecutor");
-      emit ExecutorAdded(_executorsList[i]);
+      require(_executorsList[i] != address(0), "SafeGuard: ZeroAddress");
+      require(executors.add(_executorsList[i]), "SafeGuard: ExecutorExists");
+      emit ExecutorAdded(_account, _executorsList[i]);
     }
   }
 
-  function addExecutor(address _executor) external onlyManager {
-    if (_executor == address(0)) revert("SafeGuard: ZeroAddress");
-    if (!_executors.add(_executor)) revert("SafeGuard: InvalidExecutor");
-    emit ExecutorAdded(_executor);
+  function addExecutor(address _account, address _executor) external onlyManager {
+    require(_account != address(0), "SafeGuard: InvalidAccount");
+    require(_executor != address(0), "SafeGuard: InvalidExecutor");
+    EnumerableSet.AddressSet storage executors = _executors[_account];
+    require(executors.add(_executor), "SafeGuard: ExecutorExists");
+    emit ExecutorAdded(_account, _executor);
   }
 
-  function removeExecutor(address _executor) external onlyManager {
-    if (_executor == address(0)) revert("SafeGuard: ZeroAddress");
-    if (!_executors.remove(_executor)) revert("SafeGuard: InvalidExecutor");
-    emit ExecutorRemoved(_executor);
+  function removeExecutor(address _account, address _executor) external onlyManager {
+    require(_account != address(0), "SafeGuard: InvalidAccount");
+    require(_executor != address(0), "SafeGuard: InvalidExecutor");
+    EnumerableSet.AddressSet storage executors = _executors[_account];
+    require(executors.remove(_executor), "SafeGuard: InvalidExecutor");
+    emit ExecutorRemoved(_account, _executor);
   }
 
   /**
@@ -87,9 +89,7 @@ contract SafeGuard is BaseTransactionGuard {
     bytes memory,
     address msgSender
   ) external view override {
-    if (!_executors.contains(msgSender)) {
-      revert("SafeGuard: NotExecutor");
-    }
+    require(_executors[msg.sender].contains(msgSender), "SafeGuard: NotExecutor");
   }
 
   /**
@@ -99,16 +99,14 @@ contract SafeGuard is BaseTransactionGuard {
   function checkAfterExecution(bytes32, bool) external view override {}
 
   function setPendingManager(address _pendingManager) external onlyManager {
-    if (_pendingManager == address(0)) revert("SafeGuard: ZeroAddress");
+    require(_pendingManager != address(0), "SafeGuard: ZeroAddress");
     pendingDelayEnd = block.timestamp + DELAY;
     pendingManager = _pendingManager;
     emit PendingManagerChanged(pendingManager);
   }
 
   function acceptManager() external onlyPendingManager {
-    if (pendingDelayEnd >= block.timestamp) {
-      revert("SafeGuard: No Delay End");
-    }
+    require(pendingDelayEnd <= block.timestamp, "SafeGuard: DelayNotEnd");
     address previousManager = manager;
     manager = pendingManager;
     delete pendingManager;
@@ -116,12 +114,12 @@ contract SafeGuard is BaseTransactionGuard {
   }
 
   modifier onlyManager() {
-    if (address(msg.sender) != address(manager)) revert("SafeGuard: Not Authorized");
+    require(msg.sender == manager, "SafeGuard: NotAuthorized");
     _;
   }
 
   modifier onlyPendingManager() {
-    if (address(msg.sender) != address(pendingManager)) revert("SafeGuard: Not Authorized");
+    require(msg.sender == pendingManager, "SafeGuard: NotAuthorized");
     _;
   }
 }
