@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
+import "../interface/ILpToken.sol";
+
+contract BeraChainVaultAdapter is
+  Initializable,
+  AccessControlUpgradeable,
+  PausableUpgradeable,
+  ReentrancyGuardUpgradeable,
+  UUPSUpgradeable
+{
+  using SafeERC20 for IERC20;
+  // manager role
+  bytes32 public constant MANAGER = keccak256("MANAGER");
+  // pause role
+  bytes32 public constant PAUSER = keccak256("PAUSER");
+  // bot role
+  bytes32 public constant BOT = keccak256("BOT");
+
+  IERC20 public token;
+
+  ILpToken public lpToken;
+
+  address public botWithdrawReceiver;
+
+  /**
+   * Events
+   */
+  event ChangeBotWithdrawReceiver(address indexed botWithdrawReceiver);
+  event Deposit(address indexed account, uint256 amount);
+  event SystemWithdraw(address indexed receiver, uint256 amount);
+
+  /// @custom:oz-upgrades-unsafe-allow constructor
+  constructor() {
+    _disableInitializers();
+  }
+
+  /**
+   * @dev Initialize the contract
+   * @param _admin address
+   * @param _manager address
+   * @param _pauser address
+   * @param _bot address
+   * @param _token address
+   * @param _lpToken address
+   * @param _botWithdrawReceiver address
+   */
+  function initialize(
+    address _admin,
+    address _manager,
+    address _pauser,
+    address _bot,
+    address _token,
+    address _lpToken,
+    address _botWithdrawReceiver
+  ) public initializer {
+    require(_admin != address(0), "admin is the zero address");
+    require(_manager != address(0), "manager is the zero address");
+    require(_pauser != address(0), "pauser is the zero address");
+    require(_bot != address(0), "bot is the zero address");
+    require(_token != address(0), "token is the zero address");
+    require(_lpToken != address(0), "lpToken is the zero address");
+    require(_botWithdrawReceiver != address(0), "botWithdrawReceiver is the zero address");
+
+    __AccessControl_init();
+    __Pausable_init();
+    __ReentrancyGuard_init();
+    __UUPSUpgradeable_init();
+
+    _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+    _grantRole(MANAGER, _manager);
+    _grantRole(PAUSER, _pauser);
+    _grantRole(BOT, _bot);
+
+    token = IERC20(_token);
+    lpToken = ILpToken(_lpToken);
+    botWithdrawReceiver = _botWithdrawReceiver;
+  }
+
+  /**
+   * @dev deposit given amount of token to the vault
+   * @param _amount amount of token to deposit
+   */
+  function deposit(uint256 _amount) external nonReentrant whenNotPaused returns (uint256) {
+    require(_amount > 0, "invalid amount");
+
+    token.safeTransferFrom(msg.sender, address(this), _amount);
+    lpToken.mint(msg.sender, _amount);
+
+    emit Deposit(msg.sender, _amount);
+    return _amount;
+  }
+
+  /**
+   * @dev withdraw given amount of token from the vault by manager
+   * @param _receiver address to receive the token
+   * @param _amount amount of token to withdraw
+   */
+  function managerWithdraw(
+    address _receiver,
+    uint256 _amount
+  ) external onlyRole(MANAGER) nonReentrant whenNotPaused returns (uint256) {
+    require(_receiver != address(0), "invalid receiver");
+    require(_amount > 0, "invalid amount");
+    require(lpToken.balanceOf(address(this)) >= _amount, "insufficient balance");
+
+    token.safeTransfer(_receiver, _amount);
+    emit SystemWithdraw(_receiver, _amount);
+    return _amount;
+  }
+
+  /**
+   * @dev withdraw given amount of token from the vault by bot
+   * @param _amount amount of token to withdraw
+   */
+  function botWithdraw(uint256 _amount) external onlyRole(BOT) nonReentrant whenNotPaused returns (uint256) {
+    require(_amount > 0, "invalid amount");
+    require(lpToken.balanceOf(address(this)) >= _amount, "insufficient balance");
+
+    token.safeTransfer(botWithdrawReceiver, _amount);
+    emit SystemWithdraw(botWithdrawReceiver, _amount);
+    return _amount;
+  }
+
+  /**
+   * @dev get token balance of the vault
+   */
+  function getTokenBalance() external view returns (uint256) {
+    return token.balanceOf(address(this));
+  }
+
+  /**
+   * @dev change botWithdrawReceiver
+   * @param _botWithdrawReceiver address
+   */
+  function setBotWithdrawReceiver(address _botWithdrawReceiver) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    require(_botWithdrawReceiver != address(0), "invalid botWithdrawReceiver");
+    require(_botWithdrawReceiver != botWithdrawReceiver, "same botWithdrawReceiver");
+
+    botWithdrawReceiver = _botWithdrawReceiver;
+    emit ChangeBotWithdrawReceiver(botWithdrawReceiver);
+  }
+
+  /**
+   * PAUSABLE FUNCTIONALITY
+   */
+  function pause() external onlyRole(PAUSER) {
+    _pause();
+  }
+
+  function togglePause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    paused() ? _unpause() : _pause();
+  }
+
+  /**
+   * UUPSUpgradeable FUNCTIONALITY
+   */
+  function _authorizeUpgrade(address _newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
+}
