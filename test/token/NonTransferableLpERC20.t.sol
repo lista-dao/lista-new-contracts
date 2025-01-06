@@ -20,10 +20,11 @@ contract NonTransferableLpERC20Test is Test {
     TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(
       address(new NonTransferableLpERC20()),
       proxyAdminOwner,
-      abi.encodeWithSignature("initialize(string,string,address)", "TestToken", "TEST", admin)
+      abi.encodeWithSignature("initialize(string,string)", "TestToken", "TEST")
     );
 
-    token = NonTransferableLpERC20(payable(address(proxy)));
+    token = NonTransferableLpERC20(address(proxy));
+    token.addMinter(admin);
   }
 
   function test_setUp() public {

@@ -34,14 +34,11 @@ contract NonTransferableLpERC20 is Initializable, OwnableUpgradeable, ERC20Upgra
    * @dev Initialize the contract
    * @param _name string
    * @param _symbol string
-   * @param _minter address
    */
-  function initialize(string memory _name, string memory _symbol, address _minter) external initializer {
+  function initialize(string memory _name, string memory _symbol) external initializer {
     __Ownable_init(msg.sender);
     __ERC20_init(_name, _symbol);
     __UUPSUpgradeable_init();
-
-    minters[_minter] = true;
   }
 
   /**

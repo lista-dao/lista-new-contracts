@@ -111,7 +111,7 @@ contract BeraChainVaultAdapter is
   ) external onlyRole(MANAGER) nonReentrant whenNotPaused returns (uint256) {
     require(_receiver != address(0), "invalid receiver");
     require(_amount > 0, "invalid amount");
-    require(lpToken.balanceOf(address(this)) >= _amount, "insufficient balance");
+    require(token.balanceOf(address(this)) >= _amount, "insufficient balance");
 
     token.safeTransfer(_receiver, _amount);
     emit SystemWithdraw(_receiver, _amount);
@@ -124,7 +124,7 @@ contract BeraChainVaultAdapter is
    */
   function botWithdraw(uint256 _amount) external onlyRole(BOT) nonReentrant whenNotPaused returns (uint256) {
     require(_amount > 0, "invalid amount");
-    require(lpToken.balanceOf(address(this)) >= _amount, "insufficient balance");
+    require(token.balanceOf(address(this)) >= _amount, "insufficient balance");
 
     token.safeTransfer(botWithdrawReceiver, _amount);
     emit SystemWithdraw(botWithdrawReceiver, _amount);
