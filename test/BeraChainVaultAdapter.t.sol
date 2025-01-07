@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "../../src/integration/BeraChainVaultAdapter.sol";
-import "../../src/token/NonTransferableLpERC20.sol";
+import "../src/BeraChainVaultAdapter.sol";
+import "../src/token/NonTransferableLpERC20.sol";
 
 import "@openzeppelin/contracts/access/IAccessControl.sol";
 import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
