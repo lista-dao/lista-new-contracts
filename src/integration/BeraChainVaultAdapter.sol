@@ -32,9 +32,12 @@ contract BeraChainVaultAdapter is
 
   address public botWithdrawReceiver;
 
+  uint256 public depositEndTime;
+
   /**
    * Events
    */
+  event ChangeDepositEndTime(uint256 endTime);
   event ChangeBotWithdrawReceiver(address indexed botWithdrawReceiver);
   event Deposit(address indexed account, uint256 amount);
   event SystemWithdraw(address indexed receiver, uint256 amount);
@@ -53,6 +56,7 @@ contract BeraChainVaultAdapter is
    * @param _token address
    * @param _lpToken address
    * @param _botWithdrawReceiver address
+   * @param _depositEndTime uint256
    */
   function initialize(
     address _admin,
@@ -61,7 +65,8 @@ contract BeraChainVaultAdapter is
     address _bot,
     address _token,
     address _lpToken,
-    address _botWithdrawReceiver
+    address _botWithdrawReceiver,
+    uint256 _depositEndTime
   ) public initializer {
     require(_admin != address(0), "admin is the zero address");
     require(_manager != address(0), "manager is the zero address");
@@ -70,6 +75,7 @@ contract BeraChainVaultAdapter is
     require(_token != address(0), "token is the zero address");
     require(_lpToken != address(0), "lpToken is the zero address");
     require(_botWithdrawReceiver != address(0), "botWithdrawReceiver is the zero address");
+    require(_depositEndTime > block.timestamp, "invalid depositEndTime");
 
     __AccessControl_init();
     __Pausable_init();
@@ -84,6 +90,7 @@ contract BeraChainVaultAdapter is
     token = IERC20(_token);
     lpToken = ILpToken(_lpToken);
     botWithdrawReceiver = _botWithdrawReceiver;
+    depositEndTime = _depositEndTime;
   }
 
   /**
@@ -92,6 +99,7 @@ contract BeraChainVaultAdapter is
    */
   function deposit(uint256 _amount) external nonReentrant whenNotPaused returns (uint256) {
     require(_amount > 0, "invalid amount");
+    require(block.timestamp <= depositEndTime, "deposit closed");
 
     token.safeTransferFrom(msg.sender, address(this), _amount);
     lpToken.mint(msg.sender, _amount);
@@ -148,6 +156,17 @@ contract BeraChainVaultAdapter is
 
     botWithdrawReceiver = _botWithdrawReceiver;
     emit ChangeBotWithdrawReceiver(botWithdrawReceiver);
+  }
+
+  /**
+   * @dev change depositEndTime
+   * @param _depositEndTime uint256
+   */
+  function setDepositEndTime(uint256 _depositEndTime) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    require(_depositEndTime != depositEndTime, "same depositEndTime");
+
+    depositEndTime = _depositEndTime;
+    emit ChangeDepositEndTime(depositEndTime);
   }
 
   /**

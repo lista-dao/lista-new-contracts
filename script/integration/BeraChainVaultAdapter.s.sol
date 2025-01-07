@@ -42,8 +42,9 @@ contract BeraChainVaultAdapterScript is Script {
     BeraChainVaultAdapter impl = new BeraChainVaultAdapter();
     ERC1967Proxy proxy = new ERC1967Proxy(
       address(impl),
-      abi.encodeCall(impl.initialize, (admin, manager, pauser, bot, BTCB, lpToken, botReceiver))
+      abi.encodeCall(impl.initialize, (admin, manager, pauser, bot, BTCB, lpToken, botReceiver, 1738368000))
     );
+    // 1738368000 is 2025-02-01 00:00:00 utc+0
     vm.stopBroadcast();
     console.log("BeraChainVaultAdapter address: %s", address(proxy));
     console.log("BeraChainVaultAdapter impl: %s", address(impl));

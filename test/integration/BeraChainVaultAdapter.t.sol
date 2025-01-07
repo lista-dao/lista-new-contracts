@@ -44,14 +44,15 @@ contract BeraChainVaultAdapterTest is Test {
       address(new BeraChainVaultAdapter()),
       proxyAdminOwner,
       abi.encodeWithSignature(
-        "initialize(address,address,address,address,address,address,address)",
+        "initialize(address,address,address,address,address,address,address,uint256)",
         admin,
         manager,
         pauser,
         bot,
         address(PUMPBTC),
         address(LPToken),
-        receiver
+        receiver,
+        block.timestamp + 1 days
       )
     );
 
@@ -77,6 +78,16 @@ contract BeraChainVaultAdapterTest is Test {
     assertEq(PUMPBTC.balanceOf(address(adapter)), 100 ether, "adapter PUMPBTC balance");
     assertEq(LPToken.balanceOf(address(user0)), 100 ether, "user0 LPToken balance");
     assertEq(PUMPBTC.balanceOf(address(user0)), 0, "user0 PUMPBTC balance");
+  }
+
+  function test_deposit_ended() public {
+    deal(address(PUMPBTC), user0, 100 ether);
+
+    skip(2 days);
+    vm.startPrank(user0);
+    vm.expectRevert("deposit closed");
+    adapter.deposit(100 ether);
+    vm.stopPrank();
   }
 
   function test_managerWithdraw() public {
