@@ -149,7 +149,7 @@ contract BeraChainVaultAdapter is
 
   /**
    * @dev change botWithdrawReceiver
-   * @param _botWithdrawReceiver address
+   * @param _botWithdrawReceiver new address
    */
   function setBotWithdrawReceiver(address _botWithdrawReceiver) external onlyRole(DEFAULT_ADMIN_ROLE) {
     require(_botWithdrawReceiver != address(0), "invalid botWithdrawReceiver");
@@ -160,8 +160,8 @@ contract BeraChainVaultAdapter is
   }
 
   /**
-   * @dev change depositEndTime
-   * @param _depositEndTime uint256
+   * @dev change depositEndTime, extend or reduce deposit end time
+   * @param _depositEndTime new end time
    */
   function setDepositEndTime(uint256 _depositEndTime) external onlyRole(DEFAULT_ADMIN_ROLE) {
     require(_depositEndTime != depositEndTime, "same depositEndTime");
