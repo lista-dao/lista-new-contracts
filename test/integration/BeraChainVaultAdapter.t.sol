@@ -145,4 +145,12 @@ contract BeraChainVaultAdapterTest is Test {
     adapter.botWithdraw(100 ether);
     vm.stopPrank();
   }
+
+  function test_getUserLpBalance() public {
+    assertEq(adapter.getUserLpBalance(user0), 0);
+
+    test_deposit();
+
+    assertEq(adapter.getUserLpBalance(user0), 100 ether);
+  }
 }

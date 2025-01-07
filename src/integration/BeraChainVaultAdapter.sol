@@ -140,10 +140,11 @@ contract BeraChainVaultAdapter is
   }
 
   /**
-   * @dev get token balance of the vault
+   * @dev get lp token balance of user
+   * @param _user address
    */
-  function getTokenBalance() external view returns (uint256) {
-    return token.balanceOf(address(this));
+  function getUserLpBalance(address _user) external view returns (uint256) {
+    return lpToken.balanceOf(_user);
   }
 
   /**
