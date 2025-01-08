@@ -64,7 +64,7 @@ contract BeraChainVaultAdapterTest is Test {
   function test_setUp() public {
     assertEq(address(adapter.token()), address(PUMPBTC));
     assertEq(address(adapter.lpToken()), address(LPToken));
-    assertEq(adapter.botWithdrawReceiver(), receiver);
+    assertEq(adapter.operator(), receiver);
   }
 
   function test_deposit() public {
@@ -152,5 +152,15 @@ contract BeraChainVaultAdapterTest is Test {
     test_deposit();
 
     assertEq(adapter.getUserLpBalance(user0), 100 ether);
+  }
+
+  function test_setOperator() public {
+    assertEq(adapter.operator(), receiver);
+
+    vm.startPrank(admin);
+    adapter.setOperator(receiver1);
+    vm.stopPrank();
+
+    assertEq(adapter.operator(), receiver1);
   }
 }

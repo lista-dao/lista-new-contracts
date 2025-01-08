@@ -30,7 +30,8 @@ contract BeraChainVaultAdapter is
 
   ILpToken public lpToken;
 
-  address public botWithdrawReceiver;
+  // a multi-sig with high threshold
+  address public operator;
 
   uint256 public depositEndTime;
 
@@ -38,7 +39,7 @@ contract BeraChainVaultAdapter is
    * Events
    */
   event ChangeDepositEndTime(uint256 endTime);
-  event ChangeBotWithdrawReceiver(address indexed botWithdrawReceiver);
+  event ChangeOperator(address indexed operator);
   event Deposit(address indexed account, uint256 amount);
   event SystemWithdraw(address indexed receiver, uint256 amount);
 
@@ -89,7 +90,7 @@ contract BeraChainVaultAdapter is
 
     token = IERC20(_token);
     lpToken = ILpToken(_lpToken);
-    botWithdrawReceiver = _botWithdrawReceiver;
+    operator = _botWithdrawReceiver;
     depositEndTime = _depositEndTime;
   }
 
@@ -134,8 +135,8 @@ contract BeraChainVaultAdapter is
     require(_amount > 0, "invalid amount");
     require(token.balanceOf(address(this)) >= _amount, "insufficient balance");
 
-    token.safeTransfer(botWithdrawReceiver, _amount);
-    emit SystemWithdraw(botWithdrawReceiver, _amount);
+    token.safeTransfer(operator, _amount);
+    emit SystemWithdraw(operator, _amount);
     return _amount;
   }
 
@@ -148,15 +149,15 @@ contract BeraChainVaultAdapter is
   }
 
   /**
-   * @dev change botWithdrawReceiver
-   * @param _botWithdrawReceiver new address
+   * @dev change operator
+   * @param _operator new address
    */
-  function setBotWithdrawReceiver(address _botWithdrawReceiver) external onlyRole(DEFAULT_ADMIN_ROLE) {
-    require(_botWithdrawReceiver != address(0), "invalid botWithdrawReceiver");
-    require(_botWithdrawReceiver != botWithdrawReceiver, "same botWithdrawReceiver");
+  function setOperator(address _operator) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    require(_operator != address(0), "invalid operator");
+    require(_operator != operator, "same operator");
 
-    botWithdrawReceiver = _botWithdrawReceiver;
-    emit ChangeBotWithdrawReceiver(botWithdrawReceiver);
+    operator = _operator;
+    emit ChangeOperator(operator);
   }
 
   /**
