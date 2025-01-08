@@ -11,11 +11,11 @@ contract BeraChainVaultAdapterScript is Script {
   /**
    * @dev Run the script
    * mainnet:
-   * forge script script/integration/BeraChainVaultAdapter.s.sol:BeraChainVaultAdapterScript --rpc-url https://bsc-dataseed.binance.org --etherscan-api-key <bscscan-api-key> --broadcast --verify -vvv
+   * forge script script/BeraChainVaultAdapter.s.sol:BeraChainVaultAdapterScript --rpc-url https://bsc-dataseed.binance.org --etherscan-api-key <bscscan-api-key> --broadcast --verify -vvv
    *
    * testnet:
-   * forge script script/integration/BeraChainVaultAdapter.s.sol:BeraChainVaultAdapterScript --broadcast --verify -vvv --rpc-url https://bsc-testnet.nodereal.io/v1/bced692b584d44908acb2e91f6e9d687 --etherscan-api-key <bscscan-api-key>
-   * proxy: 0xa4143B44ecd54ce9B6827745568aEE9C9c167f6D
+   * forge script script/BeraChainVaultAdapter.s.sol:BeraChainVaultAdapterScript --broadcast --verify -vvv --rpc-url https://bsc-testnet.nodereal.io/v1/bced692b584d44908acb2e91f6e9d687 --etherscan-api-key <bscscan-api-key>
+   * proxy: 0x493171878Ca4C37984Fe54Aa0491E5E0098D78FC
    */
   function run() public {
     uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
