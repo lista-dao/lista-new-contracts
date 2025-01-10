@@ -23,19 +23,19 @@ contract BeraChainVaultAdapterScript is Script {
     console.log("Deployer: %s", deployer);
     address admin = vm.envOr("ADMIN", deployer);
     console.log("Admin: %s", admin);
-    address manager = vm.envOr("MANAGER", deployer);
+    address manager = address(0x1d60bBBEF79Fb9540D271Dbb01925380323A8f66);
     console.log("Manager: %s", manager);
-    address pauser = vm.envOr("PAUSER", deployer);
+    address pauser = address(0xEEfebb1546d88EA0909435DF6f615084DD3c5Bd8);
     console.log("Pauser: %s", pauser);
-    address bot = vm.envOr("BOT", deployer);
+    address bot = address(0x91fC4BA20685339781888eCA3E9E1c12d40F0e13);
     console.log("Bot: %s", bot);
 
     // FIXME: change to the correct address
-    address BTCB = address(0x4BB2f2AA54c6663BFFD37b54eCd88eD81bC8B3ec); // for testnet
+    address BTCB = address(0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c);
     console.log("Token: %s", BTCB);
-    address lpToken = address(0x2d8645D3b8D2bAfd14ed4DCa4AD8D7D285D2fFe4); // for testnet
+    address lpToken = address(0x0000000000000000000000000000000000000000); // TODO:
     console.log("LPToken: %s", lpToken);
-    address botReceiver = address(0x05E3A7a66945ca9aF73f66660f22ffB36332FA54); // for testnet
+    address botReceiver = address(0x1d60bBBEF79Fb9540D271Dbb01925380323A8f66);
     console.log("BotReceiver: %s", botReceiver);
 
     vm.startBroadcast(deployerPrivateKey);
