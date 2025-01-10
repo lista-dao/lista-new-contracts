@@ -67,6 +67,12 @@ $ forge script <path_to_script> --rpc-url <your_rpc_url> --private-key <your_pri
 $ forge script script/safe/SafeGuard.s.sol:SafeGuardScript --rpc-url <your_rpc_url> --private-key <your_private_key> --etherscan-api-key <bscscan-api-key> --broadcast --verify -vvv
 ```
 
+### Verify
+
+```shell
+$ forge verify-contract --rpc-url <your_rpc_url> --chain-id <chain-id> <address> <contract-name> --api-key <bscscan-api-key>
+```
+
 ### Cast
 
 ```shell
