@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "../src/BeraChainVaultAdapter.sol";
-import "../src/token/NonTransferableLpERC20.sol";
-
-import "@openzeppelin/contracts/access/IAccessControl.sol";
-import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 import "forge-std/Test.sol";
 import "forge-std/console.sol";
+import { Upgrades } from "openzeppelin-foundry-upgrades/Upgrades.sol";
+import "@openzeppelin/contracts/access/IAccessControl.sol";
+
+import "../src/BeraChainVaultAdapter.sol";
+import "../src/token/NonTransferableLpERC20.sol";
 
 contract BeraChainVaultAdapterTest is Test {
   address admin = address(0x1A11AA);
@@ -22,7 +22,7 @@ contract BeraChainVaultAdapterTest is Test {
 
   address proxyAdminOwner = 0x8d388136d578dCD791D081c6042284CED6d9B0c6;
 
-  IERC20 PUMPBTC;
+  IERC20 BTC;
 
   NonTransferableLpERC20 LPToken;
 
@@ -31,57 +31,53 @@ contract BeraChainVaultAdapterTest is Test {
   function setUp() public {
     vm.createSelectFork("https://bsc-dataseed.binance.org");
 
-    PUMPBTC = IERC20(address(0xf9C4FF105803A77eCB5DAE300871Ad76c2794fa4));
-    TransparentUpgradeableProxy proxy0 = new TransparentUpgradeableProxy(
-      address(new NonTransferableLpERC20()),
-      proxyAdminOwner,
-      abi.encodeWithSignature("initialize(string,string)", "TestToken", "TEST")
+    BTC = IERC20(address(0xf9C4FF105803A77eCB5DAE300871Ad76c2794fa4));
+
+    address lpProxy = Upgrades.deployUUPSProxy(
+      "NonTransferableLpERC20.sol",
+      abi.encodeCall(NonTransferableLpERC20.initialize, ("TestToken", "TEST"))
     );
+    console.log("LP proxy address: %", lpProxy);
+    address implAddress = Upgrades.getImplementationAddress(lpProxy);
+    console.log("LP impl address: %s", implAddress);
+    LPToken = NonTransferableLpERC20(lpProxy);
 
-    LPToken = NonTransferableLpERC20(payable(address(proxy0)));
-
-    TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(
-      address(new BeraChainVaultAdapter()),
-      proxyAdminOwner,
-      abi.encodeWithSignature(
-        "initialize(address,address,address,address,address,address,address,uint256)",
-        admin,
-        manager,
-        pauser,
-        bot,
-        address(PUMPBTC),
-        address(LPToken),
-        receiver,
-        block.timestamp + 1 days
+    address beraChainVaultProxy = Upgrades.deployUUPSProxy(
+      "BeraChainVaultAdapter.sol",
+      abi.encodeCall(
+        BeraChainVaultAdapter.initialize,
+        (admin, manager, pauser, bot, address(BTC), address(LPToken), receiver, block.timestamp + 1 days)
       )
     );
+    console.log("BeraChainVaultAdapter proxy address: %", beraChainVaultProxy);
+    address beraChainVaultImplAddress = Upgrades.getImplementationAddress(beraChainVaultProxy);
+    console.log("BeraChainVaultAdapter impl address: %s", beraChainVaultImplAddress);
+    adapter = BeraChainVaultAdapter(beraChainVaultProxy);
 
-    adapter = BeraChainVaultAdapter(address(proxy));
-
-    LPToken.addMinter(address(adapter));
+    LPToken.addMinter(beraChainVaultProxy);
   }
 
   function test_setUp() public {
-    assertEq(address(adapter.token()), address(PUMPBTC));
+    assertEq(address(adapter.token()), address(BTC));
     assertEq(address(adapter.lpToken()), address(LPToken));
     assertEq(adapter.operator(), receiver);
   }
 
   function test_deposit() public {
-    deal(address(PUMPBTC), user0, 100 ether);
+    deal(address(BTC), user0, 100 ether);
 
     vm.startPrank(user0);
-    PUMPBTC.approve(address(adapter), 100 ether);
+    BTC.approve(address(adapter), 100 ether);
     adapter.deposit(100 ether);
     vm.stopPrank();
 
-    assertEq(PUMPBTC.balanceOf(address(adapter)), 100 ether, "adapter PUMPBTC balance");
+    assertEq(BTC.balanceOf(address(adapter)), 100 ether, "adapter BTC balance");
     assertEq(LPToken.balanceOf(address(user0)), 100 ether, "user0 LPToken balance");
-    assertEq(PUMPBTC.balanceOf(address(user0)), 0, "user0 PUMPBTC balance");
+    assertEq(BTC.balanceOf(address(user0)), 0, "user0 BTC balance");
   }
 
   function test_deposit_ended() public {
-    deal(address(PUMPBTC), user0, 100 ether);
+    deal(address(BTC), user0, 100 ether);
 
     skip(2 days);
     vm.startPrank(user0);
@@ -97,8 +93,8 @@ contract BeraChainVaultAdapterTest is Test {
     adapter.managerWithdraw(receiver1, 91 ether);
     vm.stopPrank();
 
-    assertEq(PUMPBTC.balanceOf(address(adapter)), 9 ether, "adapter PUMPBTC balance");
-    assertEq(PUMPBTC.balanceOf(address(receiver1)), 91 ether, "receiver1 PUMPBTC balance");
+    assertEq(BTC.balanceOf(address(adapter)), 9 ether, "adapter BTC balance");
+    assertEq(BTC.balanceOf(address(receiver1)), 91 ether, "receiver1 BTC balance");
     assertEq(LPToken.balanceOf(user0), 100 ether, "user0 LPToken balance");
   }
 
@@ -125,8 +121,8 @@ contract BeraChainVaultAdapterTest is Test {
     adapter.botWithdraw(91 ether);
     vm.stopPrank();
 
-    assertEq(PUMPBTC.balanceOf(address(adapter)), 9 ether, "adapter PUMPBTC balance");
-    assertEq(PUMPBTC.balanceOf(address(receiver)), 91 ether, "receiver PUMPBTC balance");
+    assertEq(BTC.balanceOf(address(adapter)), 9 ether, "adapter BTC balance");
+    assertEq(BTC.balanceOf(address(receiver)), 91 ether, "receiver BTC balance");
     assertEq(LPToken.balanceOf(user0), 100 ether, "user0 LPToken balance");
   }
 
@@ -147,11 +143,11 @@ contract BeraChainVaultAdapterTest is Test {
   }
 
   function test_getUserLpBalance() public {
-    assertEq(adapter.getUserLpBalance(user0), 0);
+    assertEq(LPToken.balanceOf(user0), 0);
 
     test_deposit();
 
-    assertEq(adapter.getUserLpBalance(user0), 100 ether);
+    assertEq(LPToken.balanceOf(user0), 100 ether);
   }
 
   function test_setOperator() public {

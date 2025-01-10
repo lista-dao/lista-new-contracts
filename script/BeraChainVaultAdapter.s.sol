@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import { Script } from "forge-std/Script.sol";
-import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import { Upgrades } from "openzeppelin-foundry-upgrades/Upgrades.sol";
 
 import "../src/BeraChainVaultAdapter.sol";
 
@@ -37,16 +37,19 @@ contract BeraChainVaultAdapterScript is Script {
     address operator = vm.envOr("BTCB_VAULT_OPERATOR", deployer);
     console.log("Operator: %s", operator);
     uint256 depositEndTime = vm.envOr("BTCB_VAULT_END_TIME", uint256(1738367999));
-    console.log("DepositEndTime: %s", botReceiver);
+    console.log("DepositEndTime: %s", depositEndTime);
 
     vm.startBroadcast(deployerPrivateKey);
-    BeraChainVaultAdapter impl = new BeraChainVaultAdapter();
-    ERC1967Proxy proxy = new ERC1967Proxy(
-      address(impl),
-      abi.encodeCall(impl.initialize, (admin, manager, pauser, bot, BTCB, lpToken, botReceiver, depositEndTime))
+    address proxy = Upgrades.deployUUPSProxy(
+      "BeraChainVaultAdapter.sol",
+      abi.encodeCall(
+        BeraChainVaultAdapter.initialize,
+        (admin, manager, pauser, bot, BTCB, lpToken, operator, depositEndTime)
+      )
     );
     vm.stopBroadcast();
-    console.log("BeraChainVaultAdapter address: %s", address(proxy));
-    console.log("BeraChainVaultAdapter impl: %s", address(impl));
+    console.log("BeraChainVaultAdapter proxy address: %s", proxy);
+    address implAddress = Upgrades.getImplementationAddress(proxy);
+    console.log("BeraChainVaultAdapter impl address: %s", implAddress);
   }
 }

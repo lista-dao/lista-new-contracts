@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "../../src/token/NonTransferableLpERC20.sol";
-import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import { Script } from "forge-std/Script.sol";
 import "forge-std/Test.sol";
+import { Script } from "forge-std/Script.sol";
+import { Upgrades } from "openzeppelin-foundry-upgrades/Upgrades.sol";
+
+import "../../src/token/NonTransferableLpERC20.sol";
 
 contract BTCBLPScript is Script {
   /**
@@ -23,14 +24,13 @@ contract BTCBLPScript is Script {
     console.log("Deployer: %s", deployer);
 
     vm.startBroadcast(deployerPrivateKey);
-    NonTransferableLpERC20 impl = new NonTransferableLpERC20();
-    ERC1967Proxy proxy = new ERC1967Proxy(
-      address(impl),
-      abi.encodeCall(impl.initialize, ("Lista Berachain BTCB LP", "clis-BTCBLP"))
+    address proxy = Upgrades.deployUUPSProxy(
+      "NonTransferableLpERC20.sol",
+      abi.encodeCall(NonTransferableLpERC20.initialize, ("Lista Berachain BTCB LP", "BTCBLP"))
     );
     vm.stopBroadcast();
-
-    console.log("BTCBLP address: %s", address(proxy));
-    console.log("BTCBLP impl: %s", address(impl));
+    console.log("BTCBLP proxy address: %s", proxy);
+    address implAddress = Upgrades.getImplementationAddress(proxy);
+    console.log("BTCBLP impl address: %s", implAddress);
   }
 }
