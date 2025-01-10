@@ -34,8 +34,8 @@ contract BeraChainVaultAdapterScript is Script {
     console.log("Token: %s", BTCB);
     address lpToken = vm.envOr("BTCB_LP_TOKEN", deployer);
     console.log("LPToken: %s", lpToken);
-    address botReceiver = vm.envOr("BTCB_VAULT_OPERATOR", deployer);
-    console.log("BotReceiver: %s", botReceiver);
+    address operator = vm.envOr("BTCB_VAULT_OPERATOR", deployer);
+    console.log("Operator: %s", operator);
     uint256 depositEndTime = vm.envOr("BTCB_VAULT_END_TIME", uint256(1738367999));
     console.log("DepositEndTime: %s", botReceiver);
 
