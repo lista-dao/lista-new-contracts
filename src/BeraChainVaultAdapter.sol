@@ -56,7 +56,7 @@ contract BeraChainVaultAdapter is
    * @param _bot address
    * @param _token address
    * @param _lpToken address
-   * @param _botWithdrawReceiver address
+   * @param _operator address
    * @param _depositEndTime uint256
    */
   function initialize(
@@ -66,7 +66,7 @@ contract BeraChainVaultAdapter is
     address _bot,
     address _token,
     address _lpToken,
-    address _botWithdrawReceiver,
+    address _operator,
     uint256 _depositEndTime
   ) public initializer {
     require(_admin != address(0), "admin is the zero address");
@@ -75,7 +75,7 @@ contract BeraChainVaultAdapter is
     require(_bot != address(0), "bot is the zero address");
     require(_token != address(0), "token is the zero address");
     require(_lpToken != address(0), "lpToken is the zero address");
-    require(_botWithdrawReceiver != address(0), "botWithdrawReceiver is the zero address");
+    require(_operator != address(0), "botWithdrawReceiver is the zero address");
     require(_depositEndTime > block.timestamp, "invalid depositEndTime");
 
     __AccessControl_init();
@@ -90,7 +90,7 @@ contract BeraChainVaultAdapter is
 
     token = IERC20(_token);
     lpToken = ILpToken(_lpToken);
-    operator = _botWithdrawReceiver;
+    operator = _operator;
     depositEndTime = _depositEndTime;
   }
 
@@ -161,7 +161,7 @@ contract BeraChainVaultAdapter is
   }
 
   /**
-   * @dev change depositEndTime, extend or reduce deposit end time
+   * @dev change deposit end time, extend or reduce deposit end time
    * @param _depositEndTime new end time
    */
   function setDepositEndTime(uint256 _depositEndTime) external onlyRole(DEFAULT_ADMIN_ROLE) {
