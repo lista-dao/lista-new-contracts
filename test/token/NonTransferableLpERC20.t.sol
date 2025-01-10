@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "forge-std/console.sol";
-import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
+import { Upgrades } from "openzeppelin-foundry-upgrades/Upgrades.sol";
 
 import "../../src/token/NonTransferableLpERC20.sol";
 
@@ -17,13 +17,15 @@ contract NonTransferableLpERC20Test is Test {
   NonTransferableLpERC20 token;
 
   function setUp() public {
-    TransparentUpgradeableProxy proxy = new TransparentUpgradeableProxy(
-      address(new NonTransferableLpERC20()),
-      proxyAdminOwner,
-      abi.encodeWithSignature("initialize(string,string)", "TestToken", "TEST")
+    address proxy = Upgrades.deployUUPSProxy(
+      "NonTransferableLpERC20.sol",
+      abi.encodeCall(NonTransferableLpERC20.initialize, ("TestToken", "TEST"))
     );
+    console.log("NonTransferableLpERC20 proxy address: %", proxy);
+    address implAddress = Upgrades.getImplementationAddress(proxy);
+    console.log("NonTransferableLpERC20 impl address: %s", implAddress);
 
-    token = NonTransferableLpERC20(address(proxy));
+    token = NonTransferableLpERC20(proxy);
     token.addMinter(admin);
   }
 
