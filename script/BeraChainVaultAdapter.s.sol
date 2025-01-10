@@ -23,28 +23,28 @@ contract BeraChainVaultAdapterScript is Script {
     console.log("Deployer: %s", deployer);
     address admin = vm.envOr("ADMIN", deployer);
     console.log("Admin: %s", admin);
-    address manager = address(0x1d60bBBEF79Fb9540D271Dbb01925380323A8f66);
+    address manager = vm.envOr("MANAGER", deployer);
     console.log("Manager: %s", manager);
-    address pauser = address(0xEEfebb1546d88EA0909435DF6f615084DD3c5Bd8);
+    address pauser = vm.envOr("PAUSER", deployer);
     console.log("Pauser: %s", pauser);
-    address bot = address(0x91fC4BA20685339781888eCA3E9E1c12d40F0e13);
+    address bot = vm.envOr("BOT", deployer);
     console.log("Bot: %s", bot);
 
-    // FIXME: change to the correct address
-    address BTCB = address(0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c);
+    address BTCB = vm.envOr("BTCB_TOKEN", deployer);
     console.log("Token: %s", BTCB);
-    address lpToken = address(0x0000000000000000000000000000000000000000); // TODO:
+    address lpToken = vm.envOr("BTCB_LP_TOKEN", deployer);
     console.log("LPToken: %s", lpToken);
-    address botReceiver = address(0x1d60bBBEF79Fb9540D271Dbb01925380323A8f66);
+    address botReceiver = vm.envOr("BTCB_VAULT_OPERATOR", deployer);
     console.log("BotReceiver: %s", botReceiver);
+    uint256 depositEndTime = vm.envOr("BTCB_VAULT_END_TIME", uint256(1738368000));
+    console.log("DepositEndTime: %s", botReceiver);
 
     vm.startBroadcast(deployerPrivateKey);
     BeraChainVaultAdapter impl = new BeraChainVaultAdapter();
     ERC1967Proxy proxy = new ERC1967Proxy(
       address(impl),
-      abi.encodeCall(impl.initialize, (admin, manager, pauser, bot, BTCB, lpToken, botReceiver, 1738368000))
+      abi.encodeCall(impl.initialize, (admin, manager, pauser, bot, BTCB, lpToken, botReceiver, depositEndTime))
     );
-    // 1738368000 is 2025-02-01 00:00:00 utc+0
     vm.stopBroadcast();
     console.log("BeraChainVaultAdapter address: %s", address(proxy));
     console.log("BeraChainVaultAdapter impl: %s", address(impl));
