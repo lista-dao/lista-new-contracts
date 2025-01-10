@@ -14,7 +14,7 @@ contract BeraChainVaultAdapterScript is Script {
    * forge script script/BeraChainVaultAdapter.s.sol:BeraChainVaultAdapterScript --rpc-url https://bsc-dataseed.binance.org --etherscan-api-key <bscscan-api-key> --broadcast --verify -vvv
    *
    * testnet:
-   * forge script script/BeraChainVaultAdapter.s.sol:BeraChainVaultAdapterScript --broadcast --verify -vvv --rpc-url https://bsc-testnet.nodereal.io/v1/bced692b584d44908acb2e91f6e9d687 --etherscan-api-key <bscscan-api-key>
+   * forge script script/BeraChainVaultAdapter.s.sol:BeraChainVaultAdapterScript --broadcast --verify -vvv --rpc-url <testnet-rpc> --etherscan-api-key <bscscan-api-key>
    * proxy: 0x493171878Ca4C37984Fe54Aa0491E5E0098D78FC
    */
   function run() public {

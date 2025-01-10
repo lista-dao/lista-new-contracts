@@ -13,7 +13,7 @@ contract BTCBLPScript is Script {
    * forge script script/token/BTCBLP.s.sol:BTCBLPScript --rpc-url https://bsc-dataseed.binance.org --etherscan-api-key <bscscan-api-key> --broadcast --verify -vvv
    *
    * testnet:
-   * forge script script/token/BTCBLP.s.sol:BTCBLPScript --broadcast --verify -vvv --rpc-url https://bsc-testnet.nodereal.io/v1/bced692b584d44908acb2e91f6e9d687 --etherscan-api-key <bscscan-api-key>
+   * forge script script/token/BTCBLP.s.sol:BTCBLPScript --broadcast --verify -vvv --rpc-url <testnet-rpc> --etherscan-api-key <bscscan-api-key>
    * proxy: 0x2d8645D3b8D2bAfd14ed4DCa4AD8D7D285D2fFe4
    * impl: 0x700913b4bc4d6443f8c5536d40814d66a3fd3635
    */
