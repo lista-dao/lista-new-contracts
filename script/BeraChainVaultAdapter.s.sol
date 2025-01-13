@@ -30,21 +30,23 @@ contract BeraChainVaultAdapterScript is Script {
     address bot = vm.envOr("BOT", deployer);
     console.log("Bot: %s", bot);
 
-    address BTCB = vm.envOr("BTCB_TOKEN", deployer);
+    address BTCB = vm.envAddress("BTCB_TOKEN");
     console.log("Token: %s", BTCB);
-    address lpToken = vm.envOr("BTCB_LP_TOKEN", deployer);
+    address lpToken = vm.envAddress("BTCB_LP_TOKEN");
     console.log("LPToken: %s", lpToken);
-    address operator = vm.envOr("BTCB_VAULT_OPERATOR", deployer);
+    address operator = vm.envAddress("BTCB_VAULT_OPERATOR");
     console.log("Operator: %s", operator);
     uint256 depositEndTime = vm.envOr("BTCB_VAULT_END_TIME", uint256(1738367999));
     console.log("DepositEndTime: %s", depositEndTime);
+    uint256 depositMinAmount = vm.envOr("BTCB_VAULT_MIN_DEPOSIT_AMOUNT", uint256(1000000000000000));
+    console.log("DepositMinAmount: %s", depositMinAmount);
 
     vm.startBroadcast(deployerPrivateKey);
     address proxy = Upgrades.deployUUPSProxy(
       "BeraChainVaultAdapter.sol",
       abi.encodeCall(
         BeraChainVaultAdapter.initialize,
-        (admin, manager, pauser, bot, BTCB, lpToken, operator, depositEndTime)
+        (admin, manager, pauser, bot, BTCB, lpToken, operator, depositEndTime, depositMinAmount)
       )
     );
     vm.stopBroadcast();

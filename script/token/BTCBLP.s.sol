@@ -26,11 +26,11 @@ contract BTCBLPScript is Script {
     vm.startBroadcast(deployerPrivateKey);
     address proxy = Upgrades.deployUUPSProxy(
       "NonTransferableLpERC20.sol",
-      abi.encodeCall(NonTransferableLpERC20.initialize, ("Lista Berachain BTCB LP", "BTCBLP"))
+      abi.encodeCall(NonTransferableLpERC20.initialize, ("Lista Bera BTC", "lisBBTC"))
     );
     vm.stopBroadcast();
-    console.log("BTCBLP proxy address: %s", proxy);
+    console.log("ListaBeraBTC proxy address: %s", proxy);
     address implAddress = Upgrades.getImplementationAddress(proxy);
-    console.log("BTCBLP impl address: %s", implAddress);
+    console.log("ListaBeraBTC impl address: %s", implAddress);
   }
 }

@@ -46,7 +46,7 @@ contract BeraChainVaultAdapterTest is Test {
       "BeraChainVaultAdapter.sol",
       abi.encodeCall(
         BeraChainVaultAdapter.initialize,
-        (admin, manager, pauser, bot, address(BTC), address(LPToken), receiver, block.timestamp + 1 days)
+        (admin, manager, pauser, bot, address(BTC), address(LPToken), receiver, block.timestamp + 1 days, 0.1 ether)
       )
     );
     console.log("BeraChainVaultAdapter proxy address: %", beraChainVaultProxy);
@@ -158,5 +158,37 @@ contract BeraChainVaultAdapterTest is Test {
     vm.stopPrank();
 
     assertEq(adapter.operator(), receiver1);
+  }
+
+  function test_setMinDepositAmount() public {
+    assertEq(adapter.minDepositAmount(), 0.1 ether);
+
+    vm.prank(admin);
+    adapter.setMinDepositAmount(1 ether);
+
+    assertEq(adapter.minDepositAmount(), 1 ether);
+  }
+
+  function test_deposit_minAmount() public {
+    test_setMinDepositAmount();
+
+    deal(address(BTC), user0, 100 ether);
+    vm.startPrank(user0);
+    BTC.approve(address(adapter), 1 ether);
+    adapter.deposit(1 ether);
+    vm.stopPrank();
+
+    assertEq(BTC.balanceOf(address(adapter)), 1 ether, "adapter BTC balance");
+    assertEq(LPToken.balanceOf(address(user0)), 1 ether, "user0 LPToken balance");
+    assertEq(BTC.balanceOf(address(user0)), 99 ether, "user0 BTC balance");
+  }
+
+  function test_deposit_minAmount_revert() public {
+    test_setMinDepositAmount();
+
+    vm.startPrank(user0);
+    vm.expectRevert("amount less than minDepositAmount");
+    adapter.deposit(1 ether - 1);
+    vm.stopPrank();
   }
 }
