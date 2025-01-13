@@ -35,10 +35,13 @@ contract BeraChainVaultAdapter is
 
   uint256 public depositEndTime;
 
+  uint256 public minDepositAmount;
+
   /**
    * Events
    */
   event ChangeDepositEndTime(uint256 endTime);
+  event ChangeMinDepositAmount(uint256 minDepositAmount);
   event ChangeOperator(address indexed operator);
   event Deposit(address indexed account, uint256 amount);
   event SystemWithdraw(address indexed receiver, uint256 amount);
@@ -67,7 +70,8 @@ contract BeraChainVaultAdapter is
     address _token,
     address _lpToken,
     address _operator,
-    uint256 _depositEndTime
+    uint256 _depositEndTime,
+    uint256 _minDepositAmount
   ) public initializer {
     require(_admin != address(0), "admin is the zero address");
     require(_manager != address(0), "manager is the zero address");
@@ -92,6 +96,7 @@ contract BeraChainVaultAdapter is
     lpToken = ILpToken(_lpToken);
     operator = _operator;
     depositEndTime = _depositEndTime;
+    minDepositAmount = _minDepositAmount;
   }
 
   /**
@@ -99,7 +104,7 @@ contract BeraChainVaultAdapter is
    * @param _amount amount of token to deposit
    */
   function deposit(uint256 _amount) external nonReentrant whenNotPaused returns (uint256) {
-    require(_amount > 0, "invalid amount");
+    require(_amount >= minDepositAmount, "amount less than minDepositAmount");
     require(block.timestamp <= depositEndTime, "deposit closed");
 
     token.safeTransferFrom(msg.sender, address(this), _amount);
@@ -161,6 +166,17 @@ contract BeraChainVaultAdapter is
 
     depositEndTime = _depositEndTime;
     emit ChangeDepositEndTime(depositEndTime);
+  }
+
+  /**
+   * @dev change min deposit amount
+   * @param _minDepositAmount new min deposit amount
+   */
+  function setMinDepositAmount(uint256 _minDepositAmount) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    require(_minDepositAmount != minDepositAmount, "same minDepositAmount");
+
+    minDepositAmount = _minDepositAmount;
+    emit ChangeMinDepositAmount(minDepositAmount);
   }
 
   /**
