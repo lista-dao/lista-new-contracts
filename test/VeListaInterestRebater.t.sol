@@ -111,4 +111,16 @@ contract VeListaInterestRebaterTest is Test {
     assertEq(bytes32(0), rebater.pendingMerkleRoot());
     assertEq(type(uint).max, rebater.lastSetTime());
   }
+
+  function test_changeWaitingPeriod() public {
+    vm.expectRevert("Invalid waiting period");
+    vm.startPrank(manager);
+    rebater.changeWaitingPeriod(5 hours);
+
+    rebater.changeWaitingPeriod(7 hours); // success
+    assertEq(7 hours, rebater.waitingPeriod());
+
+    vm.expectRevert("Invalid waiting period");
+    rebater.changeWaitingPeriod(7 hours);
+  }
 }

@@ -145,7 +145,7 @@ contract VeListaInterestRebater is Initializable, AccessControlUpgradeable, Paus
    * @param _waitingPeriod Waiting period to be set
    */
   function changeWaitingPeriod(uint256 _waitingPeriod) external onlyRole(MANAGER) whenNotPaused {
-    require(_waitingPeriod > 0 && _waitingPeriod != waitingPeriod, "Invalid waiting period");
+    require(_waitingPeriod >= 6 hours && _waitingPeriod != waitingPeriod, "Invalid waiting period");
     waitingPeriod = _waitingPeriod;
 
     emit WaitingPeriodUpdated(_waitingPeriod);
