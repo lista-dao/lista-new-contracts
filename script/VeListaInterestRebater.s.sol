@@ -29,7 +29,7 @@ contract VeListaInterestRebaterScript is Script {
     address bot = vm.envOr("BOT", deployer);
     console.log("Bot: %s", bot);
 
-    address lisUSD = ;
+    address lisUSD = 0x0782b6d8c4551B9760e74c0545a9bCD90bdc41E5;
 
 
     vm.startBroadcast(deployerPrivateKey);
