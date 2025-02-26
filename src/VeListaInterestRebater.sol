@@ -43,6 +43,7 @@ contract VeListaInterestRebater is Initializable, AccessControlUpgradeable, Paus
   event SetPendingMerkleRoot(bytes32 merkleRoot, uint256 lastSetTime);
   event AcceptMerkleRoot(bytes32 merkleRoot);
   event WaitingPeriodUpdated(uint256 waitingPeriod);
+  event EmergencyWithdrawal(address to, uint256 amount);
 
   /// @custom:oz-upgrades-unsafe-allow constructor
   constructor() {
@@ -148,6 +149,14 @@ contract VeListaInterestRebater is Initializable, AccessControlUpgradeable, Paus
     waitingPeriod = _waitingPeriod;
 
     emit WaitingPeriodUpdated(_waitingPeriod);
+  }
+
+  /// @dev manager can withdraw all lisUSD from the contract in case of emergency
+  function emergencyWithdraw() external onlyRole(MANAGER) {
+    uint256 _amount = IERC20(lisUSD).balanceOf(address(this));
+    IERC20(lisUSD).safeTransfer(msg.sender, _amount);
+
+    emit EmergencyWithdrawal(msg.sender, _amount);
   }
 
   /// @dev pause the contract

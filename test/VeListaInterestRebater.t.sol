@@ -66,4 +66,17 @@ contract VeListaInterestRebaterTest is Test {
     vm.expectRevert("Invalid pending merkle root");
     rebater.acceptMerkleRoot();
   }
+
+  function test_emergencyWithdraw() public {
+    deal(address(lisUSD), address(rebater), 99 ether);
+
+    vm.expectRevert();
+    rebater.emergencyWithdraw();
+
+    vm.prank(manager);
+    rebater.emergencyWithdraw(); // success
+
+    assertEq(99 ether, lisUSD.balanceOf(address(manager)));
+    assertEq(0, lisUSD.balanceOf(address(rebater)));
+  }
 }
