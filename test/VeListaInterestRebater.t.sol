@@ -79,4 +79,36 @@ contract VeListaInterestRebaterTest is Test {
     assertEq(99 ether, lisUSD.balanceOf(address(manager)));
     assertEq(0, lisUSD.balanceOf(address(rebater)));
   }
+
+  function test_revokePendingMerkleRoot() public {
+    bytes32 _merkleRoot = bytes32(0x0000000000000000000000000000000000000000000000000000000000000002);
+
+    vm.expectRevert("Pending merkle root is zero");
+    vm.prank(manager);
+    rebater.revokePendingMerkleRoot();
+
+    vm.prank(bot);
+    rebater.setPendingMerkleRoot(_merkleRoot);
+    assertEq(_merkleRoot, rebater.pendingMerkleRoot());
+    assertEq(block.timestamp, rebater.lastSetTime());
+
+    vm.prank(manager);
+    rebater.revokePendingMerkleRoot();
+    assertEq(bytes32(0), rebater.pendingMerkleRoot());
+    assertEq(type(uint).max, rebater.lastSetTime());
+
+    vm.prank(bot);
+    rebater.setPendingMerkleRoot(_merkleRoot);
+    assertEq(_merkleRoot, rebater.pendingMerkleRoot());
+    assertEq(block.timestamp, rebater.lastSetTime());
+
+    vm.prank(pauser);
+    rebater.pause();
+    assertTrue(rebater.paused());
+
+    vm.prank(manager);
+    rebater.revokePendingMerkleRoot();
+    assertEq(bytes32(0), rebater.pendingMerkleRoot());
+    assertEq(type(uint).max, rebater.lastSetTime());
+  }
 }

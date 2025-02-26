@@ -131,7 +131,7 @@ contract VeListaInterestRebater is Initializable, AccessControlUpgradeable, Paus
   }
 
   /// @dev Revoke the pending merkle root by Manager
-  function revokePendingMerkleRoot() external onlyRole(MANAGER) whenNotPaused {
+  function revokePendingMerkleRoot() external onlyRole(MANAGER) {
     require(pendingMerkleRoot != bytes32(0), "Pending merkle root is zero");
 
     pendingMerkleRoot = bytes32(0);
