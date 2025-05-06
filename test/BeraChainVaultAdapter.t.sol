@@ -191,4 +191,46 @@ contract BeraChainVaultAdapterTest is Test {
     adapter.deposit(1 ether - 1);
     vm.stopPrank();
   }
+
+  function test_withdraw_partial() public {
+    test_deposit();
+
+    vm.startPrank(user0);
+    adapter.withdraw(10 ether);
+    vm.stopPrank();
+
+    assertEq(BTC.balanceOf(address(adapter)), 90 ether, "adapter BTC balance");
+    assertEq(LPToken.balanceOf(address(user0)), 90 ether, "user0 LPToken balance");
+    assertEq(BTC.balanceOf(address(user0)), 10 ether, "user0 BTC balance");
+  }
+
+  function test_withdraw_full() public {
+    test_deposit();
+
+    vm.startPrank(user0);
+    adapter.withdraw(100 ether);
+    vm.stopPrank();
+
+    assertEq(BTC.balanceOf(address(adapter)), 0 ether, "adapter BTC balance");
+    assertEq(LPToken.balanceOf(address(user0)), 0 ether, "user0 LPToken balance");
+    assertEq(BTC.balanceOf(address(user0)), 100 ether, "user0 BTC balance");
+  }
+
+  function test_withdraw_invalid_amount() public {
+    test_deposit();
+
+    vm.startPrank(user0);
+    vm.expectRevert("invalid amount");
+    adapter.withdraw(0);
+    vm.stopPrank();
+
+    vm.startPrank(user0);
+    vm.expectRevert("insufficient lp balance");
+    adapter.withdraw(101 ether);
+    vm.stopPrank();
+
+    assertEq(BTC.balanceOf(address(adapter)), 100 ether, "adapter BTC balance");
+    assertEq(LPToken.balanceOf(address(user0)), 100 ether, "user0 LPToken balance");
+    assertEq(BTC.balanceOf(address(user0)), 0, "user0 BTC balance");
+  }
 }

@@ -45,6 +45,7 @@ contract BeraChainVaultAdapter is
   event ChangeOperator(address indexed operator);
   event Deposit(address indexed account, uint256 amount);
   event SystemWithdraw(address indexed receiver, uint256 amount);
+  event Withdraw(address indexed account, uint256 amount);
 
   /// @custom:oz-upgrades-unsafe-allow constructor
   constructor() {
@@ -142,6 +143,21 @@ contract BeraChainVaultAdapter is
 
     token.safeTransfer(operator, _amount);
     emit SystemWithdraw(operator, _amount);
+    return _amount;
+  }
+
+  /**
+   * @dev withdraw given amount of token from the vault by user
+   * @param _amount amount of token to withdraw
+   */
+  function withdraw(uint256 _amount) external nonReentrant whenNotPaused returns (uint256) {
+    require(_amount > 0, "invalid amount");
+    require(lpToken.balanceOf(address(msg.sender)) >= _amount, "insufficient lp balance");
+
+    lpToken.burn(msg.sender, _amount);
+    token.safeTransfer(msg.sender, _amount);
+
+    emit Withdraw(msg.sender, _amount);
     return _amount;
   }
 
