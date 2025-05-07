@@ -152,7 +152,7 @@ contract BeraChainVaultAdapter is
    */
   function withdraw(uint256 _amount) external nonReentrant whenNotPaused returns (uint256) {
     require(_amount > 0, "invalid amount");
-    require(lpToken.balanceOf(address(msg.sender)) >= _amount, "insufficient lp balance");
+    require(lpToken.balanceOf(msg.sender) >= _amount, "insufficient lp balance");
 
     lpToken.burn(msg.sender, _amount);
     token.safeTransfer(msg.sender, _amount);
