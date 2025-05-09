@@ -31,14 +31,10 @@ contract VeListaInterestRebaterScript is Script {
 
     address lisUSD = 0x0782b6d8c4551B9760e74c0545a9bCD90bdc41E5;
 
-
     vm.startBroadcast(deployerPrivateKey);
     address proxy = Upgrades.deployUUPSProxy(
       "VeListaInterestRebater.sol",
-      abi.encodeCall(
-        VeListaInterestRebater.initialize,
-        (admin, manager, bot, pauser, lisUSD)
-      )
+      abi.encodeCall(VeListaInterestRebater.initialize, (admin, manager, bot, pauser, lisUSD))
     );
     vm.stopBroadcast();
     console.log("VeListaInterestRebater proxy address: %s", proxy);
