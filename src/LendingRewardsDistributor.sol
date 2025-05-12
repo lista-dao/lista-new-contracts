@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -14,7 +13,7 @@ import { MerkleProof } from "@openzeppelin/contracts/utils/cryptography/MerklePr
  * @author Lista
  * @dev Distribute LISTA to Lending users
  */
-contract LendingRewardsDistributor is Initializable, AccessControlUpgradeable, PausableUpgradeable, UUPSUpgradeable {
+contract LendingRewardsDistributor is AccessControlEnumerableUpgradeable, PausableUpgradeable, UUPSUpgradeable {
   using SafeERC20 for IERC20;
 
   /// @dev current merkle root
