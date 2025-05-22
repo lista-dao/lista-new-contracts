@@ -9,20 +9,20 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { MerkleProof } from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 
 /**
- * @title VeListaInterestRebater
+ * @title Emission Rewards Distributor for Lista Lending
  * @author Lista
- * @dev Rebate CDP borrow interests to veLista holders
+ * @dev Distribute LISTA to Lending users
  */
-contract VeListaInterestRebater is AccessControlEnumerableUpgradeable, PausableUpgradeable, UUPSUpgradeable {
+contract LendingRewardsDistributor is AccessControlEnumerableUpgradeable, PausableUpgradeable, UUPSUpgradeable {
   using SafeERC20 for IERC20;
 
   /// @dev current merkle root
   bytes32 public merkleRoot;
 
-  /// @dev lisUSD address
-  address public lisUSD;
+  /// @dev LISTA address
+  address public token;
 
-  /// @dev userAddress => total claimed lisUSD amount
+  /// @dev userAddress => total claimed LISTA amount
   mapping(address => uint256) public claimed;
 
   /// @dev the next merkle root to be set
@@ -54,26 +54,26 @@ contract VeListaInterestRebater is AccessControlEnumerableUpgradeable, PausableU
    * @param _manager Address of the manager
    * @param _bot Address of the bot
    * @param _pauser Address of the pauser
-   * @param _lisUSD Address of the lisUSD token
+   * @param _token Address of the LISTA token
    */
   function initialize(
     address _admin,
     address _manager,
     address _bot,
     address _pauser,
-    address _lisUSD
+    address _token
   ) external initializer {
     require(_admin != address(0), "Invalid admin address");
     require(_manager != address(0), "Invalid manager address");
     require(_bot != address(0), "Invalid bot address");
     require(_pauser != address(0), "Invalid pauser address");
-    require(_lisUSD != address(0), "Invalid lisUSD address");
+    require(_token != address(0), "Invalid token address");
 
     __Pausable_init();
     __AccessControl_init();
     __UUPSUpgradeable_init();
 
-    lisUSD = _lisUSD;
+    token = _token;
     lastSetTime = type(uint256).max;
     waitingPeriod = 1 days;
 
@@ -86,7 +86,7 @@ contract VeListaInterestRebater is AccessControlEnumerableUpgradeable, PausableU
   /**
    * @dev Claim a rebate. Can be called by anyone as long as proof is valid.
    * @param _account Address of the veLista holder
-   * @param _totalAmount total amount of lisUSD rebatable to the account
+   * @param _totalAmount total amount of LISTA rebatable to the account
    * @param _proof Merkle proof of the claim
    */
   function claim(address _account, uint256 _totalAmount, bytes32[] memory _proof) external whenNotPaused {
@@ -99,7 +99,7 @@ contract VeListaInterestRebater is AccessControlEnumerableUpgradeable, PausableU
     uint256 amount = _totalAmount - claimed[_account];
     claimed[_account] = _totalAmount;
 
-    IERC20(lisUSD).safeTransfer(_account, amount);
+    IERC20(token).safeTransfer(_account, amount);
 
     emit Claimed(_account, amount, _totalAmount);
   }
@@ -150,10 +150,10 @@ contract VeListaInterestRebater is AccessControlEnumerableUpgradeable, PausableU
     emit WaitingPeriodUpdated(_waitingPeriod);
   }
 
-  /// @dev manager can withdraw all lisUSD from the contract in case of emergency
+  /// @dev manager can withdraw all LISTA from the contract in case of emergency
   function emergencyWithdraw() external onlyRole(MANAGER) {
-    uint256 _amount = IERC20(lisUSD).balanceOf(address(this));
-    IERC20(lisUSD).safeTransfer(msg.sender, _amount);
+    uint256 _amount = IERC20(token).balanceOf(address(this));
+    IERC20(token).safeTransfer(msg.sender, _amount);
 
     emit EmergencyWithdrawal(msg.sender, _amount);
   }
