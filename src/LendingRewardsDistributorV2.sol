@@ -43,7 +43,8 @@ contract LendingRewardsDistributorV2 is AccessControlEnumerableUpgradeable, Paus
   event AcceptMerkleRoot(bytes32 merkleRoot);
   event WaitingPeriodUpdated(uint256 waitingPeriod);
   event SetTokenWhitelist(address indexed token, bool whitelisted);
-  event EmergencyWithdrawal(address to, uint256 amount);
+  event DepositRewards(address indexed from, address indexed token, uint256 amount);
+  event EmergencyWithdrawal(address to, address token, uint256 amount);
 
   /// @custom:oz-upgrades-unsafe-allow constructor
   constructor() {
@@ -194,13 +195,31 @@ contract LendingRewardsDistributorV2 is AccessControlEnumerableUpgradeable, Paus
     }
   }
 
+  /// @dev Deposit rewards to the contract
+  /// @param _tokens Addresses of the tokens to deposit
+  /// @param _amounts Amounts of the tokens to deposit
+  function depositRewards(
+    address[] memory _tokens,
+    uint256[] memory _amounts
+  ) external onlyRole(MANAGER) whenNotPaused {
+    require(_tokens.length == _amounts.length && _tokens.length > 0, "Invalid input lengths");
+
+    for (uint256 i = 0; i < _tokens.length; i++) {
+      require(tokens[_tokens[i]], "Token not supported");
+      require(_amounts[i] > 0, "Invalid amount");
+
+      IERC20(_tokens[i]).safeTransferFrom(msg.sender, address(this), _amounts[i]);
+      emit DepositRewards(msg.sender, _tokens[i], _amounts[i]);
+    }
+  }
+
   /// @dev manager can withdraw all LISTA from the contract in case of emergency
   /// @param token Address of the token to withdraw
   function emergencyWithdraw(address token) external onlyRole(MANAGER) {
     uint256 _amount = IERC20(token).balanceOf(address(this));
     IERC20(token).safeTransfer(msg.sender, _amount);
 
-    emit EmergencyWithdrawal(msg.sender, _amount);
+    emit EmergencyWithdrawal(msg.sender, token, _amount);
   }
 
   /// @dev pause the contract
