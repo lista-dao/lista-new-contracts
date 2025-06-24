@@ -13,8 +13,8 @@ build_info = true
 extra_output = ["storageLayout"]
 
 [rpc_endpoints]
-bsc_testnet = "https://data-seed-prebsc-1-s3.bnbchain.org:8545"
-bsc = "https://bsc-dataseed3.bnbchain.org"
+bsc_testnet = "https://bsc-testnet-dataseed.bnbchain.org"
+bsc = "https://bsc-dataseed.binance.org"
 
 [etherscan]
 bsc = { key = "${BSCSCAN_API_KEY}" }
