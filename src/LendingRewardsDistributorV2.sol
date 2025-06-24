@@ -128,7 +128,10 @@ contract LendingRewardsDistributorV2 is AccessControlEnumerableUpgradeable, Paus
     uint256 claimedAmount = claimed[_account][_token];
     require(_totalAmount > claimedAmount, "Invalid total amount");
 
-    bytes32 leaf = keccak256(abi.encode(block.chainid, _account, _token, _totalAmount));
+    bytes32 leaf = keccak256(
+      abi.encode(block.chainid, address(this), this.claim.selector, _account, _token, _totalAmount)
+    );
+
     require(MerkleProof.verify(_proof, merkleRoot, leaf), "Invalid proof");
 
     claimed[_account][_token] = _totalAmount;
