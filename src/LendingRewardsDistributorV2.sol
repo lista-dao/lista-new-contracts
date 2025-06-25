@@ -146,7 +146,10 @@ contract LendingRewardsDistributorV2 is AccessControlEnumerableUpgradeable, Paus
   /// @param _merkleRoot New merkle root to be set as pending
   function setPendingMerkleRoot(bytes32 _merkleRoot) external onlyRole(BOT) whenNotPaused {
     require(
-      _merkleRoot != bytes32(0) && _merkleRoot != pendingMerkleRoot && lastSetTime == type(uint256).max,
+      _merkleRoot != bytes32(0) &&
+        _merkleRoot != pendingMerkleRoot &&
+        _merkleRoot != merkleRoot &&
+        lastSetTime == type(uint256).max,
       "Invalid new merkle root"
     );
 

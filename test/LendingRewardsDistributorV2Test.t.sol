@@ -102,6 +102,15 @@ contract LendingRewardsDistributorV2Test is Test {
     distributor.setPendingMerkleRoot(_merkleRoot2); // success
     assertEq(_merkleRoot2, distributor.pendingMerkleRoot());
     assertEq(block.timestamp, distributor.lastSetTime());
+
+    skip(1 days);
+    distributor.acceptMerkleRoot(); // success
+    assertEq(bytes32(0), distributor.pendingMerkleRoot());
+    assertEq(type(uint).max, distributor.lastSetTime());
+    assertEq(_merkleRoot2, distributor.merkleRoot());
+
+    vm.expectRevert("Invalid new merkle root");
+    distributor.setPendingMerkleRoot(_merkleRoot2); // revert on existing merkle root
   }
 
   function test_emergencyWithdraw() public {
