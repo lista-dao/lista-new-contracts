@@ -55,7 +55,7 @@ contract LendingRewardsDistributorV2Test is Test {
     distributor.setPendingMerkleRoot(_merkleRoot); // success
 
     vm.expectRevert("Invalid new merkle root");
-    distributor.setPendingMerkleRoot(_merkleRoot);
+    distributor.setPendingMerkleRoot(_merkleRoot); // revert on duplicate
 
     assertEq(_merkleRoot, distributor.pendingMerkleRoot());
     assertEq(block.timestamp, distributor.lastSetTime());
@@ -73,6 +73,35 @@ contract LendingRewardsDistributorV2Test is Test {
 
     vm.expectRevert("Invalid pending merkle root");
     distributor.acceptMerkleRoot();
+  }
+
+  function test_pendingMerkleRoot_wrong() public {
+    bytes32 _merkleRoot1 = bytes32(0x0000000000000000000000000000000000000000000000000000000000000001);
+    bytes32 _merkleRoot2 = bytes32(0x0000000000000000000000000000000000000000000000000000000000000002);
+
+    vm.startPrank(bot);
+    vm.expectRevert("Invalid pending merkle root");
+    distributor.acceptMerkleRoot();
+
+    distributor.setPendingMerkleRoot(_merkleRoot1); // success
+
+    skip(1 hours);
+
+    vm.expectRevert("Invalid new merkle root");
+    distributor.setPendingMerkleRoot(_merkleRoot2); // revert on repeat
+    vm.stopPrank();
+
+    assertEq(_merkleRoot1, distributor.pendingMerkleRoot());
+
+    vm.prank(manager);
+    distributor.revokePendingMerkleRoot();
+    assertEq(bytes32(0), distributor.pendingMerkleRoot());
+    assertEq(type(uint).max, distributor.lastSetTime());
+
+    vm.startPrank(bot);
+    distributor.setPendingMerkleRoot(_merkleRoot2); // success
+    assertEq(_merkleRoot2, distributor.pendingMerkleRoot());
+    assertEq(block.timestamp, distributor.lastSetTime());
   }
 
   function test_emergencyWithdraw() public {
