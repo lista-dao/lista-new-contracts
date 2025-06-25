@@ -169,32 +169,4 @@ contract LendingRewardsDistributorV2Test is Test {
     vm.expectRevert("Invalid waiting period");
     distributor.changeWaitingPeriod(7 hours);
   }
-
-  function test_depositRewards() public {
-    address[] memory tokens = new address[](2);
-    tokens[0] = address(lista);
-    tokens[1] = address(lisUSD);
-
-    uint256[] memory amounts = new uint256[](2);
-    amounts[0] = 100 ether;
-    amounts[1] = 200 ether;
-
-    vm.expectRevert(); // revert if not manager
-    distributor.depositRewards(tokens, amounts);
-
-    deal(address(lista), manager, 100 ether);
-    deal(address(lisUSD), manager, 200 ether);
-
-    vm.prank(manager);
-    vm.expectRevert(); // revert if not approved
-    distributor.depositRewards(tokens, amounts);
-
-    vm.startPrank(manager);
-    lista.approve(address(distributor), 100 ether);
-    lisUSD.approve(address(distributor), 200 ether);
-    distributor.depositRewards(tokens, amounts); // success
-
-    assertEq(100 ether, lista.balanceOf(address(distributor)));
-    assertEq(200 ether, lisUSD.balanceOf(address(distributor)));
-  }
 }

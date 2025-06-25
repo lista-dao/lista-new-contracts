@@ -8,12 +8,19 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { MerkleProof } from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 
+import { ILendingRewardsDistributorV2 } from "./interface/ILendingRewardsDistributorV2.sol";
+
 /**
  * @title Emission Rewards Distributor for Lista Lending
  * @author Lista DAO
  * @dev Distribute rebate rewards to Lista Lending users
  */
-contract LendingRewardsDistributorV2 is AccessControlEnumerableUpgradeable, PausableUpgradeable, UUPSUpgradeable {
+contract LendingRewardsDistributorV2 is
+  ILendingRewardsDistributorV2,
+  AccessControlEnumerableUpgradeable,
+  PausableUpgradeable,
+  UUPSUpgradeable
+{
   using SafeERC20 for IERC20;
 
   /// @dev current merkle root
@@ -43,7 +50,6 @@ contract LendingRewardsDistributorV2 is AccessControlEnumerableUpgradeable, Paus
   event AcceptMerkleRoot(bytes32 merkleRoot, uint256 acceptedTime);
   event WaitingPeriodUpdated(uint256 waitingPeriod);
   event SetTokenWhitelist(address indexed token, bool whitelisted);
-  event DepositRewards(address indexed from, address indexed token, uint256 amount);
   event EmergencyWithdrawal(address to, address token, uint256 amount);
 
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -81,6 +87,8 @@ contract LendingRewardsDistributorV2 is AccessControlEnumerableUpgradeable, Paus
     for (uint256 i = 0; i < _tokens.length; i++) {
       require(_tokens[i] != address(0), "Invalid token address");
       tokens[_tokens[i]] = true; // initializing supported tokens
+
+      emit SetTokenWhitelist(_tokens[i], true);
     }
 
     _grantRole(DEFAULT_ADMIN_ROLE, _admin);
@@ -201,24 +209,6 @@ contract LendingRewardsDistributorV2 is AccessControlEnumerableUpgradeable, Paus
       tokens[_tokens[i]] = _whitelist[i];
 
       emit SetTokenWhitelist(_tokens[i], _whitelist[i]);
-    }
-  }
-
-  /// @dev Deposit rewards to the contract
-  /// @param _tokens Addresses of the tokens to deposit
-  /// @param _amounts Amounts of the tokens to deposit
-  function depositRewards(
-    address[] memory _tokens,
-    uint256[] memory _amounts
-  ) external onlyRole(MANAGER) whenNotPaused {
-    require(_tokens.length == _amounts.length && _tokens.length > 0, "Invalid input lengths");
-
-    for (uint256 i = 0; i < _tokens.length; i++) {
-      require(tokens[_tokens[i]], "Token not supported");
-      require(_amounts[i] > 0, "Invalid amount");
-
-      IERC20(_tokens[i]).safeTransferFrom(msg.sender, address(this), _amounts[i]);
-      emit DepositRewards(msg.sender, _tokens[i], _amounts[i]);
     }
   }
 
