@@ -40,7 +40,7 @@ contract LendingRewardsDistributorV2 is AccessControlEnumerableUpgradeable, Paus
 
   event Claimed(address indexed account, address indexed token, uint256 amount, uint256 totalAmount);
   event SetPendingMerkleRoot(bytes32 merkleRoot, uint256 lastSetTime);
-  event AcceptMerkleRoot(bytes32 merkleRoot);
+  event AcceptMerkleRoot(bytes32 merkleRoot, uint256 acceptedTime);
   event WaitingPeriodUpdated(uint256 waitingPeriod);
   event SetTokenWhitelist(address indexed token, bool whitelisted);
   event DepositRewards(address indexed from, address indexed token, uint256 amount);
@@ -168,7 +168,7 @@ contract LendingRewardsDistributorV2 is AccessControlEnumerableUpgradeable, Paus
     pendingMerkleRoot = bytes32(0);
     lastSetTime = type(uint256).max;
 
-    emit AcceptMerkleRoot(merkleRoot);
+    emit AcceptMerkleRoot(merkleRoot, block.timestamp);
   }
 
   /// @dev Revoke the pending merkle root by Manager
@@ -222,7 +222,7 @@ contract LendingRewardsDistributorV2 is AccessControlEnumerableUpgradeable, Paus
     }
   }
 
-  /// @dev manager can withdraw all LISTA from the contract in case of emergency
+  /// @dev manager can withdraw all reward tokens from the contract in case of emergency
   /// @param token Address of the token to withdraw
   function emergencyWithdraw(address token) external onlyRole(MANAGER) {
     uint256 _amount = IERC20(token).balanceOf(address(this));
