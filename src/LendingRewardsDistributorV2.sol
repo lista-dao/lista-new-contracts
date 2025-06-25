@@ -101,7 +101,7 @@ contract LendingRewardsDistributorV2 is AccessControlEnumerableUpgradeable, Paus
     address[] memory _tokens,
     uint256[] memory _totalAmounts,
     bytes32[][] memory _proofs
-  ) external whenNotPaused {
+  ) external {
     require(
       _accounts.length == _tokens.length &&
         _accounts.length == _totalAmounts.length &&
