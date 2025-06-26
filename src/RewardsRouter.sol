@@ -80,7 +80,7 @@ contract RewardsRouter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
     require(_amount > 0, "Amount must be greater than zero");
     require(ILendingRewardsDistributorV2(_distributor).tokens(_token), "Token not supported by distributor");
 
-    SafeERC20.safeTransfer(IERC20(_token), _distributor, _amount);
+    IERC20(_token).safeTransfer(_distributor, _amount);
 
     emit TransferRewards(_distributor, _token, _amount);
   }
