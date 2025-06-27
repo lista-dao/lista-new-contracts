@@ -75,7 +75,6 @@ contract RewardsRouter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
    * @param _amount Amount of tokens to transfer
    */
   function transferRewards(address _token, address _distributor, uint256 _amount) public whenNotPaused onlyRole(BOT) {
-    require(_token != address(0), "Invalid token address");
     require(_distributor != address(0) && distributors[_distributor], "Invalid distributor address");
     require(_amount > 0, "Amount must be greater than zero");
     require(ILendingRewardsDistributorV2(_distributor).tokens(_token), "Token not supported by distributor");
