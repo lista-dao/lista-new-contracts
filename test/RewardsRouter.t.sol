@@ -135,6 +135,9 @@ contract RewardsRouterTest is Test {
 
     assertTrue(!router.distributors(distributor1));
     assertTrue(router.distributors(makeAddr("distributor3")));
+
+    vm.expectRevert("No change in whitelist status");
+    router.setDistributorWhitelist(distributors, status); // revert on no change
   }
 
   function test_emergencyWithdraw() public {

@@ -114,6 +114,7 @@ contract RewardsRouter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
 
     for (uint256 i = 0; i < _distributors.length; i++) {
       require(_distributors[i] != address(0), "Invalid distributor address");
+      require(distributors[_distributors[i]] != _whitelisted[i], "No change in whitelist status");
       distributors[_distributors[i]] = _whitelisted[i];
 
       emit SetDistributorWhitelist(_distributors[i], _whitelisted[i]);
