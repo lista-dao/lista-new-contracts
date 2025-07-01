@@ -11,37 +11,35 @@ contract RewardsRouterScript is Script {
   /**
    * @dev Run the script
    * mainnet:
-   * forge script script/RewardsRouter.s.sol:RewardsRouterScript --rpc-url https://bsc-dataseed.binance.org --etherscan-api-key <bscscan-api-key> --broadcast --verify -vvv
+   * forge script script/RewardsRouter.s.sol:RewardsRouterScript --rpc-url bsc  --broadcast --verify -vvv
    *
    * testnet:
-   * forge script script/RewardsRouter.s.sol:RewardsRouterScript --broadcast --verify -vvv --rpc-url bsc_testnet --etherscan-api-key <bscscan-api-key>
+   * forge script script/RewardsRouter.s.sol:RewardsRouterScript --broadcast --verify -vvv --rpc-url bsc_testnet
    */
   function run() public {
-    uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
+    uint256 deployerPrivateKey = vm.envUint("DEPLOYER_BSC_PRIVATE_KEY");
     address deployer = vm.addr(deployerPrivateKey);
     console.log("Deployer: %s", deployer);
-    address admin = vm.envOr("ADMIN", deployer);
+
+    address admin = 0x07D274a68393E8b8a2CCf19A2ce4Ba3518735253;
     console.log("Admin: %s", admin);
-    address manager = vm.envOr("MANAGER", deployer);
+    address manager = 0x8d388136d578dCD791D081c6042284CED6d9B0c6;
     console.log("Manager: %s", manager);
-    address pauser = vm.envOr("PAUSER", deployer);
+    address pauser = 0xEEfebb1546d88EA0909435DF6f615084DD3c5Bd8;
     console.log("Pauser: %s", pauser);
-    address bot = vm.envOr("BOT", deployer);
+    address bot = 0x91fC4BA20685339781888eCA3E9E1c12d40F0e13;
     console.log("Bot: %s", bot);
 
-    address[] memory distributors = new address[](2);
+    address[] memory distributors = new address[](1);
 
-    address v1Distributor = 0x90b94D605E069569Adf33C0e73E26a83637c94B1;
-    address v2Distributor = 0x90b94D605E069569Adf33C0e73E26a83637c94B1;
-    console.log("Distributor 0: %s", v1Distributor);
-    console.log("Distributor 1: %s", v2Distributor);
-    distributors[0] = v1Distributor;
-    distributors[1] = v2Distributor;
+    address v2Distributor = 0x2993E9eA76f5839A20673e1B3cf6666ab5B3aE76;
+    console.log("Distributor V2: %s", v2Distributor);
+    distributors[0] = v2Distributor;
 
     vm.startBroadcast(deployerPrivateKey);
     address proxy = Upgrades.deployUUPSProxy(
       "RewardsRouter.sol",
-      abi.encodeCall(RewardsRouter.initialize, (deployer, deployer, deployer, deployer, distributors))
+      abi.encodeCall(RewardsRouter.initialize, (admin, manager, bot, pauser, distributors))
     );
     vm.stopBroadcast();
     console.log("RewardsRouter proxy address: %s", proxy);
