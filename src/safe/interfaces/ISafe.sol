@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 pragma solidity 0.8.24;
 
-import { Enum } from "./../Libraries/Enum.sol";
+import { Enum } from "./../libraries/Enum.sol";
 import { IFallbackManager } from "./IFallbackManager.sol";
 import { IGuardManager } from "./IGuardManager.sol";
 import { IModuleManager } from "./IModuleManager.sol";
