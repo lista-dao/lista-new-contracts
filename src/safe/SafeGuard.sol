@@ -64,8 +64,6 @@ contract SafeGuard is BaseTransactionGuard {
     _;
   }
 
-  function addMessageHash(address _vault, uint256 _nonce, bytes32 _hash) external onlyAuditor(_vault) {}
-
   function addMessageHash(
     address _vault,
     uint256[] memory _nonce_list,
