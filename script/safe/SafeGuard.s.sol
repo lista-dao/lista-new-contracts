@@ -13,11 +13,9 @@ contract SafeGuardScript is Script {
     uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
     address deployer = vm.addr(deployerPrivateKey);
     console.log("Deployer: %s", deployer);
-    address admin = vm.envOr("ADMIN", deployer);
-    console.log("Admin: %s", admin);
 
     vm.startBroadcast(deployerPrivateKey);
-    SafeGuard safe = new SafeGuard(admin);
+    SafeGuard safe = new SafeGuard();
     vm.stopBroadcast();
     console.log("SafeGuard address: %s", address(safe));
   }

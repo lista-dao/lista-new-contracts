@@ -1,9 +1,8 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-3.0-only
 /* solhint-disable one-contract-per-file */
-pragma solidity ^0.8.20;
+pragma solidity 0.8.24;
 
-import "@openzeppelin/contracts/interfaces/IERC165.sol";
-
+import { IERC165 } from "./interfaces/IERC165.sol";
 import { Enum } from "./libraries/Enum.sol";
 
 /**
