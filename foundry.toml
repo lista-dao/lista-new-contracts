@@ -15,7 +15,9 @@ extra_output = ["storageLayout"]
 [rpc_endpoints]
 bsc_testnet = "https://bsc-testnet-dataseed.bnbchain.org"
 bsc = "https://bsc-dataseed.binance.org"
+sepolia = "https://sepolia.infura.io/v3/${INFURA_API_KEY}"
 
 [etherscan]
 bsc = { key = "${BSCSCAN_API_KEY}" }
 bsc_testnet = { key = "${BSCSCAN_API_KEY}" }
+sepolia = { key = "${ETHERSCAN_API_KEY}" }
