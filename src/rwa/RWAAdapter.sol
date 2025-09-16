@@ -315,8 +315,12 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   function _requestDepositToVault(uint256 amountUSDC) private {
     // approve amount to vault
     IERC20(USDC).safeIncreaseAllowance(vault, amountUSDC);
+
     // request deposit to vault
+    // check USDC balance decreased
+    uint256 before = IERC20(USDC).balanceOf(address(this));
     IAsyncVault(vault).requestDeposit(amountUSDC, address(this), address(this));
+    require(before - IERC20(USDC).balanceOf(address(this)) == amountUSDC, "USDC request deposit failed");
 
     emit RequestDepositToVault(amountUSDC);
   }

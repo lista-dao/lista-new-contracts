@@ -101,10 +101,6 @@ contract RWAEarnPoolTest is Test {
     assertEq(USD1.balanceOf(adapter), 0.5 ether, "adapter USD1 balance after finishWithdraw");
     assertEq(earnPool.confirmedBatchId(), 1, "earnPool confirmedBatchId after finishWithdraw");
 
-    uint256[] memory claimableIndexes = earnPool.getClaimableRequestIndexes(user);
-    assertEq(claimableIndexes.length, 1, "user claimable request indexes length");
-    assertEq(claimableIndexes[0], 0, "user claimable request indexs");
-
     vm.startPrank(user);
     earnPool.requestWithdraw(0.5 ether, 0, user);
     vm.stopPrank();
@@ -116,11 +112,6 @@ contract RWAEarnPoolTest is Test {
     assertEq(USD1.balanceOf(address(earnPool)), 1 ether, "earnPool USD1 balance after finishWithdraw");
     assertEq(USD1.balanceOf(adapter), 0 ether, "adapter USD1 balance after finishWithdraw");
     assertEq(earnPool.confirmedBatchId(), 2, "earnPool confirmedBatchId after finishWithdraw");
-
-    claimableIndexes = earnPool.getClaimableRequestIndexes(user);
-    assertEq(claimableIndexes.length, 2, "user claimable request indexes length");
-    assertEq(claimableIndexes[0], 0, "user claimable request indexs");
-    assertEq(claimableIndexes[1], 1, "user claimable request indexs");
   }
 
   function test_claimWithdraw() public {
@@ -147,8 +138,6 @@ contract RWAEarnPoolTest is Test {
 
     RWAEarnPool.WithdrawalRequest[] memory requests = earnPool.getUserWithdrawalRequests(user);
     assertEq(requests.length, 0, "user withdrawal requests length");
-    uint256[] memory claimableIndexes = earnPool.getClaimableRequestIndexes(user);
-    assertEq(claimableIndexes.length, 0, "user claimable request indexes length");
   }
 
   function test_notifyInterest() public {
@@ -162,15 +151,15 @@ contract RWAEarnPoolTest is Test {
 
     skip(1 days);
     assertEq(earnPool.totalAssets(), 1.1 ether, "earnPool totalAssets after notifyInterest 1 days");
-    assertEq(earnPool.getUnvestAmount(), 0.6 ether, "earnPool unvestAmount after notifyInterest 1 days");
+    assertEq(earnPool.getUnvestedAmount(), 0.6 ether, "earnPool unvestAmount after notifyInterest 1 days");
 
     skip(7 days);
     assertEq(earnPool.totalAssets(), 1.7 ether, "earnPool totalAssets after notifyInterest 7 days");
-    assertEq(earnPool.getUnvestAmount(), 0, "earnPool unvestAmount after notifyInterest 7 days");
+    assertEq(earnPool.getUnvestedAmount(), 0, "earnPool unvestAmount after notifyInterest 7 days");
 
     skip(8 days);
     assertEq(earnPool.totalAssets(), 1.7 ether, "earnPool totalAssets after notifyInterest 8 days");
-    assertEq(earnPool.getUnvestAmount(), 0, "earnPool unvestAmount after notifyInterest 8 days");
+    assertEq(earnPool.getUnvestedAmount(), 0, "earnPool unvestAmount after notifyInterest 8 days");
   }
 
   function test_setWhitelist() public {
@@ -190,7 +179,7 @@ contract RWAEarnPoolTest is Test {
     address[] memory whitelists = earnPool.getWhiteList();
     assertEq(whitelists.length, 1, "whitelist length");
     assertEq(whitelists[0], user, "whitelist address");
-    assertEq(earnPool.isInWhiteList(user), true, "is user in whitelist");
+    assertEq(earnPool.isInWhitelist(user), true, "is user in whitelist");
   }
 
   function test_fee() public {

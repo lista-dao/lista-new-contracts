@@ -68,7 +68,7 @@ contract RWAEarnPool is
   // adapter address
   address public adapter;
   // deposit whitelist
-  EnumerableSet.AddressSet private whiteList;
+  EnumerableSet.AddressSet private whitelist;
 
   /* constants */
   bytes32 public constant MANAGER = keccak256("MANAGER"); // manager role
@@ -155,7 +155,7 @@ contract RWAEarnPool is
   function deposit(uint256 amount, uint256 shares, address receiver) external whenNotPaused nonReentrant {
     require(amount > 0 || shares > 0, "amount and shares is zero");
     require(receiver != address(0), "receiver is zero address");
-    require(isInWhiteList(receiver), "receiver not in whitelist");
+    require(isInWhitelist(receiver), "receiver not in whitelist");
 
     // calculate shares or amount
     if (amount > 0) {
@@ -295,7 +295,7 @@ contract RWAEarnPool is
     userTotalAssets = totalAssets();
 
     // update period rewards and period start
-    periodRewards = getUnvestAmount() + amount;
+    periodRewards = getUnvestedAmount() + amount;
     periodStart = block.timestamp;
 
     emit NotifyInterest(amount);
@@ -305,7 +305,7 @@ contract RWAEarnPool is
    * @dev get unvest amount
    * @return The amount of unvest
    */
-  function getUnvestAmount() public view returns (uint256) {
+  function getUnvestedAmount() public view returns (uint256) {
     // if no rewards or period finished, return 0
     if (block.timestamp >= periodStart + REWARD_DURATION) {
       return 0;
@@ -349,35 +349,8 @@ contract RWAEarnPool is
    * @return The amount of total assets
    */
   function totalAssets() public view returns (uint256) {
-    // total assets = userTotalAssets + periodRewards - getUnvestAmount()
-    return userTotalAssets + periodRewards - getUnvestAmount();
-  }
-
-  /**
-   * @dev get claimable request indexes of a user
-   * @param user The address of the user
-   * @return The indexes of the claimable requests
-   */
-  function getClaimableRequestIndexes(address user) external view returns (uint256[] memory) {
-    WithdrawalRequest[] storage userRequests = userWithdrawalRequests[user];
-    uint256 count = 0;
-    // count claimable requests
-    for (uint256 i = 0; i < userRequests.length; i++) {
-      if (userRequests[i].batchId <= confirmedBatchId) {
-        count++;
-      }
-    }
-
-    uint256[] memory indexes = new uint256[](count);
-    uint256 idx = 0;
-    // get claimable request indexes
-    for (uint256 i = 0; i < userRequests.length; i++) {
-      if (userRequests[i].batchId <= confirmedBatchId) {
-        indexes[idx] = i;
-        idx++;
-      }
-    }
-    return indexes;
+    // total assets = userTotalAssets + periodRewards - getUnvestedAmount()
+    return userTotalAssets + periodRewards - getUnvestedAmount();
   }
 
   function getUserWithdrawalRequests(address user) external view returns (WithdrawalRequest[] memory) {
@@ -389,8 +362,8 @@ contract RWAEarnPool is
    * @param user The address of the user
    * @return True if the user is in the whitelist, false otherwise
    */
-  function isInWhiteList(address user) public view returns (bool) {
-    return whiteList.length() == 0 || whiteList.contains(user);
+  function isInWhitelist(address user) public view returns (bool) {
+    return whitelist.length() == 0 || whitelist.contains(user);
   }
 
   /**
@@ -398,7 +371,7 @@ contract RWAEarnPool is
    * @return The addresses in the whitelist
    */
   function getWhiteList() external view returns (address[] memory) {
-    return whiteList.values();
+    return whitelist.values();
   }
 
   /* ADMIN FUNCTIONS */
@@ -433,11 +406,11 @@ contract RWAEarnPool is
    */
   function setWhiteList(address user, bool ok) external onlyRole(MANAGER) {
     require(user != address(0), "user is zero address");
-    require(whiteList.contains(user) != ok, "same status");
+    require(whitelist.contains(user) != ok, "same status");
     if (ok) {
-      whiteList.add(user);
+      whitelist.add(user);
     } else {
-      whiteList.remove(user);
+      whitelist.remove(user);
     }
   }
 
