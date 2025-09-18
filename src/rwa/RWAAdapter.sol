@@ -131,7 +131,9 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     _updateVaultAssets();
 
     // mint vault shares
+    uint256 before = IERC20(shareToken).balanceOf(address(this));
     IAsyncVault(vault).mint(maxMint, address(this));
+    require(IERC20(shareToken).balanceOf(address(this)) - before == maxMint, "mint shares failed");
 
     // update lastVaultTotalAssets
     lastVaultTotalAssets = getVaultTotalAssets();
@@ -169,9 +171,11 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     // calculate shares to redeem
     uint256 redeemShares = IAsyncVault(vault).convertToShares(amountUSDC);
     // approve shares to vault
-    IERC20(shareToken).approve(vault, redeemShares);
+    IERC20(shareToken).safeIncreaseAllowance(vault, redeemShares);
     // request redeem from vault
+    uint256 before = IERC20(shareToken).balanceOf(address(this));
     IAsyncVault(vault).requestRedeem(redeemShares, address(this), address(this));
+    require(before - IERC20(shareToken).balanceOf(address(this)) == redeemShares, "request redeem failed");
 
     // update lastVaultTotalAssets
     lastVaultTotalAssets = getVaultTotalAssets();
@@ -305,9 +309,10 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
    * @dev allows manager to withdraw reward tokens for emergency or recover any other mistaken ERC20 tokens.
    * @param token ERC20 token address
    * @param amount token amount
+   * @param receiver receiver address
    */
-  function emergencyWithdraw(address token, uint256 amount) external onlyRole(MANAGER) {
-    IERC20(token).safeTransfer(msg.sender, amount);
+  function emergencyWithdraw(address token, uint256 amount, address receiver) external onlyRole(MANAGER) {
+    IERC20(token).safeTransfer(receiver, amount);
     emit EmergencyWithdraw(token, amount);
   }
 

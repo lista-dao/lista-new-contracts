@@ -95,9 +95,10 @@ contract OTCManager is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
    * @dev allows manager to withdraw reward tokens for emergency or recover any other mistaken ERC20 tokens.
    * @param token ERC20 token address
    * @param amount token amount
+   * @param receiver address to receive the tokens
    */
-  function emergencyWithdraw(address token, uint256 amount) external onlyRole(MANAGER) {
-    IERC20(token).safeTransfer(msg.sender, amount);
+  function emergencyWithdraw(address token, uint256 amount, address receiver) external onlyRole(MANAGER) {
+    IERC20(token).safeTransfer(receiver, amount);
     emit EmergencyWithdraw(token, amount);
   }
 

@@ -201,7 +201,7 @@ contract RWAEarnPool is
         _transfer(msg.sender, feeReceiver, feeShares);
 
         shares -= feeShares;
-        amount -= convertToAssets(feeShares);
+        amount = convertToAssets(shares);
       }
     }
 
@@ -239,6 +239,9 @@ contract RWAEarnPool is
     require(msg.sender == adapter, "only adapter can call");
     require(amount > 0, "amount is zero");
 
+    // transfer asset from adapter
+    IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
+
     // update withdraw quota
     withdrawQuota += amount;
 
@@ -254,9 +257,6 @@ contract RWAEarnPool is
       withdrawQuota -= withdrawAmount;
       emit FinishWithdraw(confirmedBatchId, withdrawAmount);
     }
-
-    // transfer asset from adapter
-    IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
   }
 
   /**
@@ -322,12 +322,8 @@ contract RWAEarnPool is
    * @return The amount of shares
    */
   function convertToShares(uint256 assets) public view returns (uint256) {
-    // if no shares or no assets, return assets
-    if (totalSupply == 0 || totalAssets() == 0) {
-      return assets;
-    }
     // shares = assets * totalSupply / totalAssets
-    return assets.mulDiv(totalSupply, totalAssets());
+    return assets.mulDiv(totalSupply + 1, totalAssets() + 1);
   }
 
   /**
@@ -336,12 +332,8 @@ contract RWAEarnPool is
    * @return The amount of assets
    */
   function convertToAssets(uint256 shares) public view returns (uint256) {
-    // if no shares or no assets, return shares
-    if (totalSupply == 0 || totalAssets() == 0) {
-      return shares;
-    }
     // assets = shares * totalAssets / totalSupply
-    return shares.mulDiv(totalAssets(), totalSupply);
+    return shares.mulDiv(totalAssets() + 1, totalSupply + 1);
   }
 
   /**
@@ -353,8 +345,21 @@ contract RWAEarnPool is
     return userTotalAssets + periodRewards - getUnvestedAmount();
   }
 
+  /**
+   * @dev get user withdrawal requests
+   * @param user The address of the user
+   * @return The withdrawal requests of the user
+   */
   function getUserWithdrawalRequests(address user) external view returns (WithdrawalRequest[] memory) {
     return userWithdrawalRequests[user];
+  }
+
+  /**
+   * @dev get decimals of the pool
+   * @return The decimals of the pool
+   */
+  function decimals() external view returns (uint8) {
+    return 18;
   }
 
   /**
@@ -418,9 +423,10 @@ contract RWAEarnPool is
    * @dev allows manager to withdraw reward tokens for emergency or recover any other mistaken ERC20 tokens.
    * @param token ERC20 token address
    * @param amount token amount
+   * @param receiver address to receive the tokens
    */
-  function emergencyWithdraw(address token, uint256 amount) external onlyRole(MANAGER) {
-    IERC20(token).safeTransfer(msg.sender, amount);
+  function emergencyWithdraw(address token, uint256 amount, address receiver) external onlyRole(MANAGER) {
+    IERC20(token).safeTransfer(receiver, amount);
     emit EmergencyWithdraw(token, amount);
   }
 
