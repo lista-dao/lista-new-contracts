@@ -12,4 +12,22 @@ interface IAsyncVault {
   function maxRedeem(address account) external view returns (uint256);
   function mint(uint256 shares, address receiver) external returns (uint256);
   function redeem(uint256 shares, address receiver, address owner) external returns (uint256);
+  function claimCancelDepositRequest(
+    uint256 requestId,
+    address receiver,
+    address controller
+  ) external returns (uint256 assets);
+  function claimCancelRedeemRequest(
+    uint256 requestId,
+    address receiver,
+    address controller
+  ) external returns (uint256 shares);
+  function claimableCancelDepositRequest(
+    uint256 requestId,
+    address controller
+  ) external view returns (uint256 claimableAssets);
+  function claimableCancelRedeemRequest(
+    uint256 requestId,
+    address controller
+  ) external view returns (uint256 claimableShares);
 }

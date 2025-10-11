@@ -23,6 +23,9 @@ contract OTCManager is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
 
   /* EVENTS */
   event EmergencyWithdraw(address token, uint256 amount);
+  event OTCWalletChanged(address newOTCWallet);
+  event TransferToAdapter(address token, uint256 amount);
+  event SwapToken(address token, uint256 amount);
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -56,6 +59,7 @@ contract OTCManager is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     require(_manager != address(0), "Manager is zero address");
     require(_adapter != address(0), "Adapter is zero address");
     require(_otcWallet != address(0), "OTC wallet is zero address");
+    require(_bot != address(0), "Bot is zero address");
 
     __AccessControlEnumerable_init();
 
@@ -78,6 +82,8 @@ contract OTCManager is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     require(token == USD1 || token == USDC, "Invalid token");
     IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
     IERC20(token).safeTransfer(otcWallet, amount);
+
+    emit SwapToken(token, amount);
   }
 
   /**
@@ -89,17 +95,29 @@ contract OTCManager is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     require(amount > 0, "Amount must be greater than zero");
     require(token == USD1 || token == USDC, "Invalid token");
     IERC20(token).safeTransfer(adapter, amount);
+
+    emit TransferToAdapter(token, amount);
   }
 
   /**
-   * @dev allows manager to withdraw reward tokens for emergency or recover any other mistaken ERC20 tokens.
+   * @dev allows manager to withdraw tokens for emergency
    * @param token ERC20 token address
    * @param amount token amount
    * @param receiver address to receive the tokens
    */
   function emergencyWithdraw(address token, uint256 amount, address receiver) external onlyRole(MANAGER) {
+    require(amount > 0, "Amount must be greater than zero");
+    require(receiver != address(0), "Receiver is zero address");
     IERC20(token).safeTransfer(receiver, amount);
     emit EmergencyWithdraw(token, amount);
+  }
+
+  function setOTCWallet(address _otcWallet) external onlyRole(MANAGER) {
+    require(_otcWallet != address(0), "OTC wallet is zero address");
+    require(_otcWallet != otcWallet, "OTC wallet is the same");
+    otcWallet = _otcWallet;
+
+    emit OTCWalletChanged(_otcWallet);
   }
 
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}

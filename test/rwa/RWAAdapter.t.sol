@@ -242,4 +242,95 @@ contract RWAAdapterTest is Test {
     assertEq(adapter.toUSD1LossRate(), 0.05 ether, "toUSD1LossRate");
     assertEq(adapter.USDCToUSD1(1 ether), 0.95 ether, "USDCToUSD1");
   }
+
+  function test_depositRewardsBeforeDepositToVault() public {
+    USDC.mint(manager, 1 ether);
+    USD1.mint(user, 1 ether);
+
+    // deposit 1 USD1 to earnPool
+    vm.startPrank(user);
+    USD1.approve(address(earnPool), 1 ether);
+    earnPool.deposit(1 ether, 0, user);
+    vm.stopPrank();
+
+    // deposit 1 USDC as rewards to earnPool
+    vm.startPrank(manager);
+    USDC.approve(address(adapter), 1 ether);
+    adapter.depositRewards(1 ether);
+    vm.stopPrank();
+
+    assertEq(earnPool.periodRewards(), 1 ether, "earnPool periodRewards");
+
+    // deposit 1 USDC to vault
+    USDC.mint(address(adapter), 1 ether);
+    vm.startPrank(bot);
+    adapter.requestDepositToVault(1 ether);
+    adapter.depositToVault();
+    vm.stopPrank();
+
+    assertEq(earnPool.periodRewards(), 1 ether, "earnPool periodRewards");
+
+    // deposit 1 USDC to vault again
+    USDC.mint(address(adapter), 1 ether);
+    vm.startPrank(bot);
+    adapter.requestDepositToVault(1 ether);
+    adapter.depositToVault();
+    vm.stopPrank();
+
+    assertEq(earnPool.periodRewards(), 1 ether, "earnPool periodRewards");
+  }
+
+  function test_claimCancelDepositRequest() public {
+    USDC.mint(address(vault), 1 ether);
+
+    vault.setClaimableAssets(1 ether);
+    assertEq(vault.claimableAssets(), 1 ether, "vault claimableAssets");
+    assertEq(
+      vault.claimableCancelDepositRequest(0, address(adapter)),
+      1 ether,
+      "vault claimableCancelDepositRequest return value"
+    );
+
+    vm.startPrank(bot);
+    adapter.claimCancelDepositRequest();
+    vm.stopPrank();
+
+    assertEq(USDC.balanceOf(address(adapter)), 1 ether, "adapter USDC balance after claim");
+    assertEq(USDC.balanceOf(address(vault)), 0, "vault USDC balance after claim");
+  }
+
+  function test_claimCancelRedeemRequest() public {
+    shareToken.mint(address(vault), 1 ether);
+
+    vault.setClaimableAssets(1 ether);
+    assertEq(
+      vault.claimableCancelRedeemRequest(0, address(adapter)),
+      1 ether,
+      "vault claimableCancelRedeemRequest return value"
+    );
+
+    vm.startPrank(bot);
+    adapter.claimCancelRedeemRequest();
+    vm.stopPrank();
+
+    assertEq(shareToken.balanceOf(address(adapter)), 1 ether, "adapter shareToken balance after claim");
+    assertEq(shareToken.balanceOf(address(vault)), 0, "vault shareToken balance after claim");
+  }
+
+  function test_newAssetLessThanOldAsset() public {
+    USDC.mint(address(adapter), 1 ether);
+
+    vm.startPrank(bot);
+    adapter.requestDepositToVault(1 ether);
+    adapter.depositToVault();
+    vm.stopPrank();
+
+    vault.setConvertRate(0.9 ether);
+
+    vm.startPrank(bot);
+    adapter.updateVaultAssets();
+    vm.stopPrank();
+
+    assertEq(adapter.lastVaultTotalAssets(), 1 ether, "adapter vaultAssets");
+  }
 }

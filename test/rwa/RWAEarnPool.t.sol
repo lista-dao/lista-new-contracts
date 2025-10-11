@@ -206,7 +206,66 @@ contract RWAEarnPoolTest is Test {
   function depositToEarnPool(address _user, uint256 amount) private {
     vm.startPrank(_user);
     USD1.approve(address(earnPool), type(uint256).max);
-    earnPool.deposit(1 ether, 0, _user);
+    earnPool.deposit(amount, 0, _user);
     vm.stopPrank();
+  }
+
+  function test_withdrawMoreThanDeposit() public {
+    USD1.mint(user, 1 ether);
+
+    depositToEarnPool(user, 1 ether);
+
+    vm.startPrank(adapter);
+    earnPool.notifyInterest(1 ether);
+    vm.stopPrank();
+
+    skip(7 days);
+
+    vm.startPrank(user);
+    earnPool.requestWithdraw(0, 1 ether, user);
+    vm.stopPrank();
+
+    assertEq(earnPool.balanceOf(user), 0, "user earnPool shares after requestWithdraw");
+
+    RWAEarnPool.WithdrawalRequest[] memory requests = earnPool.getUserWithdrawalRequests(user);
+
+    assertEq(requests.length, 1, "user withdrawal requests length");
+    assertEq(requests[0].amount, 2 ether - 1, "user withdrawal request shares");
+  }
+
+  function test_requestWithdrawWithoutShares() public {
+    USD1.mint(user, 1);
+
+    depositToEarnPool(user, 1);
+
+    vm.startPrank(user);
+    earnPool.requestWithdraw(1, 0, user);
+    vm.stopPrank();
+
+    assertEq(earnPool.balanceOf(user), 0, "user earnPool shares after requestWithdraw");
+  }
+
+  function test_withdrawAllFee() public {
+    USD1.mint(user, 1 ether);
+
+    depositToEarnPool(user, 1 ether);
+
+    vm.startPrank(manager);
+    earnPool.setWithdrawFeeRate(0.1 ether); // 10%
+    earnPool.setFeeReceiver(feeReceiver);
+    vm.stopPrank();
+
+    vm.startPrank(user);
+    earnPool.requestWithdraw(0, 1 ether, user);
+    vm.stopPrank();
+
+    assertEq(earnPool.balanceOf(user), 0, "user earnPool shares after requestWithdraw");
+    assertEq(earnPool.balanceOf(feeReceiver), 0.1 ether, "feeReceiver earnPool shares after requestWithdraw");
+
+    vm.startPrank(feeReceiver);
+    earnPool.requestWithdraw(0, 0.1 ether, feeReceiver);
+    vm.stopPrank();
+
+    assertEq(earnPool.balanceOf(feeReceiver), 0, "feeReceiver earnPool shares after requestWithdraw");
   }
 }

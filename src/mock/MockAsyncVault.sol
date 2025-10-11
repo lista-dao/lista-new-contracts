@@ -16,6 +16,8 @@ contract MockAsyncVault is IAsyncVault {
   address public asset;
   MockERC20 public shareToken;
 
+  uint256 public claimableAssets;
+
   uint256 public constant PRECISION = 1e18;
 
   constructor(address _asset, address _shareToken, uint256 _convertRate) {
@@ -75,5 +77,35 @@ contract MockAsyncVault is IAsyncVault {
 
   function setConvertRate(uint256 _convertRate) external {
     convertRate = _convertRate;
+  }
+
+  function setClaimableAssets(uint256 _claimableAssets) external {
+    claimableAssets = _claimableAssets;
+  }
+
+  function claimCancelDepositRequest(
+    uint256 requestId,
+    address receiver,
+    address controller
+  ) external returns (uint256 assets) {
+    IERC20(asset).transfer(receiver, claimableAssets);
+    return claimableAssets;
+  }
+
+  function claimCancelRedeemRequest(
+    uint256 requestId,
+    address receiver,
+    address controller
+  ) external returns (uint256 shares) {
+    shareToken.transfer(receiver, claimableAssets);
+    return claimableAssets;
+  }
+
+  function claimableCancelDepositRequest(uint256 requestId, address controller) external view returns (uint256) {
+    return claimableAssets;
+  }
+
+  function claimableCancelRedeemRequest(uint256 requestId, address controller) external view returns (uint256) {
+    return claimableAssets;
   }
 }
