@@ -328,22 +328,6 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     emit EmergencyWithdraw(token, amount);
   }
 
-  /**
-   * @dev claim cancel deposit request from vault
-   */
-  function claimCancelDepositRequest() external onlyRole(BOT) {
-    require(IAsyncVault(vault).claimableCancelDepositRequest(0, address(this)) > 0, "No claimable deposit");
-    IAsyncVault(vault).claimCancelDepositRequest(0, address(this), address(this));
-  }
-
-  /**
-   * @dev claim cancel redeem request from vault
-   */
-  function claimCancelRedeemRequest() external onlyRole(BOT) {
-    require(IAsyncVault(vault).claimableCancelRedeemRequest(0, address(this)) > 0, "No claimable redeem");
-    IAsyncVault(vault).claimCancelRedeemRequest(0, address(this), address(this));
-  }
-
   /* INTERNAL FUNCTIONS */
   function _requestDepositToVault(uint256 amountUSDC) private {
     // approve amount to vault

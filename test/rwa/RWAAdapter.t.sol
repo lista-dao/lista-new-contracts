@@ -280,43 +280,6 @@ contract RWAAdapterTest is Test {
     assertEq(earnPool.periodRewards(), 1 ether, "earnPool periodRewards");
   }
 
-  function test_claimCancelDepositRequest() public {
-    USDC.mint(address(vault), 1 ether);
-
-    vault.setClaimableAssets(1 ether);
-    assertEq(vault.claimableAssets(), 1 ether, "vault claimableAssets");
-    assertEq(
-      vault.claimableCancelDepositRequest(0, address(adapter)),
-      1 ether,
-      "vault claimableCancelDepositRequest return value"
-    );
-
-    vm.startPrank(bot);
-    adapter.claimCancelDepositRequest();
-    vm.stopPrank();
-
-    assertEq(USDC.balanceOf(address(adapter)), 1 ether, "adapter USDC balance after claim");
-    assertEq(USDC.balanceOf(address(vault)), 0, "vault USDC balance after claim");
-  }
-
-  function test_claimCancelRedeemRequest() public {
-    shareToken.mint(address(vault), 1 ether);
-
-    vault.setClaimableAssets(1 ether);
-    assertEq(
-      vault.claimableCancelRedeemRequest(0, address(adapter)),
-      1 ether,
-      "vault claimableCancelRedeemRequest return value"
-    );
-
-    vm.startPrank(bot);
-    adapter.claimCancelRedeemRequest();
-    vm.stopPrank();
-
-    assertEq(shareToken.balanceOf(address(adapter)), 1 ether, "adapter shareToken balance after claim");
-    assertEq(shareToken.balanceOf(address(vault)), 0, "vault shareToken balance after claim");
-  }
-
   function test_newAssetLessThanOldAsset() public {
     USDC.mint(address(adapter), 1 ether);
 
