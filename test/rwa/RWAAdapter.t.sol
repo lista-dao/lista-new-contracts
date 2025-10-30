@@ -242,4 +242,58 @@ contract RWAAdapterTest is Test {
     assertEq(adapter.toUSD1LossRate(), 0.05 ether, "toUSD1LossRate");
     assertEq(adapter.USDCToUSD1(1 ether), 0.95 ether, "USDCToUSD1");
   }
+
+  function test_depositRewardsBeforeDepositToVault() public {
+    USDC.mint(manager, 1 ether);
+    USD1.mint(user, 1 ether);
+
+    // deposit 1 USD1 to earnPool
+    vm.startPrank(user);
+    USD1.approve(address(earnPool), 1 ether);
+    earnPool.deposit(1 ether, 0, user);
+    vm.stopPrank();
+
+    // deposit 1 USDC as rewards to earnPool
+    vm.startPrank(manager);
+    USDC.approve(address(adapter), 1 ether);
+    adapter.depositRewards(1 ether);
+    vm.stopPrank();
+
+    assertEq(earnPool.periodRewards(), 1 ether, "earnPool periodRewards");
+
+    // deposit 1 USDC to vault
+    USDC.mint(address(adapter), 1 ether);
+    vm.startPrank(bot);
+    adapter.requestDepositToVault(1 ether);
+    adapter.depositToVault();
+    vm.stopPrank();
+
+    assertEq(earnPool.periodRewards(), 1 ether, "earnPool periodRewards");
+
+    // deposit 1 USDC to vault again
+    USDC.mint(address(adapter), 1 ether);
+    vm.startPrank(bot);
+    adapter.requestDepositToVault(1 ether);
+    adapter.depositToVault();
+    vm.stopPrank();
+
+    assertEq(earnPool.periodRewards(), 1 ether, "earnPool periodRewards");
+  }
+
+  function test_newAssetLessThanOldAsset() public {
+    USDC.mint(address(adapter), 1 ether);
+
+    vm.startPrank(bot);
+    adapter.requestDepositToVault(1 ether);
+    adapter.depositToVault();
+    vm.stopPrank();
+
+    vault.setConvertRate(0.9 ether);
+
+    vm.startPrank(bot);
+    adapter.updateVaultAssets();
+    vm.stopPrank();
+
+    assertEq(adapter.lastVaultTotalAssets(), 1 ether, "adapter vaultAssets");
+  }
 }

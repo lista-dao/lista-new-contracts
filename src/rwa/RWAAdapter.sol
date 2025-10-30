@@ -42,6 +42,7 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   bytes32 public constant BOT = keccak256("BOT");
 
   uint256 public constant PRECISION = 1e18;
+  uint256 public constant MAX_FEE_RATE = 3 * 1e17; // 30%
 
   /* IMMUTABLE */
   address public immutable USD1;
@@ -53,6 +54,10 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   event MintVaultShares(uint256 shares);
   event WithdrawFromVault(uint256 shares, uint256 totalAmount, uint256 feeAmount);
   event EmergencyWithdraw(address token, uint256 amount);
+  event SetFeeReceiver(address feeReceiver);
+  event SetFeeRate(uint256 feeRate);
+  event SetToUSDCLossRate(uint256 toUSDCLossRate);
+  event SetToUSD1LossRate(uint256 toUSD1LossRate);
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -147,6 +152,7 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
    */
   function depositRewards(uint256 amountUSDC) external onlyRole(MANAGER) {
     require(amountUSDC > 0, "Amount must be greater than zero");
+    require(IRWAEarnPool(earnPool).totalSupply() > 0, "Earn pool has no shares");
 
     // transfer USDC from manager to this contract
     IERC20(USDC).safeTransferFrom(msg.sender, address(this), amountUSDC);
@@ -249,6 +255,7 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   function setFeeReceiver(address _feeReceiver) external onlyRole(MANAGER) {
     require(_feeReceiver != address(0), "feeReceiver is zero");
     feeReceiver = _feeReceiver;
+    emit SetFeeReceiver(_feeReceiver);
   }
 
   /**
@@ -256,8 +263,9 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
    * @param _feeRate The fee rate (18 decimals)
    */
   function setFeeRate(uint256 _feeRate) external onlyRole(MANAGER) {
-    require(_feeRate <= PRECISION, "feeRate too high"); // max 10%
+    require(_feeRate <= MAX_FEE_RATE, "feeRate too high"); // max 30%
     feeRate = _feeRate;
+    emit SetFeeRate(_feeRate);
   }
 
   /**
@@ -267,6 +275,7 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   function setToUSDCLossRate(uint256 _toUSDCLossRate) external onlyRole(MANAGER) {
     require(_toUSDCLossRate <= PRECISION, "toUSDCLossRate too high");
     toUSDCLossRate = _toUSDCLossRate;
+    emit SetToUSDCLossRate(_toUSDCLossRate);
   }
 
   /**
@@ -276,6 +285,7 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   function setToUSD1LossRate(uint256 _toUSD1LossRate) external onlyRole(MANAGER) {
     require(_toUSD1LossRate <= PRECISION, "toUSD1LossRate too high");
     toUSD1LossRate = _toUSD1LossRate;
+    emit SetToUSD1LossRate(_toUSD1LossRate);
   }
 
   /**
@@ -306,12 +316,14 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   }
 
   /**
-   * @dev allows manager to withdraw reward tokens for emergency or recover any other mistaken ERC20 tokens.
+   * @dev allows manager to withdraw tokens for emergency
    * @param token ERC20 token address
    * @param amount token amount
    * @param receiver receiver address
    */
   function emergencyWithdraw(address token, uint256 amount, address receiver) external onlyRole(MANAGER) {
+    require(amount > 0, "Amount must be greater than zero");
+    require(receiver != address(0), "Receiver is zero address");
     IERC20(token).safeTransfer(receiver, amount);
     emit EmergencyWithdraw(token, amount);
   }
@@ -332,6 +344,10 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
 
   function _updateVaultAssets() private {
     uint256 newVaultTotalAssets = getVaultTotalAssets();
+    if (newVaultTotalAssets <= lastVaultTotalAssets) {
+      // no profit
+      return;
+    }
     uint256 totalInterest = newVaultTotalAssets - lastVaultTotalAssets;
 
     // charge fee, asset is USDC

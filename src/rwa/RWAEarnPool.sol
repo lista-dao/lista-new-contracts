@@ -75,6 +75,7 @@ contract RWAEarnPool is
   bytes32 public constant PAUSER = keccak256("PAUSER"); // pauser role
   uint256 public constant PRECISION = 1 ether; // precision
   uint256 constant REWARD_DURATION = 1 weeks; // reward duration is 1 week
+  uint256 constant MAX_WITHDRAW_FEE_RATE = 0.1 ether; // max withdraw fee rate is 10%
 
   /* EVENTS */
   event Transfer(address indexed from, address indexed to, uint256 value);
@@ -93,6 +94,7 @@ contract RWAEarnPool is
   event SetFeeReceiver(address feeReceiver);
   event SetWithdrawFeeRate(uint256 withdrawFeeRate);
   event EmergencyWithdraw(address token, uint256 amount);
+  event WhiteListChanged(address user, bool ok);
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -163,6 +165,9 @@ contract RWAEarnPool is
     } else {
       amount = convertToAssets(shares);
     }
+
+    require(shares > 0, "shares is zero");
+
     // mint shares to user
     _mint(receiver, shares);
     userTotalAssets += amount;
@@ -188,12 +193,18 @@ contract RWAEarnPool is
     } else {
       amount = convertToAssets(shares);
     }
+    // if shares not enough, round up
+    if (convertToAssets(shares) < amount) {
+      shares += 1;
+    }
+
+    require(shares > 0, "shares is zero");
 
     require(balanceOf[msg.sender] >= shares, "insufficient shares");
 
     uint256 feeShares;
     // charge withdraw fee
-    if (withdrawFeeRate > 0 && feeReceiver != address(0)) {
+    if (withdrawFeeRate > 0 && feeReceiver != address(0) && msg.sender != feeReceiver) {
       // feeShares =  shares * withdrawFeeRate / PRECISION
       feeShares = shares.mulDiv(withdrawFeeRate, PRECISION);
       if (feeShares > 0) {
@@ -292,11 +303,14 @@ contract RWAEarnPool is
     require(msg.sender == adapter, "only adapter can call");
 
     // update user total assets
-    userTotalAssets = totalAssets();
+    uint256 currentTotalAssets = totalAssets();
 
     // update period rewards and period start
     periodRewards = getUnvestedAmount() + amount;
     periodStart = block.timestamp;
+
+    // update user total assets
+    userTotalAssets = currentTotalAssets + periodRewards;
 
     emit NotifyInterest(amount);
   }
@@ -341,8 +355,8 @@ contract RWAEarnPool is
    * @return The amount of total assets
    */
   function totalAssets() public view returns (uint256) {
-    // total assets = userTotalAssets + periodRewards - getUnvestedAmount()
-    return userTotalAssets + periodRewards - getUnvestedAmount();
+    // total assets = userTotalAssets - getUnvestedAmount()
+    return userTotalAssets - getUnvestedAmount();
   }
 
   /**
@@ -385,7 +399,7 @@ contract RWAEarnPool is
    * @param _withdrawFeeRate The withdraw fee rate
    */
   function setWithdrawFeeRate(uint256 _withdrawFeeRate) external onlyRole(MANAGER) {
-    require(_withdrawFeeRate <= PRECISION, "withdraw fee rate too high");
+    require(_withdrawFeeRate <= MAX_WITHDRAW_FEE_RATE, "withdraw fee rate too high");
     require(withdrawFeeRate != _withdrawFeeRate, "same withdraw fee rate");
     withdrawFeeRate = _withdrawFeeRate;
 
@@ -417,15 +431,19 @@ contract RWAEarnPool is
     } else {
       whitelist.remove(user);
     }
+
+    emit WhiteListChanged(user, ok);
   }
 
   /**
-   * @dev allows manager to withdraw reward tokens for emergency or recover any other mistaken ERC20 tokens.
+   * @dev allows manager to withdraw tokens for emergency
    * @param token ERC20 token address
    * @param amount token amount
    * @param receiver address to receive the tokens
    */
   function emergencyWithdraw(address token, uint256 amount, address receiver) external onlyRole(MANAGER) {
+    require(amount > 0, "Amount must be greater than zero");
+    require(receiver != address(0), "Receiver is zero address");
     IERC20(token).safeTransfer(receiver, amount);
     emit EmergencyWithdraw(token, amount);
   }
