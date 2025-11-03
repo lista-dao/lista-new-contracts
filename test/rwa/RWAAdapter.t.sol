@@ -53,15 +53,7 @@ contract RWAAdapterTest is Test {
 
     earnPool.initialize(admin, manager, pauser, address(USD1), "USD1.Treasury", "USD1.Treasury", address(adapter));
 
-    adapter.initialize(
-      admin,
-      manager,
-      bot,
-      address(earnPool),
-      address(otcManager),
-      address(vault),
-      address(shareToken)
-    );
+    adapter.initialize(admin, manager, bot, address(earnPool), address(vault), address(shareToken));
 
     otcManager.initialize(admin, manager, bot, address(adapter), otcWallet);
   }
@@ -188,6 +180,15 @@ contract RWAAdapterTest is Test {
     USDC.mint(address(adapter), 1 ether);
 
     vm.startPrank(bot);
+    vm.expectRevert("otcManager is zero address");
+    adapter.swapToken(address(USDC), 1 ether);
+    vm.stopPrank();
+
+    vm.startPrank(manager);
+    adapter.setOTCManager(address(otcManager));
+    vm.stopPrank();
+
+    vm.startPrank(bot);
     adapter.swapToken(address(USD1), 1 ether);
     adapter.swapToken(address(USDC), 1 ether);
     vm.stopPrank();
@@ -225,22 +226,22 @@ contract RWAAdapterTest is Test {
     assertEq(earnPool.totalAssets(), 1.1 ether, "earnPool totalAssets after 7 days");
   }
 
-  function test_setToUSDCLossRate() public {
+  function test_setToVaultAssetLossRate() public {
     vm.startPrank(manager);
-    adapter.setToUSDCLossRate(0.05 ether);
+    adapter.setToVaultAssetLossRate(0.05 ether);
     vm.stopPrank();
 
-    assertEq(adapter.toUSDCLossRate(), 0.05 ether, "toUSDCLossRate");
-    assertEq(adapter.USD1ToUSDC(1 ether), 0.95 ether, "USD1ToUSDC");
+    assertEq(adapter.toVaultAssetLossRate(), 0.05 ether, "toVaultAssetLossRate");
+    assertEq(adapter.AssetToVaultAsset(1 ether), 0.95 ether, "AssetToVaultAsset");
   }
 
   function test_setToUSD1LossRate() public {
     vm.startPrank(manager);
-    adapter.setToUSD1LossRate(0.05 ether);
+    adapter.setToAssetLossRate(0.05 ether);
     vm.stopPrank();
 
-    assertEq(adapter.toUSD1LossRate(), 0.05 ether, "toUSD1LossRate");
-    assertEq(adapter.USDCToUSD1(1 ether), 0.95 ether, "USDCToUSD1");
+    assertEq(adapter.toAssetLossRate(), 0.05 ether, "toAssetLossRate");
+    assertEq(adapter.VaultAssetToAsset(1 ether), 0.95 ether, "VaultAssetToAsset");
   }
 
   function test_depositRewardsBeforeDepositToVault() public {

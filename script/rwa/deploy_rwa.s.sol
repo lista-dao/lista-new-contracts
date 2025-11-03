@@ -40,15 +40,7 @@ contract DeployRWA is Script {
 
     earnPool.initialize(admin, manager, pauser, address(USD1), "USD1.Treasury", "USD1.Treasury", address(adapter));
 
-    adapter.initialize(
-      admin,
-      manager,
-      bot,
-      address(earnPool),
-      address(otcManager),
-      address(vault),
-      address(shareToken)
-    );
+    adapter.initialize(admin, manager, bot, address(earnPool), address(vault), address(shareToken));
 
     otcManager.initialize(admin, manager, bot, address(adapter), otcWallet);
     vm.stopPrank();

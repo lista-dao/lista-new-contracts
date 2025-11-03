@@ -26,13 +26,13 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   address public shareToken;
   // fee receiver address
   address public feeReceiver;
-  // loss rate when swap USD1 to USDC, 18 decimals
-  uint256 public toUSDCLossRate;
-  // loss rate when swap USDC to USD1, 18 decimals
-  uint256 public toUSD1LossRate;
+  // loss rate when swap asset to vault asset, 18 decimals
+  uint256 public toVaultAssetLossRate;
+  // loss rate when swap vault asset to asset, 18 decimals
+  uint256 public toAssetLossRate;
   // fee rate, 18 decimals
   uint256 public feeRate;
-  // accumulated fee, asset is USDC
+  // accumulated fee, asset is vault asset
   uint256 public fee;
   // last total assets in vault
   uint256 public lastVaultTotalAssets;
@@ -45,8 +45,8 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   uint256 public constant MAX_FEE_RATE = 3 * 1e17; // 30%
 
   /* IMMUTABLE */
-  address public immutable USD1;
-  address public immutable USDC;
+  address public immutable asset;
+  address public immutable vaultAsset;
 
   /* EVENTS */
   event RequestDepositToVault(uint256 amount);
@@ -56,19 +56,19 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   event EmergencyWithdraw(address token, uint256 amount);
   event SetFeeReceiver(address feeReceiver);
   event SetFeeRate(uint256 feeRate);
-  event SetToUSDCLossRate(uint256 toUSDCLossRate);
-  event SetToUSD1LossRate(uint256 toUSD1LossRate);
+  event SetToVaultAssetLossRate(uint256 toVaultAssetLossRate);
+  event SetToAssetLossRate(uint256 toAssetLossRate);
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
-  /// @param _USD1 The address of the USD1 token.
-  /// @param _USDC The address of the USDC token.
-  constructor(address _USD1, address _USDC) {
-    require(_USD1 != address(0), "USD1 is zero address");
-    require(_USDC != address(0), "USDC is zero address");
+  /// @param _asset The address of the asset token.
+  /// @param _vaultAsset The address of the vault asset token.
+  constructor(address _asset, address _vaultAsset) {
+    require(_asset != address(0), "asset is zero address");
+    require(_vaultAsset != address(0), "vaultAsset is zero address");
     _disableInitializers();
-    USD1 = _USD1;
-    USDC = _USDC;
+    asset = _asset;
+    vaultAsset = _vaultAsset;
   }
 
   /* INITIALIZER */
@@ -78,7 +78,6 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
    * @param _manager The address of the manager.
    * @param _bot The address of the bot.
    * @param _earnPool The address of the earn pool.
-   * @param _otcManager The address of the OTC manager.
    * @param _vault The address of the vault.
    * @param _shareToken The address of the vault share token.
    */
@@ -87,7 +86,6 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     address _manager,
     address _bot,
     address _earnPool,
-    address _otcManager,
     address _vault,
     address _shareToken
   ) public initializer {
@@ -95,7 +93,6 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     require(_manager != address(0), "Manager address cannot be zero");
     require(_bot != address(0), "Bot address cannot be zero");
     require(_earnPool != address(0), "EarnPool address cannot be zero");
-    require(_otcManager != address(0), "OTCManager address cannot be zero");
     require(_vault != address(0), "Vault address cannot be zero");
     require(_shareToken != address(0), "ShareToken address cannot be zero");
 
@@ -109,19 +106,18 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
 
     // setup variables
     earnPool = _earnPool;
-    otcManager = _otcManager;
     vault = _vault;
     shareToken = _shareToken;
   }
 
   /* EXTERNAL FUNCTIONS */
   /**
-   * @dev request to deposit USDC to vault
-   * @param amountUSDC The amount of USDC to deposit
+   * @dev request to deposit vault asset to vault
+   * @param amountVaultAsset The amount of vault asset to deposit
    */
-  function requestDepositToVault(uint256 amountUSDC) external onlyRole(BOT) {
-    require(amountUSDC > 0, "Amount must be greater than zero");
-    _requestDepositToVault(amountUSDC);
+  function requestDepositToVault(uint256 amountVaultAsset) external onlyRole(BOT) {
+    require(amountVaultAsset > 0, "Amount amountVaultAsset be greater than zero");
+    _requestDepositToVault(amountVaultAsset);
   }
 
   /**
@@ -148,34 +144,34 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
 
   /**
    * @dev deposit rewards to earn pool
-   * @param amountUSDC The amount of USDC to deposit as rewards
+   * @param amountVaultAsset The amount of vault asset to deposit as rewards
    */
-  function depositRewards(uint256 amountUSDC) external onlyRole(MANAGER) {
-    require(amountUSDC > 0, "Amount must be greater than zero");
+  function depositRewards(uint256 amountVaultAsset) external onlyRole(MANAGER) {
+    require(amountVaultAsset > 0, "Amount must be greater than zero");
     require(IRWAEarnPool(earnPool).totalSupply() > 0, "Earn pool has no shares");
 
-    // transfer USDC from manager to this contract
-    IERC20(USDC).safeTransferFrom(msg.sender, address(this), amountUSDC);
+    // transfer vault asset from manager to this contract
+    IERC20(vaultAsset).safeTransferFrom(msg.sender, address(this), amountVaultAsset);
     // request deposit to vault
-    _requestDepositToVault(amountUSDC);
+    _requestDepositToVault(amountVaultAsset);
 
-    // convert USDC to USD1
-    uint256 amountUSD1 = USDCToUSD1(amountUSDC);
+    // convert vault asset to asset
+    uint256 amountAsset = VaultAssetToAsset(amountVaultAsset);
     // notify interest to earn pool
-    IRWAEarnPool(earnPool).notifyInterest(amountUSD1);
+    IRWAEarnPool(earnPool).notifyInterest(amountAsset);
   }
 
   /**
-   * @dev request to withdraw USDC from vault
-   * @param amountUSDC The amount of USDC to withdraw
+   * @dev request to withdraw vault asset from vault
+   * @param amountVaultAsset The amount of vault asset to withdraw
    */
-  function requestWithdrawFromVault(uint256 amountUSDC) external onlyRole(BOT) {
-    require(amountUSDC > 0, "Amount must be greater than zero");
+  function requestWithdrawFromVault(uint256 amountVaultAsset) external onlyRole(BOT) {
+    require(amountVaultAsset > 0, "Amount must be greater than zero");
     // update vault assets and charge fee
     _updateVaultAssets();
 
     // calculate shares to redeem
-    uint256 redeemShares = IAsyncVault(vault).convertToShares(amountUSDC);
+    uint256 redeemShares = IAsyncVault(vault).convertToShares(amountVaultAsset);
     // approve shares to vault
     IERC20(shareToken).safeIncreaseAllowance(vault, redeemShares);
     // request redeem from vault
@@ -186,11 +182,11 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     // update lastVaultTotalAssets
     lastVaultTotalAssets = getVaultTotalAssets();
 
-    emit RequestWithdrawFromVault(redeemShares, amountUSDC);
+    emit RequestWithdrawFromVault(redeemShares, amountVaultAsset);
   }
 
   /**
-   * @dev finish withdraw request and redeem USDC from vault
+   * @dev finish withdraw request and redeem vault asset from vault
    * @param claimFee Whether to claim the accumulated fee
    */
   function withdrawFromVault(bool claimFee) external onlyRole(BOT) {
@@ -200,9 +196,9 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     require(maxRedeem > 0, "maxRedeem is zero");
 
     // redeem from vault
-    uint256 before = IERC20(USDC).balanceOf(address(this));
+    uint256 before = IERC20(vaultAsset).balanceOf(address(this));
     IAsyncVault(vault).redeem(maxRedeem, address(this), address(this));
-    uint256 totalAmount = IERC20(USDC).balanceOf(address(this)) - before;
+    uint256 totalAmount = IERC20(vaultAsset).balanceOf(address(this)) - before;
 
     uint256 feeAmount;
     if (claimFee && fee > 0) {
@@ -210,7 +206,7 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
       require(totalAmount >= fee, "totalAmount < fee");
 
       // transfer fee to feeReceiver
-      IERC20(USDC).safeTransfer(feeReceiver, fee);
+      IERC20(vaultAsset).safeTransfer(feeReceiver, fee);
       feeAmount = fee;
       fee = 0;
     }
@@ -220,12 +216,12 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
 
   /**
    * @dev finish withdraw requests in earn pool
-   * @param amountUSD1 The amount of USD1 to cover withdraw
+   * @param amountAsset The amount of asset to cover withdraw
    */
-  function finishEarnPoolWithdraw(uint256 amountUSD1) external onlyRole(BOT) {
-    require(amountUSD1 > 0, "Amount must be greater than zero");
-    IERC20(USD1).safeIncreaseAllowance(earnPool, amountUSD1);
-    IRWAEarnPool(earnPool).finishWithdraw(amountUSD1);
+  function finishEarnPoolWithdraw(uint256 amountAsset) external onlyRole(BOT) {
+    require(amountAsset > 0, "Amount must be greater than zero");
+    IERC20(asset).safeIncreaseAllowance(earnPool, amountAsset);
+    IRWAEarnPool(earnPool).finishWithdraw(amountAsset);
   }
 
   /**
@@ -234,8 +230,9 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
    * @param amount The amount of the token to swap
    */
   function swapToken(address token, uint256 amount) external onlyRole(BOT) {
-    require(token == USD1 || token == USDC, "Invalid token");
+    require(token == asset || token == vaultAsset, "Invalid token");
     require(amount > 0, "Amount must be greater than zero");
+    require(otcManager != address(0), "otcManager is zero address");
     IERC20(token).safeIncreaseAllowance(otcManager, amount);
     IOTCManager(otcManager).swapToken(token, amount);
   }
@@ -269,28 +266,37 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   }
 
   /**
-   * @dev set loss rate when swap USD1 to USDC
-   * @param _toUSDCLossRate The loss rate (18 decimals)
+   * @dev set loss rate when swap asset to vault asset
+   * @param _toVaultAssetLossRate The loss rate (18 decimals)
    */
-  function setToUSDCLossRate(uint256 _toUSDCLossRate) external onlyRole(MANAGER) {
-    require(_toUSDCLossRate <= PRECISION, "toUSDCLossRate too high");
-    toUSDCLossRate = _toUSDCLossRate;
-    emit SetToUSDCLossRate(_toUSDCLossRate);
+  function setToVaultAssetLossRate(uint256 _toVaultAssetLossRate) external onlyRole(MANAGER) {
+    require(_toVaultAssetLossRate <= PRECISION, "toVaultAssetLossRate too high");
+    toVaultAssetLossRate = _toVaultAssetLossRate;
+    emit SetToVaultAssetLossRate(_toVaultAssetLossRate);
   }
 
   /**
-   * @dev set loss rate when swap USDC to USD1
-   * @param _toUSD1LossRate The loss rate (18 decimals)
+   * @dev set loss rate when swap vault asset to asset
+   * @param _toAssetLossRate The loss rate (18 decimals)
    */
-  function setToUSD1LossRate(uint256 _toUSD1LossRate) external onlyRole(MANAGER) {
-    require(_toUSD1LossRate <= PRECISION, "toUSD1LossRate too high");
-    toUSD1LossRate = _toUSD1LossRate;
-    emit SetToUSD1LossRate(_toUSD1LossRate);
+  function setToAssetLossRate(uint256 _toAssetLossRate) external onlyRole(MANAGER) {
+    require(_toAssetLossRate <= PRECISION, "toAssetLossRate too high");
+    toAssetLossRate = _toAssetLossRate;
+    emit SetToAssetLossRate(_toAssetLossRate);
+  }
+
+  /**
+   * @dev set otc manager address
+   * @param _otcManager The address of the otc manager
+   */
+  function setOTCManager(address _otcManager) external onlyRole(MANAGER) {
+    require(_otcManager != address(0), "otcManager is zero address");
+    otcManager = _otcManager;
   }
 
   /**
    * @dev get total assets in vault
-   * @return total assets in vault (in USDC)
+   * @return total assets in vault (in vault asset)
    */
   function getVaultTotalAssets() public view returns (uint256) {
     uint256 shareTokenShares = IERC20(shareToken).balanceOf(address(this));
@@ -298,21 +304,21 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   }
 
   /**
-   * @dev get conversion from USD1 to USDC
-   * @param amount The amount of USD1 to convert
-   * @return converted amount in USDC
+   * @dev get conversion from asset to vault asset
+   * @param amount The amount of asset to convert
+   * @return converted amount in vault asset
    */
-  function USD1ToUSDC(uint256 amount) public view returns (uint256) {
-    return amount - amount.mulDiv(toUSDCLossRate, PRECISION);
+  function AssetToVaultAsset(uint256 amount) public view returns (uint256) {
+    return amount - amount.mulDiv(toVaultAssetLossRate, PRECISION);
   }
 
   /**
-   * @dev get conversion from USDC to USD1
-   * @param amount The amount of USDC to convert
-   * @return converted amount in USD1
+   * @dev get conversion from vault asset to asset
+   * @param amount The amount of vault asset to convert
+   * @return converted amount in asset
    */
-  function USDCToUSD1(uint256 amount) public view returns (uint256) {
-    return amount - amount.mulDiv(toUSD1LossRate, PRECISION);
+  function VaultAssetToAsset(uint256 amount) public view returns (uint256) {
+    return amount - amount.mulDiv(toAssetLossRate, PRECISION);
   }
 
   /**
@@ -329,17 +335,20 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   }
 
   /* INTERNAL FUNCTIONS */
-  function _requestDepositToVault(uint256 amountUSDC) private {
+  function _requestDepositToVault(uint256 amountVaultAsset) private {
     // approve amount to vault
-    IERC20(USDC).safeIncreaseAllowance(vault, amountUSDC);
+    IERC20(vaultAsset).safeIncreaseAllowance(vault, amountVaultAsset);
 
     // request deposit to vault
-    // check USDC balance decreased
-    uint256 before = IERC20(USDC).balanceOf(address(this));
-    IAsyncVault(vault).requestDeposit(amountUSDC, address(this), address(this));
-    require(before - IERC20(USDC).balanceOf(address(this)) == amountUSDC, "USDC request deposit failed");
+    // check vault asset balance decreased
+    uint256 before = IERC20(vaultAsset).balanceOf(address(this));
+    IAsyncVault(vault).requestDeposit(amountVaultAsset, address(this), address(this));
+    require(
+      before - IERC20(vaultAsset).balanceOf(address(this)) == amountVaultAsset,
+      "vault asset request deposit failed"
+    );
 
-    emit RequestDepositToVault(amountUSDC);
+    emit RequestDepositToVault(amountVaultAsset);
   }
 
   function _updateVaultAssets() private {
@@ -350,12 +359,12 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     }
     uint256 totalInterest = newVaultTotalAssets - lastVaultTotalAssets;
 
-    // charge fee, asset is USDC
+    // charge fee, asset is vault asset
     uint256 interestFee = totalInterest.mulDiv(feeRate, PRECISION);
     fee += interestFee;
 
-    // convert to USD1
-    uint256 interest = USDCToUSD1(totalInterest - interestFee);
+    // convert to asset
+    uint256 interest = VaultAssetToAsset(totalInterest - interestFee);
 
     // notify interest to earn pool
     if (interest > 0) {
