@@ -4,7 +4,6 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "./interface/IPausable.sol";
 
@@ -13,7 +12,7 @@ import "./interface/IPausable.sol";
  * @author Lista
  * @dev pause all/specific core contracts in case of emergency
  */
-contract EmergencySwitchHub is AccessControlEnumerableUpgradeable, ReentrancyGuardUpgradeable, UUPSUpgradeable {
+contract EmergencySwitchHub is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   using EnumerableSet for EnumerableSet.AddressSet;
 
   bytes32 public constant MANAGER = keccak256("MANAGER");
@@ -39,7 +38,6 @@ contract EmergencySwitchHub is AccessControlEnumerableUpgradeable, ReentrancyGua
     require(_pauser != address(0), "pauser is the zero address");
 
     __AccessControl_init();
-    __ReentrancyGuard_init();
     __UUPSUpgradeable_init();
 
     _grantRole(DEFAULT_ADMIN_ROLE, _admin);
@@ -54,14 +52,14 @@ contract EmergencySwitchHub is AccessControlEnumerableUpgradeable, ReentrancyGua
   /**
    * @dev Pause all contracts
    */
-  function pauseAll() external onlyRole(PAUSER) nonReentrant {
+  function pauseAll() external onlyRole(PAUSER) {
     _togglePausables(true);
   }
 
   /**
    * @dev Unpause all contracts
    */
-  function unpauseAll() external onlyRole(MANAGER) nonReentrant {
+  function unpauseAll() external onlyRole(MANAGER) {
     _togglePausables(false);
   }
 
@@ -69,12 +67,26 @@ contract EmergencySwitchHub is AccessControlEnumerableUpgradeable, ReentrancyGua
    * @dev Pause specific contracts
    * @param contracts addresses of contracts to be paused
    */
-  function pauseContracts(address[] calldata contracts) external onlyRole(PAUSER) nonReentrant {
+  function pauseContracts(address[] calldata contracts) external onlyRole(PAUSER) {
     // check contains in pauableContracts
     for (uint i = 0; i < contracts.length; i++) {
       address pausable = contracts[i];
       if (pausableContracts.contains(pausable)) {
         _togglePausables(true);
+      }
+    }
+  }
+
+  /**
+   * @dev Unpause specific contracts
+   * @param contracts addresses of contracts to be unpaused
+   */
+  function unpauseContracts(address[] calldata contracts) external onlyRole(MANAGER) {
+    // check contains in pauableContracts
+    for (uint i = 0; i < contracts.length; i++) {
+      address pausable = contracts[i];
+      if (pausableContracts.contains(pausable)) {
+        _togglePausables(false);
       }
     }
   }

@@ -75,6 +75,23 @@ contract EmergencySwitchHubTest is Test {
     assertTrue(IPausable(moolah).paused());
   }
 
+  function test_unpauseContracts() public {
+    // pause all contracts
+    vm.prank(pauser);
+    emergencySwitchHub.pauseAll();
+
+    assertTrue(IPausable(moolah).paused());
+
+    // unpause specific contracts
+    address[] memory contractsToUnpause = new address[](1);
+    contractsToUnpause[0] = moolah;
+
+    vm.prank(manager);
+    emergencySwitchHub.unpauseContracts(contractsToUnpause);
+
+    assertFalse(IPausable(moolah).paused());
+  }
+
   function test_grantNewPauserRole() public {
     address newPauser = makeAddr("NEW_PAUSER");
 
