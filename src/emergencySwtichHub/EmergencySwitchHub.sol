@@ -79,6 +79,17 @@ contract EmergencySwitchHub is AccessControlEnumerableUpgradeable, ReentrancyGua
     }
   }
 
+  /**
+   * @dev Get all pausable contracts
+   */
+  function getPausableContracts() external view returns (address[] memory) {
+    address[] memory contracts = new address[](pausableContracts.length());
+    for (uint i = 0; i < pausableContracts.length(); i++) {
+      contracts[i] = pausableContracts.at(i);
+    }
+    return contracts;
+  }
+
   /* =================================== */
   /*            ADMIN FUNCTIONS          */
   /* =================================== */

@@ -88,4 +88,11 @@ contract EmergencySwitchHubTest is Test {
 
     assertTrue(IPausable(moolah).paused());
   }
+
+  function test_getAllPausableContracts() public {
+    address[] memory pausableContracts = emergencySwitchHub.getPausableContracts();
+
+    assertEq(pausableContracts.length, 1);
+    assertEq(pausableContracts[0], moolah);
+  }
 }
