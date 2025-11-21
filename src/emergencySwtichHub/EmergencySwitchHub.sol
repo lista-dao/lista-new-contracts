@@ -72,7 +72,9 @@ contract EmergencySwitchHub is AccessControlEnumerableUpgradeable, UUPSUpgradeab
     for (uint i = 0; i < contracts.length; i++) {
       address pausable = contracts[i];
       if (pausableContracts.contains(pausable)) {
-        _togglePausables(true);
+        if (!IPausable(pausable).paused()) {
+          IPausable(pausable).pause();
+        }
       }
     }
   }
@@ -86,7 +88,9 @@ contract EmergencySwitchHub is AccessControlEnumerableUpgradeable, UUPSUpgradeab
     for (uint i = 0; i < contracts.length; i++) {
       address pausable = contracts[i];
       if (pausableContracts.contains(pausable)) {
-        _togglePausables(false);
+        if (IPausable(pausable).paused()) {
+          IPausable(pausable).unpause();
+        }
       }
     }
   }
