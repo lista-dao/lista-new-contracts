@@ -6,7 +6,7 @@ import "forge-std/console.sol";
 // import { Upgrades } from "openzeppelin-foundry-upgrades/Upgrades.sol";
 import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import "@openzeppelin/contracts/access/IAccessControl.sol";
-import "../../src/emergencySwtichHub/EmergencySwitchHub.sol";
+import "../../src/emergencySwitchHub/EmergencySwitchHub.sol";
 
 contract EmergencySwitchHubTest is Test {
   address admin = address(0x1A11AA);
