@@ -22,7 +22,7 @@ contract MockERC20Script is Script {
 
     vm.startBroadcast(deployerPrivateKey);
 
-    MockERC20 mockToken = new MockERC20("SOLV", "solv");
+    MockERC20 mockToken = new MockERC20("USDC", "USDC");
 
     console.log("mockToken address: %s", address(mockToken));
   }
