@@ -18,9 +18,9 @@ contract DeployEmergencySwitchHubScript is Script {
     console.log("Deployer: %s", deployer);
     address admin = vm.envOr("ADMIN", deployer);
     console.log("Admin: %s", admin);
-    address manager = vm.envOr("MANAGER", deployer);
+    address manager = 0xEEfebb1546d88EA0909435DF6f615084DD3c5Bd8;
     console.log("Manager: %s", manager);
-    address pauser = vm.envOr("PAUSER", deployer);
+    address pauser = 0xEEfebb1546d88EA0909435DF6f615084DD3c5Bd8;
     console.log("Pauser: %s", pauser);
 
     vm.startBroadcast(deployerPrivateKey);
