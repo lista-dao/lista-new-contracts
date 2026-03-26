@@ -187,9 +187,9 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
 
   /**
    * @dev finish withdraw request and redeem vault asset from vault
-   * @param claimFee Whether to claim the accumulated fee
+   * @param feeAmount The fee amount to claim, should be the fee value snapshot taken at requestWithdrawFromVault time
    */
-  function withdrawFromVault(bool claimFee) external onlyRole(BOT) {
+  function withdrawFromVault(uint256 feeAmount) external onlyRole(BOT) {
     // get max redeem amount from vault
     uint256 maxRedeem = IAsyncVault(vault).maxRedeem(address(this));
     // require max redeem amount > 0
@@ -200,15 +200,14 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     IAsyncVault(vault).redeem(maxRedeem, address(this), address(this));
     uint256 totalAmount = IERC20(vaultAsset).balanceOf(address(this)) - before;
 
-    uint256 feeAmount;
-    if (claimFee && fee > 0) {
+    if (feeAmount > 0) {
       require(feeReceiver != address(0), "feeReceiver is zero");
-      require(totalAmount >= fee, "totalAmount < fee");
+      require(fee >= feeAmount, "feeAmount exceeds accumulated fee");
+      require(totalAmount >= feeAmount, "totalAmount < feeAmount");
 
       // transfer fee to feeReceiver
-      IERC20(vaultAsset).safeTransfer(feeReceiver, fee);
-      feeAmount = fee;
-      fee = 0;
+      IERC20(vaultAsset).safeTransfer(feeReceiver, feeAmount);
+      fee -= feeAmount;
     }
 
     emit WithdrawFromVault(maxRedeem, totalAmount, feeAmount);
