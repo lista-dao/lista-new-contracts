@@ -128,7 +128,7 @@ contract RWAAdapterTest is Test {
     adapter.requestDepositToVault(1 ether);
     adapter.depositToVault();
     adapter.requestWithdrawFromVault(1 ether);
-    adapter.withdrawFromVault(false);
+    adapter.withdrawFromVault(0);
     vm.stopPrank();
 
     assertEq(USDC.balanceOf(address(adapter)), 1 ether, "adapter USDC balance");
@@ -149,7 +149,9 @@ contract RWAAdapterTest is Test {
     vault.setConvertRate(2 ether);
 
     adapter.requestWithdrawFromVault(2 ether);
-    adapter.withdrawFromVault(true);
+    // use fee snapshot taken at requestWithdrawFromVault time
+    uint256 feeSnapshot = adapter.fee();
+    adapter.withdrawFromVault(feeSnapshot);
     vm.stopPrank();
 
     assertEq(USDC.balanceOf(address(adapter)), 1.9 ether, "adapter USDC balance after fee");
