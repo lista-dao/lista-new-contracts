@@ -32,7 +32,7 @@ contract RewardsRouterScript is Script {
 */
     address[] memory distributors = new address[](1);
 
-    address v2Distributor = 0x57A725D6A797e9B1fFa104017e76aB2F480C62e2;
+    address v2Distributor = 0x41ed04f8d963c0f538dc9de511e77c725117b94e;
     console.log("Distributor V2: %s", v2Distributor);
     distributors[0] = v2Distributor;
 
