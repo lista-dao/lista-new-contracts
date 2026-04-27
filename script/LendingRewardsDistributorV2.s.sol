@@ -30,17 +30,26 @@ contract LendingRewardsDistributorV2Script is Script {
     console.log("Bot: %s", bot);
 
     address lista = 0xFceB31A79F71AC9CBDCF853519c1b12D379EdC46;
-    address solv = 0xabE8E5CabE24Cb36df9540088fD7cE1175b9bc52;
 
-    address[] memory tokens = new address[](2);
+    address[] memory tokens = new address[](1);
     tokens[0] = lista;
-    tokens[1] = solv;
 
     vm.startBroadcast(deployerPrivateKey);
-    address proxy = Upgrades.deployUUPSProxy(
-      "LendingRewardsDistributorV2.sol",
-      abi.encodeCall(LendingRewardsDistributorV2.initialize, (admin, manager, bot, pauser, tokens))
-    );
+    address proxy;
+
+    if (block.chainid == 56) {
+      proxy = Upgrades.deployUUPSProxy(
+        "LendingRewardsDistributorV2.sol",
+        abi.encodeCall(LendingRewardsDistributorV2.initialize, (admin, manager, bot, pauser, tokens))
+      );
+    } else {
+      address lista_testnet = 0x90b94D605E069569Adf33C0e73E26a83637c94B1;
+      tokens[0] = lista_testnet;
+      proxy = Upgrades.deployUUPSProxy(
+        "LendingRewardsDistributorV2.sol",
+        abi.encodeCall(LendingRewardsDistributorV2.initialize, (deployer, deployer, deployer, deployer, tokens))
+      );
+    }
 
     vm.stopBroadcast();
     console.log("LendingRewardsDistributorV2 proxy address: %s", proxy);
