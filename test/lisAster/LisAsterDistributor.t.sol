@@ -3,7 +3,6 @@ pragma solidity ^0.8.24;
 
 import { LisAsterBase } from "./LisAsterBase.t.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
-import { MerkleVerifier } from "../../src/lisAster/libraries/MerkleVerifier.sol";
 
 contract LisAsterDistributorTest is LisAsterBase {
   /// @dev Pushes `amount` lisAster through the full Astherus -> Vault -> Rewards -> Distributor
@@ -133,7 +132,7 @@ contract LisAsterDistributorTest is LisAsterBase {
 
     bytes32[] memory wrongProof = new bytes32[](1);
     wrongProof[0] = bytes32(uint256(0xdeadbeef));
-    vm.expectRevert(MerkleVerifier.InvalidProof.selector);
+    vm.expectRevert(bytes("invalid proof"));
     distributor.claim(user, 4 ether, wrongProof);
   }
 
@@ -198,6 +197,40 @@ contract LisAsterDistributorTest is LisAsterBase {
     assertEq(lisAster.balanceOf(user), 4 ether);
     assertEq(staking.balanceOf(other), 6 ether);
     assertEq(distributor.totalClaimed(), 10 ether);
+  }
+
+  /* ---------------- emergencyWithdraw ---------------- */
+
+  function test_emergencyWithdraw_byManager() public {
+    _injectNotified(5 ether);
+    uint256 distBalBefore = lisAster.balanceOf(address(distributor));
+
+    vm.prank(manager);
+    distributor.emergencyWithdraw(address(lisAster), 2 ether);
+
+    // Funds always go to the MANAGER caller.
+    assertEq(lisAster.balanceOf(manager), 2 ether);
+    assertEq(lisAster.balanceOf(address(distributor)), distBalBefore - 2 ether);
+    // Accounting is intentionally not adjusted by emergencyWithdraw.
+    assertEq(distributor.totalNotified(), 5 ether);
+    assertEq(distributor.totalClaimed(), 0);
+  }
+
+  function test_emergencyWithdraw_onlyManager() public {
+    _injectNotified(1 ether);
+    bytes32 role = distributor.MANAGER();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, role));
+    vm.prank(other);
+    distributor.emergencyWithdraw(address(lisAster), 1 ether);
+  }
+
+  function test_emergencyWithdraw_zeroChecks() public {
+    vm.startPrank(manager);
+    vm.expectRevert(bytes("zero token"));
+    distributor.emergencyWithdraw(address(0), 1 ether);
+    vm.expectRevert(bytes("zero amount"));
+    distributor.emergencyWithdraw(address(lisAster), 0);
+    vm.stopPrank();
   }
 
   /* ---------------- pause ---------------- */

@@ -8,9 +8,10 @@ import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
+import { MerkleProof } from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+
 import { ILisAsterDistributor } from "./interface/ILisAsterDistributor.sol";
 import { ILisAsterStaking } from "./interface/ILisAsterStaking.sol";
-import { MerkleVerifier } from "./libraries/MerkleVerifier.sol";
 
 /// @title LisAsterDistributor
 /// @notice Cumulative-style Merkle distributor. Single overwrite-on-update root; leaves carry
@@ -132,8 +133,8 @@ contract LisAsterDistributor is
     bytes32[] calldata proof
   ) external view override returns (uint256) {
     if (merkleRoot == bytes32(0)) return 0;
-    bytes32 leaf = keccak256(abi.encode(block.chainid, account, cumulativeAmount));
-    if (MerkleVerifier._computeRoot(leaf, proof) != merkleRoot) return 0;
+    bytes32 leaf = keccak256(abi.encode(block.chainid, account, lisAster, cumulativeAmount));
+    if (MerkleProof.processProofCalldata(proof, leaf) != merkleRoot) return 0;
     if (cumulativeAmount <= claimed[account]) return 0;
     return cumulativeAmount - claimed[account];
   }
@@ -145,8 +146,8 @@ contract LisAsterDistributor is
     bytes32[] calldata proof
   ) internal returns (uint256 payable_) {
     require(merkleRoot != bytes32(0), "no root");
-    bytes32 leaf = keccak256(abi.encode(block.chainid, account, cumulativeAmount));
-    MerkleVerifier._verifyProof(leaf, merkleRoot, proof);
+    bytes32 leaf = keccak256(abi.encode(block.chainid, account, lisAster, cumulativeAmount));
+    require(MerkleProof.verifyCalldata(proof, merkleRoot, leaf), "invalid proof");
 
     uint256 already = claimed[account];
     require(cumulativeAmount > already, "nothing to claim");
@@ -162,6 +163,17 @@ contract LisAsterDistributor is
 
   function unpause() external onlyRole(PAUSER) {
     _unpause();
+  }
+
+  /// @notice Escape hatch for stuck or mis-routed tokens (e.g. tokens accidentally sent to this
+  ///         contract, or lisAster that needs to be evacuated). Funds are sent to the MANAGER
+  ///         caller. Does not adjust accounting, so if lisAster is withdrawn the team must
+  ///         restage `totalNotified`/`totalAllocated` (or upgrade) before normal claims resume.
+  function emergencyWithdraw(address token, uint256 amount) external onlyRole(MANAGER) {
+    require(token != address(0), "zero token");
+    require(amount > 0, "zero amount");
+    IERC20(token).safeTransfer(msg.sender, amount);
+    emit EmergencyWithdrawn(token, msg.sender, amount);
   }
 
   /* UUPS */

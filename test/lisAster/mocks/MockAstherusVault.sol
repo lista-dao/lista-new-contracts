@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import { IAstherusVault } from "../../../src/lisAster/interface/IAstherusVault.sol";
+import { IAstherusVault } from "../../../src/lisaster/interface/IAstherusVault.sol";
 
 /// @notice Test-only. Mimics the AstherusVault BSC `depositFor`: pulls ASTER into this
 ///         contract and records call parameters. On real BSC the Astherus backend syncs the

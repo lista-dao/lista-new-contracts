@@ -91,6 +91,9 @@ contract AsterVault is
     lisAsterManager = lisAsterManager_;
     broker = broker_;
     minDeposit = minDeposit_;
+
+    emit SetBroker(0, broker_);
+    emit SetMinDeposit(0, minDeposit_);
   }
 
   /* EXTERNAL */

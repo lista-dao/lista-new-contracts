@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 import { LisAsterBase } from "./LisAsterBase.t.sol";
-import { MerkleVerifier } from "../../src/lisAster/libraries/MerkleVerifier.sol";
 
 /// @notice Covers the "Fuzz" row of the design test matrix:
 ///         forged Merkle proofs / stale proof against a new root /

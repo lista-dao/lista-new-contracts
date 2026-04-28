@@ -4,11 +4,11 @@ pragma solidity ^0.8.24;
 import "forge-std/Test.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import { LisAster } from "../../src/lisAster/LisAster.sol";
-import { AsterVault } from "../../src/lisAster/AsterVault.sol";
-import { LisAsterStaking } from "../../src/lisAster/LisAsterStaking.sol";
-import { LisAsterRewards } from "../../src/lisAster/LisAsterRewards.sol";
-import { LisAsterDistributor } from "../../src/lisAster/LisAsterDistributor.sol";
+import { LisAster } from "../../src/lisaster/LisAster.sol";
+import { AsterVault } from "../../src/lisaster/AsterVault.sol";
+import { LisAsterStaking } from "../../src/lisaster/LisAsterStaking.sol";
+import { LisAsterRewards } from "../../src/lisaster/LisAsterRewards.sol";
+import { LisAsterDistributor } from "../../src/lisaster/LisAsterDistributor.sol";
 
 import { MockERC20 } from "../../src/mock/MockERC20.sol";
 import { MockAstherusVault } from "./mocks/MockAstherusVault.sol";
@@ -99,7 +99,7 @@ abstract contract LisAsterBase is Test {
   /* ----------------- minimal Merkle helpers (1-leaf / 2-leaf) ----------------- */
 
   function _leaf(address account, uint256 cumulative) internal view returns (bytes32) {
-    return keccak256(abi.encode(block.chainid, account, cumulative));
+    return keccak256(abi.encode(block.chainid, account, address(lisAster), cumulative));
   }
 
   function _hashPair(bytes32 a, bytes32 b) internal pure returns (bytes32) {
