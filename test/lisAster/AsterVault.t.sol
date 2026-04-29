@@ -128,6 +128,12 @@ contract AsterVaultTest is LisAsterBase {
     assertEq(vault.minDeposit(), 2 ether);
   }
 
+  function test_setMinDeposit_revertsZero() public {
+    vm.prank(admin);
+    vm.expectRevert(bytes("minDeposit is zero"));
+    vault.setMinDeposit(0);
+  }
+
   function test_pause_onlyPauser() public {
     bytes32 role = vault.PAUSER();
     vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, role));

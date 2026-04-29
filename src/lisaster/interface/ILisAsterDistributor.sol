@@ -22,7 +22,8 @@ interface ILisAsterDistributor {
 
   function claim(address account, uint256 cumulativeAmount, bytes32[] calldata proof) external;
 
-  function claimAndStake(address account, uint256 cumulativeAmount, bytes32[] calldata proof) external;
+  /// @notice Self-only: claims for `msg.sender` and stakes the proceeds in one call.
+  function claimAndStake(uint256 cumulativeAmount, bytes32[] calldata proof) external;
 
   function claimable(
     address account,

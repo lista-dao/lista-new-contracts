@@ -175,13 +175,21 @@ contract LisAsterDistributorTest is LisAsterBase {
     vm.prank(manager);
     distributor.setMerkleRoot(_singleLeafRoot(user, 4 ether), 4 ether);
 
-    distributor.claimAndStake(user, 4 ether, empty);
+    vm.prank(user);
+    distributor.claimAndStake(4 ether, empty);
 
     // user gets a staking position directly instead of holding lisAster.
     assertEq(lisAster.balanceOf(user), 0);
     assertEq(staking.balanceOf(user), 4 ether);
     assertEq(staking.totalSupply(), 4 ether);
     assertEq(lisAster.balanceOf(address(staking)), 4 ether);
+  }
+
+  function test_claim_revertsZeroAccount() public {
+    _injectNotified(1 ether);
+    bytes32[] memory empty = new bytes32[](0);
+    vm.expectRevert(bytes("zero account"));
+    distributor.claim(address(0), 1 ether, empty);
   }
 
   function test_claimAndStake_equivalenceWithClaim() public {
@@ -191,7 +199,8 @@ contract LisAsterDistributorTest is LisAsterBase {
     distributor.setMerkleRoot(root, 10 ether);
 
     distributor.claim(user, 4 ether, p0);
-    distributor.claimAndStake(other, 6 ether, p1);
+    vm.prank(other);
+    distributor.claimAndStake(6 ether, p1);
 
     // user holds wallet lisAster, other holds a staking position; aggregate accounting matches.
     assertEq(lisAster.balanceOf(user), 4 ether);

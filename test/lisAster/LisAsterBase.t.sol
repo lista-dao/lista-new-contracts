@@ -55,7 +55,7 @@ abstract contract LisAsterBase is Test {
       1, // broker (Lista default)
       0.1 ether // minDeposit
     );
-    staking.initialize(admin, pauser, address(lisAster));
+    staking.initialize(admin, pauser, manager, address(lisAster));
     rewards.initialize(admin, pauser, manager, bot, address(asterToken), address(lisAster), address(vault));
     distributor.initialize(admin, manager, pauser, address(lisAster), address(staking), address(rewards));
 

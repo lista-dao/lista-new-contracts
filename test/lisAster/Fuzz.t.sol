@@ -120,7 +120,8 @@ contract FuzzTest is LisAsterBase {
     uint256 totalSupplyBefore = lisAster.totalSupply();
 
     distributor.claim(user, cum, pUser);
-    distributor.claimAndStake(other, cum, pOther);
+    vm.prank(other);
+    distributor.claimAndStake(cum, pOther);
 
     // claim: user holds wallet lisAster.
     assertEq(lisAster.balanceOf(user), cum, "user wallet");

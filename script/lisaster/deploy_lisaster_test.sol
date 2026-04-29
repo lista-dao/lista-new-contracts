@@ -74,7 +74,7 @@ contract DeployLisAsterTestnet is Script {
       MIN_DEPOSIT
     );
 
-    staking.initialize(admin, pauser, address(lisAster));
+    staking.initialize(admin, pauser, manager, address(lisAster));
 
     rewards.initialize(admin, pauser, rewardsManager, bot, ASTER_TOKEN, address(lisAster), address(vault));
 

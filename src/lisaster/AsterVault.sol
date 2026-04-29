@@ -120,6 +120,7 @@ contract AsterVault is
   }
 
   function setMinDeposit(uint256 newMin) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    require(newMin > 0, "minDeposit is zero");
     uint256 oldMin = minDeposit;
     minDeposit = newMin;
     emit SetMinDeposit(oldMin, newMin);

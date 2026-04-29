@@ -25,6 +25,7 @@ contract LisAsterStaking is
   using SafeERC20 for IERC20;
 
   /* CONSTANTS */
+  bytes32 public constant MANAGER = keccak256("MANAGER");
   bytes32 public constant PAUSER = keccak256("PAUSER");
 
   /* IMMUTABLE-LIKE (set once in initialize) */
@@ -41,9 +42,10 @@ contract LisAsterStaking is
   }
 
   /* INITIALIZER */
-  function initialize(address admin, address pauser, address lisAster_) external initializer {
+  function initialize(address admin, address pauser, address manager, address lisAster_) external initializer {
     require(admin != address(0), "admin is zero");
     require(pauser != address(0), "pauser is zero");
+    require(manager != address(0), "manager is zero");
     require(lisAster_ != address(0), "lisAster is zero");
 
     __AccessControlEnumerable_init();
@@ -53,6 +55,7 @@ contract LisAsterStaking is
 
     _grantRole(DEFAULT_ADMIN_ROLE, admin);
     _grantRole(PAUSER, pauser);
+    _grantRole(MANAGER, manager);
 
     lisAster = lisAster_;
   }
@@ -83,6 +86,17 @@ contract LisAsterStaking is
 
   function unpause() external onlyRole(PAUSER) {
     _unpause();
+  }
+
+  /// @notice Rescue stuck or mis-routed tokens. Funds are sent to the MANAGER caller.
+  ///         Mirrors `LisAsterDistributor.emergencyWithdraw` -- pure escape hatch, no
+  ///         accounting protection. Withdrawing lisAster will break the
+  ///         `balanceOf(this) >= totalSupply` invariant; pause first and reconcile by runbook.
+  function emergencyWithdraw(address token, uint256 amount) external onlyRole(MANAGER) {
+    require(token != address(0), "zero token");
+    require(amount > 0, "zero amount");
+    IERC20(token).safeTransfer(msg.sender, amount);
+    emit EmergencyWithdrawn(token, msg.sender, amount);
   }
 
   /* INTERNAL */

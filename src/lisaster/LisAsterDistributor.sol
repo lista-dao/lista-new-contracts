@@ -84,7 +84,7 @@ contract LisAsterDistributor is
   /* RECORD INFLOW */
   /// @notice Pulls `amount` lisAster from Rewards via transferFrom and bumps `totalNotified`.
   /// @dev Rewards must `forceApprove(distributor, amount)` before this call.
-  function notifyRewards(uint256 amount) external override whenNotPaused {
+  function notifyRewards(uint256 amount) external override whenNotPaused nonReentrant {
     require(msg.sender == rewards, "not rewards");
     require(amount > 0, "zero amount");
     IERC20(lisAster).safeTransferFrom(msg.sender, address(this), amount);
@@ -104,26 +104,31 @@ contract LisAsterDistributor is
   }
 
   /* USER CLAIM */
+  /// @notice Permissionless: any caller may trigger a claim for `account`. The proof binds
+  ///         the payout destination to `account`, so caller substitution cannot redirect funds.
   function claim(
     address account,
     uint256 cumulativeAmount,
     bytes32[] calldata proof
   ) external override whenNotPaused nonReentrant {
+    require(account != address(0), "zero account");
     uint256 payable_ = _consume(account, cumulativeAmount, proof);
     IERC20(lisAster).safeTransfer(account, payable_);
     emit Claimed(account, payable_, cumulativeAmount);
   }
 
+  /// @notice Self-only: `msg.sender` is the implicit recipient. Unlike `claim`, this entry
+  ///         point materially changes the caller's position (locks the proceeds in staking),
+  ///         so it does not accept a third-party `account` argument at all.
   function claimAndStake(
-    address account,
     uint256 cumulativeAmount,
     bytes32[] calldata proof
   ) external override whenNotPaused nonReentrant {
-    uint256 payable_ = _consume(account, cumulativeAmount, proof);
+    uint256 payable_ = _consume(msg.sender, cumulativeAmount, proof);
     IERC20(lisAster).forceApprove(staking, payable_);
-    ILisAsterStaking(staking).stakeFor(account, payable_);
+    ILisAsterStaking(staking).stakeFor(msg.sender, payable_);
     IERC20(lisAster).forceApprove(staking, 0);
-    emit ClaimedAndStaked(account, payable_, cumulativeAmount);
+    emit ClaimedAndStaked(msg.sender, payable_, cumulativeAmount);
   }
 
   /* VIEW */
