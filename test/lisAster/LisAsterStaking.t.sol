@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 import { LisAsterBase } from "./LisAsterBase.t.sol";
-import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { PausableUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 
 contract LisAsterStakingTest is LisAsterBase {
@@ -17,7 +16,6 @@ contract LisAsterStakingTest is LisAsterBase {
 
   function test_initialState() public view {
     assertEq(staking.lisAster(), address(lisAster));
-    assertEq(staking.distributor(), address(distributor));
     assertEq(staking.totalSupply(), 0);
     assertEq(staking.balanceOf(user), 0);
   }
@@ -99,20 +97,5 @@ contract LisAsterStakingTest is LisAsterBase {
     vm.expectRevert(bytes("receiver is zero"));
     staking.stakeFor(address(0), 1 ether);
     vm.stopPrank();
-  }
-
-  /* ---------------- one-shot setter ---------------- */
-
-  function test_setDistributor_revertsIfAlreadySet() public {
-    vm.prank(manager);
-    vm.expectRevert(bytes("distributor already set"));
-    staking.setDistributor(address(0xDEAD));
-  }
-
-  function test_setDistributor_onlyManager() public {
-    bytes32 role = staking.MANAGER();
-    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, admin, role));
-    vm.prank(admin);
-    staking.setDistributor(address(0xBEEF));
   }
 }

@@ -32,6 +32,9 @@ contract LisAsterRewards is
   bytes32 public constant BOT = keccak256("BOT");
   bytes32 public constant PAUSER = keccak256("PAUSER");
 
+  uint256 public constant PRECISION = 1e18;
+  uint256 public constant MAX_FEE_RATE = 3e17; // 30%
+
   /* IMMUTABLE-LIKE (set once in initialize) */
   address public asterToken;
   address public lisAster;
@@ -39,6 +42,10 @@ contract LisAsterRewards is
 
   /* SET-ONCE (one-shot setter, breaks circular dep) */
   address public distributor;
+
+  /* FEE (MANAGER tunable; default 0 = no fee) */
+  address public feeReceiver;
+  uint256 public feeRate; // 18 decimals (1e18 = 100%); MANAGER capped by MAX_FEE_RATE
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -87,22 +94,49 @@ contract LisAsterRewards is
     emit DistributorSet(d);
   }
 
+  /* FEE SETTERS */
+  function setFeeReceiver(address r) external onlyRole(MANAGER) {
+    require(r != address(0), "feeReceiver is zero");
+    feeReceiver = r;
+    emit SetFeeReceiver(r);
+  }
+
+  function setFeeRate(uint256 r) external onlyRole(MANAGER) {
+    require(r <= MAX_FEE_RATE, "feeRate too high");
+    feeRate = r;
+    emit SetFeeRate(r);
+  }
+
   /* EXTERNAL */
   function notifyRewards(uint256 amount) external override onlyRole(MANAGER) whenNotPaused nonReentrant {
     require(amount > 0, "zero amount");
 
-    uint256 balBefore = IERC20(lisAster).balanceOf(address(this));
     IERC20(asterToken).safeTransferFrom(msg.sender, address(this), amount);
-    IERC20(asterToken).forceApprove(vault, amount);
-    IAsterVault(vault).deposit(amount, address(this));
+
+    // Take fee only when both knobs are configured. Either feeRate=0 or feeReceiver=0 means
+    // no fee for this round -- MANAGER can stage the two settings in any order without
+    // bricking notifyRewards in between.
+    uint256 fee = 0;
+    if (feeRate > 0 && feeReceiver != address(0)) {
+      fee = (amount * feeRate) / PRECISION;
+      if (fee > 0) {
+        IERC20(asterToken).safeTransfer(feeReceiver, fee);
+      }
+    }
+    uint256 net = amount - fee;
+    require(net > 0, "net is zero");
+
+    uint256 balBefore = IERC20(lisAster).balanceOf(address(this));
+    IERC20(asterToken).forceApprove(vault, net);
+    IAsterVault(vault).deposit(net, address(this));
     IERC20(asterToken).forceApprove(vault, 0);
 
-    // Strict 1:1 invariant: AsterVault.deposit always mints exactly `amount` lisAster.
-    // If Vault ever introduces an exchange rate or fee, this assertion must be revisited.
+    // Strict 1:1 invariant: AsterVault.deposit always mints exactly `net` lisAster.
+    // If Vault ever introduces an exchange rate, this assertion must be revisited.
     uint256 minted = IERC20(lisAster).balanceOf(address(this)) - balBefore;
-    require(minted == amount, "mint mismatch");
+    require(minted == net, "mint mismatch");
 
-    emit RewardsNotified(amount, minted);
+    emit RewardsNotified(amount, fee, minted);
   }
 
   function distributeRewards(uint256 amount) external override onlyRole(BOT) whenNotPaused nonReentrant {
