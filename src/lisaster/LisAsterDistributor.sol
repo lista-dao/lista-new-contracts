@@ -17,6 +17,11 @@ import { ILisAsterStaking } from "./interface/ILisAsterStaking.sol";
 /// @notice Cumulative-style Merkle distributor. Single overwrite-on-update root; leaves carry
 ///         each account's lifetime cumulative entitlement, and users claim
 ///         `cumulative - claimed` deltas with the latest proof in one call.
+///
+///         Root rotation is two-step and time-locked: BOT stages a candidate via
+///         `setPendingMerkleRoot`, then promotes it via `acceptMerkleRoot` after
+///         `waitingPeriod` elapses. MANAGER holds the veto: it may
+///         `revokePendingMerkleRoot` at any time during the wait.
 contract LisAsterDistributor is
   ILisAsterDistributor,
   AccessControlEnumerableUpgradeable,
@@ -29,6 +34,12 @@ contract LisAsterDistributor is
   /* CONSTANTS */
   bytes32 public constant MANAGER = keccak256("MANAGER");
   bytes32 public constant PAUSER = keccak256("PAUSER");
+  bytes32 public constant BOT = keccak256("BOT");
+
+  /// @notice Hard floor on the time-lock window. Admin cannot configure a shorter window —
+  ///         this guarantees MANAGER always has at least 6 hours to detect and `revokePendingMerkleRoot`
+  ///         a malicious or wrong root staged by BOT.
+  uint256 public constant MIN_WAITING_PERIOD = 6 hours;
 
   /* IMMUTABLE-LIKE (set once in initialize) */
   address public lisAster;
@@ -45,6 +56,12 @@ contract LisAsterDistributor is
   uint256 public totalClaimed; // Lifetime amount already claimed
   mapping(address => uint256) public claimed; // Per-account lifetime claimed amount
 
+  /* PENDING ROOT (appended to preserve UUPS storage layout) */
+  bytes32 public pendingMerkleRoot;
+  uint256 public pendingTotalAllocated;
+  uint256 public lastSetTime;
+  uint256 public waitingPeriod;
+
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
   constructor() {
@@ -55,17 +72,21 @@ contract LisAsterDistributor is
   function initialize(
     address admin,
     address manager,
+    address bot,
     address pauser,
     address lisAster_,
     address staking_,
-    address rewards_
+    address rewards_,
+    uint256 waitingPeriod_
   ) external initializer {
     require(admin != address(0), "admin is zero");
     require(manager != address(0), "manager is zero");
+    require(bot != address(0), "bot is zero");
     require(pauser != address(0), "pauser is zero");
     require(lisAster_ != address(0), "lisAster is zero");
     require(staking_ != address(0), "staking is zero");
     require(rewards_ != address(0), "rewards is zero");
+    require(waitingPeriod_ >= MIN_WAITING_PERIOD, "waitingPeriod too short");
 
     __AccessControlEnumerable_init();
     __Pausable_init();
@@ -74,11 +95,13 @@ contract LisAsterDistributor is
 
     _grantRole(DEFAULT_ADMIN_ROLE, admin);
     _grantRole(MANAGER, manager);
+    _grantRole(BOT, bot);
     _grantRole(PAUSER, pauser);
 
     lisAster = lisAster_;
     staking = staking_;
     rewards = rewards_;
+    waitingPeriod = waitingPeriod_;
   }
 
   /* RECORD INFLOW */
@@ -92,15 +115,62 @@ contract LisAsterDistributor is
     emit Notified(amount);
   }
 
-  /* MERKLE ROOT */
-  function setMerkleRoot(bytes32 root, uint256 newTotalAllocated) external override onlyRole(MANAGER) {
+  /* MERKLE ROOT — STAGE / ACCEPT / REVOKE */
+  /// @notice Stage a candidate root. BOT-only. Validates the candidate at stage time so that
+  ///         a later `acceptMerkleRoot` only has to enforce the time lock. Re-staging
+  ///         overwrites any prior pending root and resets the wait clock.
+  function setPendingMerkleRoot(bytes32 root, uint256 newTotalAllocated) external override onlyRole(BOT) {
     require(root != bytes32(0), "zero root");
     require(newTotalAllocated >= totalAllocated, "allocated decrease");
     require(newTotalAllocated <= totalNotified, "exceeds notified");
+    pendingMerkleRoot = root;
+    pendingTotalAllocated = newTotalAllocated;
+    lastSetTime = block.timestamp;
+    emit SetPendingMerkleRoot(root, newTotalAllocated, block.timestamp);
+  }
+
+  /// @notice Promote the staged pending root to live. BOT-only, callable once
+  ///         `block.timestamp >= lastSetTime + waitingPeriod`. The time-lock gives MANAGER
+  ///         a window to `revokePendingMerkleRoot` if the staged root looks wrong.
+  function acceptMerkleRoot() external override onlyRole(BOT) {
+    bytes32 root = pendingMerkleRoot;
+    require(root != bytes32(0), "no pending root");
+    require(block.timestamp >= lastSetTime + waitingPeriod, "waiting period");
+
+    uint256 newTotalAllocated = pendingTotalAllocated;
+    // Defense-in-depth: re-validate the invariants stage-time enforced. Both should still
+    // hold (totalNotified is monotone non-decreasing, totalAllocated is unchanged between
+    // stage and accept), but a future change that breaks either should be caught here.
+    require(newTotalAllocated >= totalAllocated, "allocated decrease");
+    require(newTotalAllocated <= totalNotified, "exceeds notified");
+
     merkleRoot = root;
     merkleRootUpdatedAt = block.timestamp;
     totalAllocated = newTotalAllocated;
-    emit MerkleRootSet(root, newTotalAllocated);
+
+    pendingMerkleRoot = bytes32(0);
+    pendingTotalAllocated = 0;
+    lastSetTime = 0;
+
+    emit AcceptMerkleRoot(root, newTotalAllocated, block.timestamp);
+  }
+
+  /// @notice Discard the staged pending root. MANAGER-only escape hatch for a wrong stage.
+  function revokePendingMerkleRoot() external override onlyRole(MANAGER) {
+    bytes32 root = pendingMerkleRoot;
+    require(root != bytes32(0), "no pending root");
+    pendingMerkleRoot = bytes32(0);
+    pendingTotalAllocated = 0;
+    lastSetTime = 0;
+    emit RevokePendingMerkleRoot(root);
+  }
+
+  /// @notice Tune the time-lock window. Admin-only. Floored at `MIN_WAITING_PERIOD` so that
+  ///         MANAGER's revoke window can never be configured below the safety threshold.
+  function changeWaitingPeriod(uint256 newWaitingPeriod) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+    require(newWaitingPeriod >= MIN_WAITING_PERIOD, "waitingPeriod too short");
+    waitingPeriod = newWaitingPeriod;
+    emit WaitingPeriodUpdated(newWaitingPeriod);
   }
 
   /* USER CLAIM */

@@ -36,8 +36,7 @@ contract FuzzTest is LisAsterBase {
   function testFuzz_randomProofRejected(address fuzzAccount, uint256 fuzzCum, bytes32[] calldata fuzzProof) public {
     _seedNotified();
     bytes32 root = _singleLeafRoot(user, 4 ether);
-    vm.prank(manager);
-    distributor.setMerkleRoot(root, 4 ether);
+    _setLiveMerkleRoot(root, 4 ether);
 
     // Exclude the only legitimate combination.
     bool legit = (fuzzAccount == user && fuzzCum == 4 ether && fuzzProof.length == 0);
@@ -63,8 +62,7 @@ contract FuzzTest is LisAsterBase {
     bytes32[] memory empty = new bytes32[](0);
 
     // Round 1.
-    vm.prank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, firstCum), firstCum);
+    _setLiveMerkleRoot(_singleLeafRoot(user, firstCum), firstCum);
     distributor.claim(user, firstCum, empty);
 
     // Round 2: switch root to `other`'s single leaf (totalAllocated must stay monotonic).
@@ -72,8 +70,7 @@ contract FuzzTest is LisAsterBase {
     bytes32 newRoot = _singleLeafRoot(other, secondCum);
     // The declared totalAllocated does not have to equal the tree's actual sum; the contract
     // only checks monotonicity and totalAllocated <= totalNotified.
-    vm.prank(manager);
-    distributor.setMerkleRoot(newRoot, newAllocated);
+    _setLiveMerkleRoot(newRoot, newAllocated);
 
     // user retrying with the stale (firstCum, []) -- new root rejects user's leaf.
     vm.expectRevert();
@@ -92,13 +89,11 @@ contract FuzzTest is LisAsterBase {
 
     bytes32[] memory empty = new bytes32[](0);
 
-    vm.prank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, firstCum), firstCum);
+    _setLiveMerkleRoot(_singleLeafRoot(user, firstCum), firstCum);
     distributor.claim(user, firstCum, empty);
 
     // Same totalAllocated but the leaf's cumulative is decreased.
-    vm.prank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, secondCum), firstCum);
+    _setLiveMerkleRoot(_singleLeafRoot(user, secondCum), firstCum);
 
     vm.expectRevert(bytes("nothing to claim"));
     distributor.claim(user, secondCum, empty);
@@ -114,8 +109,7 @@ contract FuzzTest is LisAsterBase {
     _seedNotified();
 
     (bytes32 root, bytes32[] memory pUser, bytes32[] memory pOther) = _twoLeafTree(user, cum, other, cum);
-    vm.prank(manager);
-    distributor.setMerkleRoot(root, 2 * cum);
+    _setLiveMerkleRoot(root, 2 * cum);
 
     uint256 totalSupplyBefore = lisAster.totalSupply();
 
@@ -150,11 +144,9 @@ contract FuzzTest is LisAsterBase {
 
     bytes32[] memory empty = new bytes32[](0);
 
-    vm.startPrank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, cum1), cum1);
-    distributor.setMerkleRoot(_singleLeafRoot(user, cum2), cum2);
-    distributor.setMerkleRoot(_singleLeafRoot(user, cum3), cum3);
-    vm.stopPrank();
+    _setLiveMerkleRoot(_singleLeafRoot(user, cum1), cum1);
+    _setLiveMerkleRoot(_singleLeafRoot(user, cum2), cum2);
+    _setLiveMerkleRoot(_singleLeafRoot(user, cum3), cum3);
 
     // user claims only against the final round's root.
     distributor.claim(user, cum3, empty);

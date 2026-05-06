@@ -3,6 +3,8 @@ pragma solidity ^0.8.24;
 
 import { LisAsterBase } from "./LisAsterBase.t.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
+import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import { LisAsterDistributor } from "../../src/lisAster/LisAsterDistributor.sol";
 
 contract LisAsterDistributorTest is LisAsterBase {
   /// @dev Pushes `amount` lisAster through the full Astherus -> Vault -> Rewards -> Distributor
@@ -43,36 +45,186 @@ contract LisAsterDistributorTest is LisAsterBase {
     assertEq(lisAster.balanceOf(address(distributor)), 7 ether);
   }
 
-  /* ---------------- setMerkleRoot ---------------- */
+  /* ---------------- setPendingMerkleRoot / acceptMerkleRoot / revoke / waitingPeriod ---------------- */
 
-  function test_setMerkleRoot_onlyManager() public {
-    bytes32 role = distributor.MANAGER();
+  function test_setPendingMerkleRoot_onlyBot() public {
+    bytes32 role = distributor.BOT();
     vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, role));
     vm.prank(other);
-    distributor.setMerkleRoot(bytes32(uint256(1)), 0);
+    distributor.setPendingMerkleRoot(bytes32(uint256(1)), 0);
   }
 
-  function test_setMerkleRoot_revertsZeroRoot() public {
+  function test_setPendingMerkleRoot_managerCannotStage() public {
     _injectNotified(1 ether);
+    bytes32 role = distributor.BOT();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, manager, role));
     vm.prank(manager);
-    vm.expectRevert(bytes("zero root"));
-    distributor.setMerkleRoot(bytes32(0), 1 ether);
+    distributor.setPendingMerkleRoot(_singleLeafRoot(user, 1 ether), 1 ether);
   }
 
-  function test_setMerkleRoot_allocatedMonotonic() public {
+  function test_setPendingMerkleRoot_revertsZeroRoot() public {
+    _injectNotified(1 ether);
+    vm.prank(bot);
+    vm.expectRevert(bytes("zero root"));
+    distributor.setPendingMerkleRoot(bytes32(0), 1 ether);
+  }
+
+  function test_setPendingMerkleRoot_allocatedMonotonic() public {
     _injectNotified(10 ether);
-    vm.startPrank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, 5 ether), 5 ether);
+    _setLiveMerkleRoot(_singleLeafRoot(user, 5 ether), 5 ether);
+
+    vm.prank(bot);
     vm.expectRevert(bytes("allocated decrease"));
-    distributor.setMerkleRoot(_singleLeafRoot(user, 4 ether), 4 ether);
+    distributor.setPendingMerkleRoot(_singleLeafRoot(user, 4 ether), 4 ether);
+  }
+
+  function test_setPendingMerkleRoot_exceedsNotifiedReverts() public {
+    _injectNotified(5 ether);
+    vm.prank(bot);
+    vm.expectRevert(bytes("exceeds notified"));
+    distributor.setPendingMerkleRoot(_singleLeafRoot(user, 6 ether), 6 ether);
+  }
+
+  function test_setPendingMerkleRoot_overwriteResetsClock() public {
+    _injectNotified(10 ether);
+
+    bytes32 r1 = _singleLeafRoot(user, 3 ether);
+    vm.prank(bot);
+    distributor.setPendingMerkleRoot(r1, 3 ether);
+    uint256 firstSet = distributor.lastSetTime();
+
+    vm.warp(firstSet + 30 minutes);
+    bytes32 r2 = _singleLeafRoot(user, 5 ether);
+    vm.prank(bot);
+    distributor.setPendingMerkleRoot(r2, 5 ether);
+
+    assertEq(distributor.pendingMerkleRoot(), r2);
+    assertEq(distributor.pendingTotalAllocated(), 5 ether);
+    assertEq(distributor.lastSetTime(), block.timestamp);
+  }
+
+  function test_acceptMerkleRoot_onlyBot() public {
+    _injectNotified(5 ether);
+    vm.prank(bot);
+    distributor.setPendingMerkleRoot(_singleLeafRoot(user, 5 ether), 5 ether);
+    vm.warp(block.timestamp + DISTRIBUTOR_WAITING_PERIOD);
+
+    bytes32 role = distributor.BOT();
+    // MANAGER is intentionally not authorized to accept; only BOT can promote.
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, manager, role));
+    vm.prank(manager);
+    distributor.acceptMerkleRoot();
+
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, role));
+    vm.prank(other);
+    distributor.acceptMerkleRoot();
+  }
+
+  function test_acceptMerkleRoot_revertsBeforeWaitingPeriod() public {
+    _injectNotified(5 ether);
+    vm.prank(bot);
+    distributor.setPendingMerkleRoot(_singleLeafRoot(user, 5 ether), 5 ether);
+
+    // One second short of the wait.
+    vm.warp(block.timestamp + DISTRIBUTOR_WAITING_PERIOD - 1);
+    vm.prank(bot);
+    vm.expectRevert(bytes("waiting period"));
+    distributor.acceptMerkleRoot();
+  }
+
+  function test_acceptMerkleRoot_revertsNoPending() public {
+    vm.prank(bot);
+    vm.expectRevert(bytes("no pending root"));
+    distributor.acceptMerkleRoot();
+  }
+
+  function test_acceptMerkleRoot_promotesAndClearsPending() public {
+    _injectNotified(5 ether);
+    bytes32 root = _singleLeafRoot(user, 5 ether);
+
+    vm.prank(bot);
+    distributor.setPendingMerkleRoot(root, 5 ether);
+    vm.warp(block.timestamp + DISTRIBUTOR_WAITING_PERIOD);
+    vm.prank(bot);
+    distributor.acceptMerkleRoot();
+
+    assertEq(distributor.merkleRoot(), root);
+    assertEq(distributor.totalAllocated(), 5 ether);
+    assertEq(distributor.merkleRootUpdatedAt(), block.timestamp);
+    assertEq(distributor.pendingMerkleRoot(), bytes32(0));
+    assertEq(distributor.pendingTotalAllocated(), 0);
+    assertEq(distributor.lastSetTime(), 0);
+  }
+
+  function test_revokePendingMerkleRoot_byManager() public {
+    _injectNotified(5 ether);
+    vm.prank(bot);
+    distributor.setPendingMerkleRoot(_singleLeafRoot(user, 5 ether), 5 ether);
+
+    vm.prank(manager);
+    distributor.revokePendingMerkleRoot();
+
+    assertEq(distributor.pendingMerkleRoot(), bytes32(0));
+    assertEq(distributor.pendingTotalAllocated(), 0);
+    assertEq(distributor.lastSetTime(), 0);
+    // Live root is untouched.
+    assertEq(distributor.merkleRoot(), bytes32(0));
+  }
+
+  function test_revokePendingMerkleRoot_revertsNoPending() public {
+    vm.prank(manager);
+    vm.expectRevert(bytes("no pending root"));
+    distributor.revokePendingMerkleRoot();
+  }
+
+  function test_revokePendingMerkleRoot_onlyManager() public {
+    _injectNotified(1 ether);
+    vm.prank(bot);
+    distributor.setPendingMerkleRoot(_singleLeafRoot(user, 1 ether), 1 ether);
+
+    bytes32 role = distributor.MANAGER();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, bot, role));
+    vm.prank(bot);
+    distributor.revokePendingMerkleRoot();
+  }
+
+  function test_changeWaitingPeriod_byAdmin() public {
+    vm.prank(admin);
+    distributor.changeWaitingPeriod(2 days);
+    assertEq(distributor.waitingPeriod(), 2 days);
+  }
+
+  function test_changeWaitingPeriod_atMinAccepted() public {
+    uint256 minPeriod = distributor.MIN_WAITING_PERIOD();
+    vm.prank(admin);
+    distributor.changeWaitingPeriod(minPeriod);
+    assertEq(distributor.waitingPeriod(), minPeriod);
+  }
+
+  function test_changeWaitingPeriod_revertsBelowMin() public {
+    uint256 minPeriod = distributor.MIN_WAITING_PERIOD();
+    vm.startPrank(admin);
+    vm.expectRevert(bytes("waitingPeriod too short"));
+    distributor.changeWaitingPeriod(minPeriod - 1);
+    vm.expectRevert(bytes("waitingPeriod too short"));
+    distributor.changeWaitingPeriod(0);
     vm.stopPrank();
   }
 
-  function test_setMerkleRoot_exceedsNotifiedReverts() public {
-    _injectNotified(5 ether);
+  function test_changeWaitingPeriod_onlyAdmin() public {
+    bytes32 role = distributor.DEFAULT_ADMIN_ROLE();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, manager, role));
     vm.prank(manager);
-    vm.expectRevert(bytes("exceeds notified"));
-    distributor.setMerkleRoot(_singleLeafRoot(user, 6 ether), 6 ether);
+    distributor.changeWaitingPeriod(2 days);
+  }
+
+  function test_initialize_revertsBelowMinWaitingPeriod() public {
+    LisAsterDistributor freshImpl = new LisAsterDistributor();
+    LisAsterDistributor fresh = LisAsterDistributor(address(new ERC1967Proxy(address(freshImpl), "")));
+    uint256 minPeriod = freshImpl.MIN_WAITING_PERIOD();
+
+    vm.expectRevert(bytes("waitingPeriod too short"));
+    fresh.initialize(admin, manager, bot, pauser, address(lisAster), address(staking), address(rewards), minPeriod - 1);
   }
 
   /* ---------------- claim ---------------- */
@@ -83,8 +235,7 @@ contract LisAsterDistributorTest is LisAsterBase {
     bytes32 root = _singleLeafRoot(user, 4 ether);
     bytes32[] memory empty = new bytes32[](0);
 
-    vm.prank(manager);
-    distributor.setMerkleRoot(root, 4 ether);
+    _setLiveMerkleRoot(root, 4 ether);
 
     distributor.claim(user, 4 ether, empty);
 
@@ -98,14 +249,12 @@ contract LisAsterDistributorTest is LisAsterBase {
     bytes32[] memory empty = new bytes32[](0);
 
     // root 1: user cumulative = 3
-    vm.prank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, 3 ether), 3 ether);
+    _setLiveMerkleRoot(_singleLeafRoot(user, 3 ether), 3 ether);
     distributor.claim(user, 3 ether, empty);
     assertEq(lisAster.balanceOf(user), 3 ether);
 
     // root 2: user cumulative = 7 -> only the 4-ether delta is paid.
-    vm.prank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, 7 ether), 7 ether);
+    _setLiveMerkleRoot(_singleLeafRoot(user, 7 ether), 7 ether);
     distributor.claim(user, 7 ether, empty);
     assertEq(lisAster.balanceOf(user), 7 ether);
     assertEq(distributor.totalClaimed(), 7 ether);
@@ -115,8 +264,7 @@ contract LisAsterDistributorTest is LisAsterBase {
     _injectNotified(10 ether);
     bytes32[] memory empty = new bytes32[](0);
 
-    vm.prank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, 5 ether), 5 ether);
+    _setLiveMerkleRoot(_singleLeafRoot(user, 5 ether), 5 ether);
     distributor.claim(user, 5 ether, empty);
 
     // Replaying the same cumulativeAmount must revert.
@@ -127,8 +275,7 @@ contract LisAsterDistributorTest is LisAsterBase {
   function test_claim_revertsInvalidProof() public {
     _injectNotified(10 ether);
     (bytes32 root, , ) = _twoLeafTree(user, 4 ether, other, 6 ether);
-    vm.prank(manager);
-    distributor.setMerkleRoot(root, 10 ether);
+    _setLiveMerkleRoot(root, 10 ether);
 
     bytes32[] memory wrongProof = new bytes32[](1);
     wrongProof[0] = bytes32(uint256(0xdeadbeef));
@@ -139,8 +286,7 @@ contract LisAsterDistributorTest is LisAsterBase {
   function test_claim_twoLeafTree() public {
     _injectNotified(10 ether);
     (bytes32 root, bytes32[] memory p0, bytes32[] memory p1) = _twoLeafTree(user, 4 ether, other, 6 ether);
-    vm.prank(manager);
-    distributor.setMerkleRoot(root, 10 ether);
+    _setLiveMerkleRoot(root, 10 ether);
 
     distributor.claim(user, 4 ether, p0);
     distributor.claim(other, 6 ether, p1);
@@ -153,8 +299,7 @@ contract LisAsterDistributorTest is LisAsterBase {
   function test_claimable_consistentWithClaim() public {
     _injectNotified(10 ether);
     (bytes32 root, bytes32[] memory p0, ) = _twoLeafTree(user, 4 ether, other, 6 ether);
-    vm.prank(manager);
-    distributor.setMerkleRoot(root, 10 ether);
+    _setLiveMerkleRoot(root, 10 ether);
 
     uint256 c = distributor.claimable(user, 4 ether, p0);
     assertEq(c, 4 ether);
@@ -172,8 +317,7 @@ contract LisAsterDistributorTest is LisAsterBase {
     _injectNotified(10 ether);
     bytes32[] memory empty = new bytes32[](0);
 
-    vm.prank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, 4 ether), 4 ether);
+    _setLiveMerkleRoot(_singleLeafRoot(user, 4 ether), 4 ether);
 
     vm.prank(user);
     distributor.claimAndStake(4 ether, empty);
@@ -195,8 +339,7 @@ contract LisAsterDistributorTest is LisAsterBase {
   function test_claimAndStake_equivalenceWithClaim() public {
     _injectNotified(10 ether);
     (bytes32 root, bytes32[] memory p0, bytes32[] memory p1) = _twoLeafTree(user, 4 ether, other, 6 ether);
-    vm.prank(manager);
-    distributor.setMerkleRoot(root, 10 ether);
+    _setLiveMerkleRoot(root, 10 ether);
 
     distributor.claim(user, 4 ether, p0);
     vm.prank(other);

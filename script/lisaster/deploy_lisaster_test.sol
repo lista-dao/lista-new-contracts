@@ -29,6 +29,10 @@ contract DeployLisAsterTestnet is Script {
   /// @dev Reward fee on testnet. 1e18 = 100%, capped at MAX_FEE_RATE (3e17 = 30%).
   uint256 constant FEE_RATE = 1e17; // 10%
 
+  /// @dev Distributor pending-root time-lock window (BOT stages -> wait -> BOT accepts).
+  ///      Must be >= LisAsterDistributor.MIN_WAITING_PERIOD (6 hours).
+  uint256 constant DISTRIBUTOR_WAITING_PERIOD = 6 hours;
+
   function run() public {
     require(block.chainid == 97, "expect BSC testnet (chainId 97)");
 
@@ -43,9 +47,9 @@ contract DeployLisAsterTestnet is Script {
     // All roles default to deployer on testnet; rotate later via grantRole / setBroker etc.
     address admin = deployer;
     address pauser = deployer;
-    address manager = deployer; // Distributor MANAGER (sets Merkle root)
+    address manager = deployer; // Distributor MANAGER (revokes pending Merkle root, emergency withdraw)
     address rewardsManager = deployer; // Rewards.MANAGER (notifyRewards EOA, also calls setDistributor / fee setters)
-    address bot = deployer; // Rewards.BOT (distributeRewards keeper)
+    address bot = deployer; // Rewards.BOT (distributeRewards keeper) and Distributor.BOT (stages + accepts pending root)
     address lisAsterManager = deployer; // forAddress in AstherusVault.depositFor
     address feeReceiver = deployer; // ASTER fee recipient on Rewards.notifyRewards
 
@@ -78,7 +82,16 @@ contract DeployLisAsterTestnet is Script {
 
     rewards.initialize(admin, pauser, rewardsManager, bot, ASTER_TOKEN, address(lisAster), address(vault));
 
-    distributor.initialize(admin, manager, pauser, address(lisAster), address(staking), address(rewards));
+    distributor.initialize(
+      admin,
+      manager,
+      bot,
+      pauser,
+      address(lisAster),
+      address(staking),
+      address(rewards),
+      DISTRIBUTOR_WAITING_PERIOD
+    );
 
     /* 3. Rewards post-init wiring (deployer holds Rewards.MANAGER on testnet):
      *    - one-shot setDistributor

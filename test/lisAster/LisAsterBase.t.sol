@@ -23,6 +23,8 @@ abstract contract LisAsterBase is Test {
   address user = makeAddr("user");
   address other = makeAddr("other");
 
+  uint256 internal constant DISTRIBUTOR_WAITING_PERIOD = 6 hours;
+
   MockERC20 internal asterToken;
   MockAstherusVault internal astherusVault;
 
@@ -57,7 +59,16 @@ abstract contract LisAsterBase is Test {
     );
     staking.initialize(admin, pauser, manager, address(lisAster));
     rewards.initialize(admin, pauser, manager, bot, address(asterToken), address(lisAster), address(vault));
-    distributor.initialize(admin, manager, pauser, address(lisAster), address(staking), address(rewards));
+    distributor.initialize(
+      admin,
+      manager,
+      bot,
+      pauser,
+      address(lisAster),
+      address(staking),
+      address(rewards),
+      DISTRIBUTOR_WAITING_PERIOD
+    );
 
     // 3. Rewards one-shot setDistributor (MANAGER-gated; only Rewards still wires distributor on-chain).
     vm.prank(manager);
@@ -92,6 +103,15 @@ abstract contract LisAsterBase is Test {
   function _botDistribute(uint256 amount) internal {
     vm.prank(bot);
     rewards.distributeRewards(amount);
+  }
+
+  /// @dev BOT stages a root, fast-forwards past `waitingPeriod`, and BOT promotes it live.
+  function _setLiveMerkleRoot(bytes32 root, uint256 totalAllocated) internal {
+    vm.prank(bot);
+    distributor.setPendingMerkleRoot(root, totalAllocated);
+    vm.warp(block.timestamp + distributor.waitingPeriod());
+    vm.prank(bot);
+    distributor.acceptMerkleRoot();
   }
 
   /* ----------------- minimal Merkle helpers (1-leaf / 2-leaf) ----------------- */

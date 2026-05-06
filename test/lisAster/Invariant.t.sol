@@ -30,8 +30,7 @@ contract InvariantTest is LisAsterBase {
 
     // Run a claim.
     bytes32[] memory empty = new bytes32[](0);
-    vm.prank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, 3 ether), 3 ether);
+    _setLiveMerkleRoot(_singleLeafRoot(user, 3 ether), 3 ether);
     distributor.claim(user, 3 ether, empty);
 
     assertEq(distributor.totalNotified(), 7 ether);
@@ -50,21 +49,20 @@ contract InvariantTest is LisAsterBase {
     assertEq(rewards.pendingLisAster(), 4 ether);
   }
 
-  /* I-4: totalAllocated <= totalNotified -- MANAGER cannot over-allocate. */
+  /* I-4: totalAllocated <= totalNotified -- BOT cannot stage an over-allocated root. */
   function test_invariant_totalAllocatedNotExceedsNotified() public {
     _managerNotify(5 ether);
     _botDistribute(5 ether); // totalNotified = 5
 
-    vm.prank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, 5 ether), 5 ether);
+    _setLiveMerkleRoot(_singleLeafRoot(user, 5 ether), 5 ether);
     assertLe(distributor.totalAllocated(), distributor.totalNotified());
 
-    // Over-allocation must revert.
+    // Over-allocation must revert at stage time.
     _managerNotify(2 ether);
     _botDistribute(2 ether); // totalNotified = 7
-    vm.prank(manager);
+    vm.prank(bot);
     vm.expectRevert(bytes("exceeds notified"));
-    distributor.setMerkleRoot(_singleLeafRoot(user, 100 ether), 100 ether);
+    distributor.setPendingMerkleRoot(_singleLeafRoot(user, 100 ether), 100 ether);
   }
 
   /* claimed[u] is monotonically non-decreasing. */
@@ -74,14 +72,12 @@ contract InvariantTest is LisAsterBase {
     bytes32[] memory empty = new bytes32[](0);
 
     uint256 prev = distributor.claimed(user);
-    vm.prank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, 3 ether), 3 ether);
+    _setLiveMerkleRoot(_singleLeafRoot(user, 3 ether), 3 ether);
     distributor.claim(user, 3 ether, empty);
     assertGt(distributor.claimed(user), prev);
 
     prev = distributor.claimed(user);
-    vm.prank(manager);
-    distributor.setMerkleRoot(_singleLeafRoot(user, 8 ether), 8 ether);
+    _setLiveMerkleRoot(_singleLeafRoot(user, 8 ether), 8 ether);
     distributor.claim(user, 8 ether, empty);
     assertGt(distributor.claimed(user), prev);
   }
