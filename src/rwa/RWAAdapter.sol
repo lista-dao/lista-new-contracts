@@ -36,6 +36,10 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   uint256 public fee;
   // last total assets in vault
   uint256 public lastVaultTotalAssets;
+  // minimum amount for requestDepositToVault, in vaultAsset units
+  uint256 public minDeposit;
+  // minimum amount for requestWithdrawFromVault, in vaultAsset units
+  uint256 public minWithdraw;
 
   /* CONSTANTS */
   bytes32 public constant MANAGER = keccak256("MANAGER");
@@ -58,6 +62,8 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   event SetFeeRate(uint256 feeRate);
   event SetToVaultAssetLossRate(uint256 toVaultAssetLossRate);
   event SetToAssetLossRate(uint256 toAssetLossRate);
+  event SetMinDeposit(uint256 minDeposit);
+  event SetMinWithdraw(uint256 minWithdraw);
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -117,6 +123,7 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
    */
   function requestDepositToVault(uint256 amountVaultAsset) external onlyRole(BOT) {
     require(amountVaultAsset > 0, "Amount amountVaultAsset be greater than zero");
+    require(amountVaultAsset >= minDeposit, "below min deposit");
     _requestDepositToVault(amountVaultAsset);
   }
 
@@ -167,6 +174,7 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
    */
   function requestWithdrawFromVault(uint256 amountVaultAsset) external onlyRole(BOT) {
     require(amountVaultAsset > 0, "Amount must be greater than zero");
+    require(amountVaultAsset >= minWithdraw, "below min withdraw");
     // update vault assets and charge fee
     _updateVaultAssets();
 
@@ -291,6 +299,26 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   function setOTCManager(address _otcManager) external onlyRole(MANAGER) {
     require(_otcManager != address(0), "otcManager is zero address");
     otcManager = _otcManager;
+  }
+
+  /**
+   * @dev set minimum amount for requestDepositToVault
+   * @param _minDeposit The minimum amount, in vaultAsset units
+   */
+  function setMinDeposit(uint256 _minDeposit) external onlyRole(MANAGER) {
+    require(minDeposit != _minDeposit, "same minDeposit");
+    minDeposit = _minDeposit;
+    emit SetMinDeposit(_minDeposit);
+  }
+
+  /**
+   * @dev set minimum amount for requestWithdrawFromVault
+   * @param _minWithdraw The minimum amount, in vaultAsset units
+   */
+  function setMinWithdraw(uint256 _minWithdraw) external onlyRole(MANAGER) {
+    require(minWithdraw != _minWithdraw, "same minWithdraw");
+    minWithdraw = _minWithdraw;
+    emit SetMinWithdraw(_minWithdraw);
   }
 
   /**

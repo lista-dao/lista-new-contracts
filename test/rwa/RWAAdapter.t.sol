@@ -283,6 +283,98 @@ contract RWAAdapterTest is Test {
     assertEq(earnPool.periodRewards(), 1 ether, "earnPool periodRewards");
   }
 
+  function test_setMinDeposit_onlyManager() public {
+    vm.expectRevert();
+    adapter.setMinDeposit(1000 ether);
+
+    vm.startPrank(manager);
+    vm.expectEmit(false, false, false, true);
+    emit RWAAdapter.SetMinDeposit(1000 ether);
+    adapter.setMinDeposit(1000 ether);
+    assertEq(adapter.minDeposit(), 1000 ether, "minDeposit");
+
+    vm.expectRevert("same minDeposit");
+    adapter.setMinDeposit(1000 ether);
+    vm.stopPrank();
+  }
+
+  function test_setMinWithdraw_onlyManager() public {
+    vm.expectRevert();
+    adapter.setMinWithdraw(1000 ether);
+
+    vm.startPrank(manager);
+    vm.expectEmit(false, false, false, true);
+    emit RWAAdapter.SetMinWithdraw(1000 ether);
+    adapter.setMinWithdraw(1000 ether);
+    assertEq(adapter.minWithdraw(), 1000 ether, "minWithdraw");
+
+    vm.expectRevert("same minWithdraw");
+    adapter.setMinWithdraw(1000 ether);
+    vm.stopPrank();
+  }
+
+  function test_requestDepositToVault_revertsBelowMin() public {
+    vm.startPrank(manager);
+    adapter.setMinDeposit(1000 ether);
+    vm.stopPrank();
+
+    USDC.mint(address(adapter), 2000 ether);
+
+    vm.startPrank(bot);
+    vm.expectRevert("below min deposit");
+    adapter.requestDepositToVault(999 ether);
+
+    // boundary: equal to min passes
+    adapter.requestDepositToVault(1000 ether);
+    vm.stopPrank();
+
+    assertEq(USDC.balanceOf(address(vault)), 1000 ether, "vault USDC balance");
+  }
+
+  function test_requestWithdrawFromVault_revertsBelowMin() public {
+    USDC.mint(address(adapter), 2000 ether);
+
+    vm.startPrank(bot);
+    adapter.requestDepositToVault(2000 ether);
+    adapter.depositToVault();
+    vm.stopPrank();
+
+    vm.startPrank(manager);
+    adapter.setMinWithdraw(1000 ether);
+    vm.stopPrank();
+
+    vm.startPrank(bot);
+    vm.expectRevert("below min withdraw");
+    adapter.requestWithdrawFromVault(999 ether);
+
+    // boundary: equal to min passes
+    adapter.requestWithdrawFromVault(1000 ether);
+    vm.stopPrank();
+  }
+
+  function test_depositRewards_unaffectedByMin() public {
+    // ensure earn pool has shares so depositRewards passes its precondition
+    USD1.mint(user, 1 ether);
+    vm.startPrank(user);
+    USD1.approve(address(earnPool), 1 ether);
+    earnPool.deposit(1 ether, 0, user);
+    vm.stopPrank();
+
+    // set a high min that would block any direct BOT deposit
+    vm.startPrank(manager);
+    adapter.setMinDeposit(1000 ether);
+    vm.stopPrank();
+
+    // depositRewards path internally calls _requestDepositToVault but should not be gated
+    USDC.mint(manager, 1 ether);
+    vm.startPrank(manager);
+    USDC.approve(address(adapter), 1 ether);
+    adapter.depositRewards(1 ether);
+    vm.stopPrank();
+
+    assertEq(earnPool.periodRewards(), 1 ether, "periodRewards");
+  }
+
   function test_newAssetLessThanOldAsset() public {
     USDC.mint(address(adapter), 1 ether);
 

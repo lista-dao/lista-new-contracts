@@ -245,6 +245,67 @@ contract RWAEarnPoolTest is Test {
     assertEq(earnPool.balanceOf(user), 0, "user earnPool shares after requestWithdraw");
   }
 
+  function test_setMinDeposit_onlyManager() public {
+    vm.expectRevert();
+    earnPool.setMinDeposit(1000 ether);
+
+    vm.startPrank(manager);
+    vm.expectEmit(false, false, false, true);
+    emit RWAEarnPool.SetMinDeposit(1000 ether);
+    earnPool.setMinDeposit(1000 ether);
+    assertEq(earnPool.minDeposit(), 1000 ether, "minDeposit");
+
+    vm.expectRevert("same minDeposit");
+    earnPool.setMinDeposit(1000 ether);
+    vm.stopPrank();
+  }
+
+  function test_deposit_revertsBelowMin_byAmount() public {
+    vm.startPrank(manager);
+    earnPool.setMinDeposit(1000 ether);
+    vm.stopPrank();
+
+    USD1.mint(user, 2000 ether);
+
+    vm.startPrank(user);
+    USD1.approve(address(earnPool), type(uint256).max);
+    vm.expectRevert("deposit below minimum");
+    earnPool.deposit(999 ether, 0, user);
+
+    // boundary: equal to min passes
+    earnPool.deposit(1000 ether, 0, user);
+    vm.stopPrank();
+
+    assertEq(earnPool.balanceOf(user), 1000 ether, "user shares");
+  }
+
+  function test_deposit_revertsBelowMin_byShares() public {
+    // first seed pool with one large deposit so shares-based path has meaningful conversion
+    USD1.mint(user, 2000 ether);
+    depositToEarnPool(user, 2000 ether);
+
+    vm.startPrank(manager);
+    earnPool.setMinDeposit(1000 ether);
+    vm.stopPrank();
+
+    address other = makeAddr("other");
+    USD1.mint(other, 2000 ether);
+
+    vm.startPrank(other);
+    USD1.approve(address(earnPool), type(uint256).max);
+    // 999 shares -> ~999 amount, below min, must revert (proves shares path is also gated)
+    vm.expectRevert("deposit below minimum");
+    earnPool.deposit(0, 999 ether, other);
+    vm.stopPrank();
+  }
+
+  function test_deposit_zeroMin_backwardCompat() public {
+    // default minDeposit == 0, small deposits still allowed
+    USD1.mint(user, 1);
+    depositToEarnPool(user, 1);
+    assertEq(earnPool.balanceOf(user), 1, "user shares");
+  }
+
   function test_withdrawAllFee() public {
     USD1.mint(user, 1 ether);
 
