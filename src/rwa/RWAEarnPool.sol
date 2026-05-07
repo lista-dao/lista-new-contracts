@@ -252,13 +252,12 @@ contract RWAEarnPool is
    */
   function finishWithdraw(uint256 amount) external {
     require(msg.sender == adapter, "only adapter can call");
-    require(amount > 0, "amount is zero");
 
-    // transfer asset from adapter
-    IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
-
-    // update withdraw quota
-    withdrawQuota += amount;
+    // transfer asset from adapter (zero allowed: lets BOT tick batches without adding funds)
+    if (amount > 0) {
+      IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
+      withdrawQuota += amount;
+    }
 
     // cover withdraw requests in batch
     for (uint256 i = confirmedBatchId + 1; i <= currentBatchId; i++) {

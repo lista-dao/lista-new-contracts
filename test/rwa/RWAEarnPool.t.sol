@@ -114,6 +114,38 @@ contract RWAEarnPoolTest is Test {
     assertEq(earnPool.confirmedBatchId(), 2, "earnPool confirmedBatchId after finishWithdraw");
   }
 
+  function test_finishWithdraw_zeroAmount_ticksBatchesUsingExistingQuota() public {
+    USD1.mint(user, 2 ether);
+    depositToEarnPool(user, 2 ether);
+
+    // request 1: 0.5
+    vm.startPrank(user);
+    earnPool.requestWithdraw(0.5 ether, 0, user);
+    vm.stopPrank();
+
+    // first finishWithdraw with surplus quota that covers req1 + builds 0.5 leftover
+    vm.startPrank(adapter);
+    USD1.approve(address(earnPool), type(uint256).max);
+    earnPool.finishWithdraw(1 ether);
+    vm.stopPrank();
+    assertEq(earnPool.confirmedBatchId(), 1, "first batch confirmed");
+    assertEq(earnPool.withdrawQuota(), 0.5 ether, "leftover quota");
+
+    // request 2 in a new batch — needs 0.5 which leftover quota can cover
+    vm.warp(block.timestamp + 1 days);
+    vm.startPrank(user);
+    earnPool.requestWithdraw(0.5 ether, 0, user);
+    vm.stopPrank();
+
+    // calling with 0 must NOT revert and must tick batch 2 using leftover quota
+    vm.startPrank(adapter);
+    earnPool.finishWithdraw(0);
+    vm.stopPrank();
+
+    assertEq(earnPool.confirmedBatchId(), 2, "batch 2 confirmed via zero call");
+    assertEq(earnPool.withdrawQuota(), 0, "quota fully consumed");
+  }
+
   function test_claimWithdraw() public {
     USD1.mint(user, 1 ether);
 

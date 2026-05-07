@@ -226,8 +226,9 @@ contract RWAAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
    * @param amountAsset The amount of asset to cover withdraw
    */
   function finishEarnPoolWithdraw(uint256 amountAsset) external onlyRole(BOT) {
-    require(amountAsset > 0, "Amount must be greater than zero");
-    IERC20(asset).safeIncreaseAllowance(earnPool, amountAsset);
+    if (amountAsset > 0) {
+      IERC20(asset).safeIncreaseAllowance(earnPool, amountAsset);
+    }
     IRWAEarnPool(earnPool).finishWithdraw(amountAsset);
   }
 

@@ -177,6 +177,25 @@ contract RWAAdapterTest is Test {
     assertEq(USD1.balanceOf(address(adapter)), 0, "adapter USD1 balance");
   }
 
+  function test_finishEarnPoolWithdraw_zeroAmount() public {
+    // user deposits and requests withdraw
+    USD1.mint(user, 1 ether);
+    vm.startPrank(user);
+    USD1.approve(address(earnPool), 1 ether);
+    earnPool.deposit(1 ether, 0, user);
+    earnPool.requestWithdraw(1 ether, 0, user);
+    vm.stopPrank();
+
+    // adapter has surplus assets and ticks batch with non-zero call first
+    vm.startPrank(bot);
+    adapter.finishEarnPoolWithdraw(1 ether);
+    // calling with 0 must succeed (no further batches but should not revert)
+    adapter.finishEarnPoolWithdraw(0);
+    vm.stopPrank();
+
+    assertEq(earnPool.confirmedBatchId(), 1, "earnPool confirmedBatchId");
+  }
+
   function test_swapToken() public {
     USD1.mint(address(adapter), 1 ether);
     USDC.mint(address(adapter), 1 ether);
