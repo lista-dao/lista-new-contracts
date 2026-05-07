@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Script.sol";
 
-import { LisAsterDistributor } from "../../src/lisAster/LisAsterDistributor.sol";
+import { LisAsterDistributor } from "../../src/lisaster/LisAsterDistributor.sol";
 
 /// @title UpgradeLisAsterDistributorTestnet
 /// @notice One-shot BSC testnet upgrade for the LisAsterDistributor proxy:

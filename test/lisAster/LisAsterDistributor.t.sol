@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import { LisAsterBase } from "./LisAsterBase.t.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import { LisAsterDistributor } from "../../src/lisAster/LisAsterDistributor.sol";
+import { LisAsterDistributor } from "../../src/lisaster/LisAsterDistributor.sol";
 
 contract LisAsterDistributorTest is LisAsterBase {
   /// @dev Pushes `amount` lisAster through the full Astherus -> Vault -> Rewards -> Distributor
