@@ -167,7 +167,11 @@ contract LisAsterDistributor is
 
   /// @notice Tune the time-lock window. Admin-only. Floored at `MIN_WAITING_PERIOD` so that
   ///         MANAGER's revoke window can never be configured below the safety threshold.
+  ///         Disallowed while a pending root is in flight: otherwise lowering the window
+  ///         would implicitly shrink MANAGER's veto time on the currently staged root.
+  ///         If the admin needs to change the period mid-flight, revoke the pending root first.
   function changeWaitingPeriod(uint256 newWaitingPeriod) external override onlyRole(DEFAULT_ADMIN_ROLE) {
+    require(pendingMerkleRoot == bytes32(0), "pending root exists");
     require(newWaitingPeriod >= MIN_WAITING_PERIOD, "waitingPeriod too short");
     waitingPeriod = newWaitingPeriod;
     emit WaitingPeriodUpdated(newWaitingPeriod);
@@ -227,6 +231,7 @@ contract LisAsterDistributor is
     uint256 already = claimed[account];
     require(cumulativeAmount > already, "nothing to claim");
     payable_ = cumulativeAmount - already;
+    require(totalClaimed + payable_ <= totalAllocated, "exceeds allocated");
     claimed[account] = cumulativeAmount;
     totalClaimed += payable_;
   }

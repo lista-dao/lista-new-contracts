@@ -218,6 +218,45 @@ contract LisAsterDistributorTest is LisAsterBase {
     distributor.changeWaitingPeriod(2 days);
   }
 
+  /// @dev Lowering `waitingPeriod` while a root is pending would retroactively shrink MANAGER's
+  ///      veto window on that in-flight root. Disallow the change until the pending root clears.
+  function test_changeWaitingPeriod_revertsWhilePending() public {
+    _injectNotified(5 ether);
+    uint256 minPeriod = distributor.MIN_WAITING_PERIOD();
+
+    // Stage a root with the default 6h timelock.
+    vm.prank(bot);
+    distributor.setPendingMerkleRoot(_singleLeafRoot(user, 5 ether), 5 ether);
+
+    // Admin tries to retune the window — must revert while a pending root exists.
+    vm.prank(admin);
+    vm.expectRevert(bytes("pending root exists"));
+    distributor.changeWaitingPeriod(minPeriod);
+  }
+
+  function test_changeWaitingPeriod_allowedAfterAccept() public {
+    _injectNotified(5 ether);
+    _setLiveMerkleRoot(_singleLeafRoot(user, 5 ether), 5 ether); // accepts + clears pending
+
+    vm.prank(admin);
+    distributor.changeWaitingPeriod(2 days);
+    assertEq(distributor.waitingPeriod(), 2 days);
+  }
+
+  function test_changeWaitingPeriod_allowedAfterRevoke() public {
+    _injectNotified(5 ether);
+    vm.prank(bot);
+    distributor.setPendingMerkleRoot(_singleLeafRoot(user, 5 ether), 5 ether);
+
+    vm.prank(manager);
+    distributor.revokePendingMerkleRoot();
+
+    // After revoke, pendingMerkleRoot is zero again → admin can retune freely.
+    vm.prank(admin);
+    distributor.changeWaitingPeriod(2 days);
+    assertEq(distributor.waitingPeriod(), 2 days);
+  }
+
   function test_initialize_revertsBelowMinWaitingPeriod() public {
     LisAsterDistributor freshImpl = new LisAsterDistributor();
     LisAsterDistributor fresh = LisAsterDistributor(address(new ERC1967Proxy(address(freshImpl), "")));
@@ -281,6 +320,35 @@ contract LisAsterDistributorTest is LisAsterBase {
     wrongProof[0] = bytes32(uint256(0xdeadbeef));
     vm.expectRevert(bytes("invalid proof"));
     distributor.claim(user, 4 ether, wrongProof);
+  }
+
+  /// @dev Defense-in-depth: even if BOT stages a root whose leaves exceed the declared
+  ///      `totalAllocated`, `_consume()` must cap payouts at `totalAllocated` and revert.
+  function test_claim_revertsExceedsAllocated() public {
+    _injectNotified(10 ether);
+
+    // Malformed: declare 1 ether allocated, but leaf grants 10 ether. setPendingMerkleRoot only
+    // bounds against `totalNotified`, so this is acceptable to stage and promote.
+    _setLiveMerkleRoot(_singleLeafRoot(user, 10 ether), 1 ether);
+
+    bytes32[] memory empty = new bytes32[](0);
+    vm.expectRevert(bytes("exceeds allocated"));
+    distributor.claim(user, 10 ether, empty);
+  }
+
+  /// @dev Partial-overrun variant: first leaf fits within `totalAllocated`, second pushes total
+  ///      over the cap and must revert.
+  function test_claim_revertsExceedsAllocated_partial() public {
+    _injectNotified(10 ether);
+    (bytes32 root, bytes32[] memory p0, bytes32[] memory p1) = _twoLeafTree(user, 4 ether, other, 6 ether);
+    // Declared 5, leaves sum to 10. First 4-claim succeeds, second 6-claim trips the new cap.
+    _setLiveMerkleRoot(root, 5 ether);
+
+    distributor.claim(user, 4 ether, p0);
+    assertEq(distributor.totalClaimed(), 4 ether);
+
+    vm.expectRevert(bytes("exceeds allocated"));
+    distributor.claim(other, 6 ether, p1);
   }
 
   function test_claim_twoLeafTree() public {
