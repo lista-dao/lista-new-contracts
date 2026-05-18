@@ -29,6 +29,7 @@ contract AsterVault is
 
   /* CONSTANTS */
   bytes32 public constant PAUSER = keccak256("PAUSER");
+  bytes32 public constant MANAGER = keccak256("MANAGER");
 
   /* IMMUTABLE-LIKE (set once in initialize) */
   address public asterToken;
@@ -54,6 +55,7 @@ contract AsterVault is
   /* INITIALIZER */
   /// @param admin             DEFAULT_ADMIN holder (governance multisig).
   /// @param pauser            PAUSER role holder.
+  /// @param manager           MANAGER role holder (rotates `lisAsterManager`).
   /// @param asterToken_       BSC ASTER token address.
   /// @param astherusVault_    AstherusVault BSC contract address.
   /// @param lisAster_         Deployed LisAster proxy.
@@ -64,6 +66,7 @@ contract AsterVault is
   function initialize(
     address admin,
     address pauser,
+    address manager,
     address asterToken_,
     address astherusVault_,
     address lisAster_,
@@ -73,6 +76,7 @@ contract AsterVault is
   ) external initializer {
     require(admin != address(0), "admin is zero");
     require(pauser != address(0), "pauser is zero");
+    require(manager != address(0), "manager is zero");
     require(asterToken_ != address(0), "asterToken is zero");
     require(astherusVault_ != address(0), "astherusVault is zero");
     require(lisAster_ != address(0), "lisAster is zero");
@@ -86,6 +90,7 @@ contract AsterVault is
 
     _grantRole(DEFAULT_ADMIN_ROLE, admin);
     _grantRole(PAUSER, pauser);
+    _grantRole(MANAGER, manager);
 
     asterToken = asterToken_;
     astherusVault = astherusVault_;
@@ -128,7 +133,7 @@ contract AsterVault is
     emit SetMinDeposit(oldMin, newMin);
   }
 
-  function setLisAsterManager(address newManager) external onlyRole(DEFAULT_ADMIN_ROLE) {
+  function setLisAsterManager(address newManager) external onlyRole(MANAGER) {
     require(newManager != address(0), "lisAsterManager is zero");
     address oldManager = lisAsterManager;
     lisAsterManager = newManager;

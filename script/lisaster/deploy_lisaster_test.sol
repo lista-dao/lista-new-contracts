@@ -70,6 +70,7 @@ contract DeployLisAsterTestnet is Script {
     vault.initialize(
       admin,
       pauser,
+      manager,
       ASTER_TOKEN,
       ASTHERUS_VAULT,
       address(lisAster),

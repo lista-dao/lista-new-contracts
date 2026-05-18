@@ -50,6 +50,7 @@ abstract contract LisAsterBase is Test {
     vault.initialize(
       admin,
       pauser,
+      manager,
       address(asterToken),
       address(astherusVault),
       address(lisAster),

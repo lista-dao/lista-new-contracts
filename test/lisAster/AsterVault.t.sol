@@ -136,20 +136,25 @@ contract AsterVaultTest is LisAsterBase {
     vault.setMinDeposit(0);
   }
 
-  function test_setLisAsterManager_onlyAdmin() public {
-    bytes32 role = vault.DEFAULT_ADMIN_ROLE();
+  function test_setLisAsterManager_onlyManager() public {
+    bytes32 role = vault.MANAGER();
     vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, role));
     vm.prank(other);
     vault.setLisAsterManager(other);
 
-    address newManager = address(0xBEEF);
+    // admin without MANAGER role cannot call either
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, admin, role));
     vm.prank(admin);
+    vault.setLisAsterManager(other);
+
+    address newManager = address(0xBEEF);
+    vm.prank(manager);
     vault.setLisAsterManager(newManager);
     assertEq(vault.lisAsterManager(), newManager);
   }
 
   function test_setLisAsterManager_revertsZero() public {
-    vm.prank(admin);
+    vm.prank(manager);
     vm.expectRevert(bytes("lisAsterManager is zero"));
     vault.setLisAsterManager(address(0));
   }
@@ -167,6 +172,7 @@ contract AsterVaultTest is LisAsterBase {
     fresh.initialize(
       admin,
       pauser,
+      manager,
       address(asterToken),
       address(astherusVault),
       address(lisAster),
@@ -181,6 +187,7 @@ contract AsterVaultTest is LisAsterBase {
     vault.initialize(
       admin,
       pauser,
+      manager,
       address(asterToken),
       address(astherusVault),
       address(lisAster),
