@@ -13,7 +13,7 @@ import { ILisAsterStaking } from "./interface/ILisAsterStaking.sol";
 /// @title LisAsterStaking
 /// @notice Pure staking position contract. Users deposit lisAster here as proof of
 ///         participation; this contract holds no reward ledger and does not push snapshots
-///         to the Distributor. The off-chain backend reads `balanceOf` on an hourly cadence
+///         to the Distributor. The off-chain backend reads `balanceOf` on a randomized cadence
 ///         and aggregates the Merkle tree.
 contract LisAsterStaking is
   ILisAsterStaking,
