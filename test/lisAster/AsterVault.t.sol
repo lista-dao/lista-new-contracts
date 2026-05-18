@@ -4,6 +4,8 @@ pragma solidity ^0.8.24;
 import { LisAsterBase } from "./LisAsterBase.t.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { PausableUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import { AsterVault } from "../../src/lisaster/AsterVault.sol";
 
 contract AsterVaultTest is LisAsterBase {
   function test_initialState() public view {
@@ -134,11 +136,44 @@ contract AsterVaultTest is LisAsterBase {
     vault.setMinDeposit(0);
   }
 
+  function test_setLisAsterManager_onlyAdmin() public {
+    bytes32 role = vault.DEFAULT_ADMIN_ROLE();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, role));
+    vm.prank(other);
+    vault.setLisAsterManager(other);
+
+    address newManager = address(0xBEEF);
+    vm.prank(admin);
+    vault.setLisAsterManager(newManager);
+    assertEq(vault.lisAsterManager(), newManager);
+  }
+
+  function test_setLisAsterManager_revertsZero() public {
+    vm.prank(admin);
+    vm.expectRevert(bytes("lisAsterManager is zero"));
+    vault.setLisAsterManager(address(0));
+  }
+
   function test_pause_onlyPauser() public {
     bytes32 role = vault.PAUSER();
     vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, role));
     vm.prank(other);
     vault.pause();
+  }
+
+  function test_initialize_revertsZeroMinDeposit() public {
+    AsterVault fresh = AsterVault(address(new ERC1967Proxy(address(new AsterVault()), "")));
+    vm.expectRevert(bytes("minDeposit is zero"));
+    fresh.initialize(
+      admin,
+      pauser,
+      address(asterToken),
+      address(astherusVault),
+      address(lisAster),
+      lisAsterManager,
+      1,
+      0
+    );
   }
 
   function test_initializerCannotBeCalledTwice() public {

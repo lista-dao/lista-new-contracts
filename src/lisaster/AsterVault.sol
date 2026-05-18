@@ -43,6 +43,7 @@ contract AsterVault is
   /* EVENTS */
   event SetBroker(uint256 oldBroker, uint256 newBroker);
   event SetMinDeposit(uint256 oldMin, uint256 newMin);
+  event SetLisAsterManager(address oldManager, address newManager);
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -76,6 +77,7 @@ contract AsterVault is
     require(astherusVault_ != address(0), "astherusVault is zero");
     require(lisAster_ != address(0), "lisAster is zero");
     require(lisAsterManager_ != address(0), "lisAsterManager is zero");
+    require(minDeposit_ > 0, "minDeposit is zero");
 
     __AccessControlEnumerable_init();
     __Pausable_init();
@@ -124,6 +126,13 @@ contract AsterVault is
     uint256 oldMin = minDeposit;
     minDeposit = newMin;
     emit SetMinDeposit(oldMin, newMin);
+  }
+
+  function setLisAsterManager(address newManager) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    require(newManager != address(0), "lisAsterManager is zero");
+    address oldManager = lisAsterManager;
+    lisAsterManager = newManager;
+    emit SetLisAsterManager(oldManager, newManager);
   }
 
   function pause() external onlyRole(PAUSER) {

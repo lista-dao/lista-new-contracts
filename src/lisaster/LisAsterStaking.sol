@@ -73,7 +73,8 @@ contract LisAsterStaking is
 
   function unstake(uint256 amount) external override whenNotPaused nonReentrant {
     require(amount > 0, "zero amount");
-    balanceOf[msg.sender] -= amount; // 0.8 reverts on underflow
+    require(balanceOf[msg.sender] >= amount, "insufficient balance");
+    balanceOf[msg.sender] -= amount;
     totalSupply -= amount;
     IERC20(lisAster).safeTransfer(msg.sender, amount);
     emit Unstaked(msg.sender, amount);
@@ -103,9 +104,9 @@ contract LisAsterStaking is
   function _stake(address receiver, uint256 amount) private {
     require(receiver != address(0), "receiver is zero");
     require(amount > 0, "zero amount");
-    IERC20(lisAster).safeTransferFrom(msg.sender, address(this), amount);
     balanceOf[receiver] += amount;
     totalSupply += amount;
+    IERC20(lisAster).safeTransferFrom(msg.sender, address(this), amount);
     emit Staked(msg.sender, receiver, amount);
   }
 

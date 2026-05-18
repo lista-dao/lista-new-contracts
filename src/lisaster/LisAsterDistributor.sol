@@ -21,7 +21,8 @@ import { ILisAsterStaking } from "./interface/ILisAsterStaking.sol";
 ///         Root rotation is two-step and time-locked: BOT stages a candidate via
 ///         `setPendingMerkleRoot`, then promotes it via `acceptMerkleRoot` after
 ///         `waitingPeriod` elapses. MANAGER holds the veto: it may
-///         `revokePendingMerkleRoot` at any time during the wait.
+///         `revokePendingMerkleRoot` at any time while a pending root exists (both
+///         during the wait and after, as long as BOT has not yet called `acceptMerkleRoot`).
 contract LisAsterDistributor is
   ILisAsterDistributor,
   AccessControlEnumerableUpgradeable,

@@ -39,6 +39,13 @@ contract LisAsterStakingTest is LisAsterBase {
     assertEq(lisAster.balanceOf(user), 0.4 ether);
   }
 
+  function test_unstake_revertsOnInsufficientBalance() public {
+    _stakeAs(user, 1 ether);
+    vm.expectRevert("insufficient balance");
+    vm.prank(user);
+    staking.unstake(1 ether + 1);
+  }
+
   function test_unstake_revertsWhenPaused() public {
     _stakeAs(user, 1 ether);
     vm.prank(pauser);
