@@ -69,6 +69,8 @@ contract RWAEarnPool is
   address public adapter;
   // deposit whitelist
   EnumerableSet.AddressSet private whitelist;
+  // minimum deposit amount, in asset units
+  uint256 public minDeposit;
 
   /* constants */
   bytes32 public constant MANAGER = keccak256("MANAGER"); // manager role
@@ -95,6 +97,7 @@ contract RWAEarnPool is
   event SetWithdrawFeeRate(uint256 withdrawFeeRate);
   event EmergencyWithdraw(address token, uint256 amount);
   event WhiteListChanged(address user, bool ok);
+  event SetMinDeposit(uint256 minDeposit);
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -167,6 +170,7 @@ contract RWAEarnPool is
     }
 
     require(shares > 0, "shares is zero");
+    require(amount >= minDeposit, "deposit below minimum");
 
     // mint shares to user
     _mint(receiver, shares);
@@ -248,13 +252,12 @@ contract RWAEarnPool is
    */
   function finishWithdraw(uint256 amount) external {
     require(msg.sender == adapter, "only adapter can call");
-    require(amount > 0, "amount is zero");
 
-    // transfer asset from adapter
-    IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
-
-    // update withdraw quota
-    withdrawQuota += amount;
+    // transfer asset from adapter (zero allowed: lets BOT tick batches without adding funds)
+    if (amount > 0) {
+      IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
+      withdrawQuota += amount;
+    }
 
     // cover withdraw requests in batch
     for (uint256 i = confirmedBatchId + 1; i <= currentBatchId; i++) {
@@ -433,6 +436,16 @@ contract RWAEarnPool is
     }
 
     emit WhiteListChanged(user, ok);
+  }
+
+  /**
+   * @dev set minimum deposit amount
+   * @param _minDeposit The minimum deposit amount, in asset units
+   */
+  function setMinDeposit(uint256 _minDeposit) external onlyRole(MANAGER) {
+    require(minDeposit != _minDeposit, "same minDeposit");
+    minDeposit = _minDeposit;
+    emit SetMinDeposit(_minDeposit);
   }
 
   /**
