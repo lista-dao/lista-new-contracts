@@ -59,16 +59,20 @@ abstract contract LisAsterBase is Test {
       0.1 ether // minDeposit
     );
     staking.initialize(admin, pauser, manager, address(lisAster));
-    rewards.initialize(admin, pauser, manager, bot, address(asterToken), address(lisAster), address(vault));
+    rewards.initialize(admin, pauser, manager, bot, address(asterToken));
     distributor.initialize(
-      admin,
-      manager,
-      bot,
-      pauser,
-      address(lisAster),
-      address(staking),
-      address(rewards),
-      DISTRIBUTOR_WAITING_PERIOD
+      LisAsterDistributor.InitParams({
+        admin: admin,
+        manager: manager,
+        bot: bot,
+        pauser: pauser,
+        asterToken: address(asterToken),
+        lisAster: address(lisAster),
+        vault: address(vault),
+        staking: address(staking),
+        rewards: address(rewards),
+        waitingPeriod: DISTRIBUTOR_WAITING_PERIOD
+      })
     );
 
     // 3. Rewards one-shot setDistributor (MANAGER-gated; only Rewards still wires distributor on-chain).
@@ -90,8 +94,8 @@ abstract contract LisAsterBase is Test {
     vm.stopPrank();
   }
 
-  /// @dev Rewards.MANAGER receives ASTER returned via Astherus and re-deposits via Vault,
-  ///      minting lisAster to Rewards.
+  /// @dev Rewards.MANAGER receives ASTER returned via Astherus and stages it in Rewards as
+  ///      ASTER (no more Vault round-trip).
   function _managerNotify(uint256 amount) internal {
     asterToken.mint(manager, amount);
     vm.startPrank(manager);
@@ -100,7 +104,7 @@ abstract contract LisAsterBase is Test {
     vm.stopPrank();
   }
 
-  /// @dev BOT pushes lisAster to Distributor and triggers notify.
+  /// @dev BOT pushes ASTER from Rewards to Distributor and triggers notify.
   function _botDistribute(uint256 amount) internal {
     vm.prank(bot);
     rewards.distributeRewards(amount);
@@ -118,7 +122,7 @@ abstract contract LisAsterBase is Test {
   /* ----------------- minimal Merkle helpers (1-leaf / 2-leaf) ----------------- */
 
   function _leaf(address account, uint256 cumulative) internal view returns (bytes32) {
-    return keccak256(abi.encode(block.chainid, account, address(lisAster), cumulative));
+    return keccak256(abi.encode(block.chainid, account, address(asterToken), cumulative));
   }
 
   function _hashPair(bytes32 a, bytes32 b) internal pure returns (bytes32) {

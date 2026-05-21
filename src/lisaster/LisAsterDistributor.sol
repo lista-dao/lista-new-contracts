@@ -10,13 +10,14 @@ import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 
 import { MerkleProof } from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 
+import { IAsterVault } from "./interface/IAsterVault.sol";
 import { ILisAsterDistributor } from "./interface/ILisAsterDistributor.sol";
 import { ILisAsterStaking } from "./interface/ILisAsterStaking.sol";
 
 /// @title LisAsterDistributor
-/// @notice Cumulative-style Merkle distributor. Single overwrite-on-update root; leaves carry
-///         each account's lifetime cumulative entitlement, and users claim
-///         `cumulative - claimed` deltas with the latest proof in one call.
+/// @notice ASTER-denominated cumulative Merkle distributor. Holds ASTER, single overwrite-on-
+///         accept root; leaves carry each account's lifetime cumulative entitlement in ASTER,
+///         and users claim `cumulative - claimed` deltas with the latest proof in one call.
 ///
 ///         Root rotation is two-step and time-locked: BOT stages a candidate via
 ///         `setPendingMerkleRoot`, then promotes it via `acceptMerkleRoot` after
@@ -43,8 +44,18 @@ contract LisAsterDistributor is
   uint256 public constant MIN_WAITING_PERIOD = 6 hours;
 
   /* IMMUTABLE-LIKE (set once in initialize) */
+  /// @notice Reward token; payouts and Merkle leaves are denominated in this asset.
+  address public asterToken;
+  /// @notice lisAster proxy. Held transiently inside `claimAndStake` between `Vault.deposit`
+  ///         and `Staking.stakeFor`.
   address public lisAster;
+  /// @notice AsterVault proxy. `claimAndStake` calls `deposit(payable_, address(this))` to
+  ///         convert ASTER to lisAster before staking.
+  address public vault;
+  /// @notice LisAsterStaking proxy. `claimAndStake` calls `stakeFor(msg.sender, payable_)`
+  ///         to place the staked position on the user's behalf.
   address public staking;
+  /// @notice The LisAsterRewards proxy authorised to call `notifyRewards`.
   address public rewards;
 
   /* MERKLE STATE */
@@ -53,11 +64,11 @@ contract LisAsterDistributor is
   uint256 public totalAllocated; // Sum of cumulativeAmount across leaves of the current root
 
   /* ACCOUNTING */
-  uint256 public totalNotified; // Lifetime inflow (incremented by Rewards.distributeRewards)
-  uint256 public totalClaimed; // Lifetime amount already claimed
+  uint256 public totalNotified; // Lifetime ASTER inflow (incremented by Rewards.distributeRewards)
+  uint256 public totalClaimed; // Lifetime ASTER already claimed
   mapping(address => uint256) public claimed; // Per-account lifetime claimed amount
 
-  /* PENDING ROOT (appended to preserve UUPS storage layout) */
+  /* PENDING ROOT */
   bytes32 public pendingMerkleRoot;
   uint256 public pendingTotalAllocated;
   uint256 public lastSetTime;
@@ -70,48 +81,58 @@ contract LisAsterDistributor is
   }
 
   /* INITIALIZER */
-  function initialize(
-    address admin,
-    address manager,
-    address bot,
-    address pauser,
-    address lisAster_,
-    address staking_,
-    address rewards_,
-    uint256 waitingPeriod_
-  ) external initializer {
-    require(admin != address(0), "admin is zero");
-    require(manager != address(0), "manager is zero");
-    require(bot != address(0), "bot is zero");
-    require(pauser != address(0), "pauser is zero");
-    require(lisAster_ != address(0), "lisAster is zero");
-    require(staking_ != address(0), "staking is zero");
-    require(rewards_ != address(0), "rewards is zero");
-    require(waitingPeriod_ >= MIN_WAITING_PERIOD, "waitingPeriod too short");
+  /// @dev Parameters bundled into a struct because the 10-argument signature blew the EVM
+  ///      stack limit in `initialize`.
+  struct InitParams {
+    address admin;
+    address manager;
+    address bot;
+    address pauser;
+    address asterToken;
+    address lisAster;
+    address vault;
+    address staking;
+    address rewards;
+    uint256 waitingPeriod;
+  }
+
+  function initialize(InitParams calldata p) external initializer {
+    require(p.admin != address(0), "admin is zero");
+    require(p.manager != address(0), "manager is zero");
+    require(p.bot != address(0), "bot is zero");
+    require(p.pauser != address(0), "pauser is zero");
+    require(p.asterToken != address(0), "asterToken is zero");
+    require(p.lisAster != address(0), "lisAster is zero");
+    require(p.vault != address(0), "vault is zero");
+    require(p.staking != address(0), "staking is zero");
+    require(p.rewards != address(0), "rewards is zero");
+    require(p.waitingPeriod >= MIN_WAITING_PERIOD, "waitingPeriod too short");
 
     __AccessControlEnumerable_init();
     __Pausable_init();
     __ReentrancyGuard_init();
     __UUPSUpgradeable_init();
 
-    _grantRole(DEFAULT_ADMIN_ROLE, admin);
-    _grantRole(MANAGER, manager);
-    _grantRole(BOT, bot);
-    _grantRole(PAUSER, pauser);
+    _grantRole(DEFAULT_ADMIN_ROLE, p.admin);
+    _grantRole(MANAGER, p.manager);
+    _grantRole(BOT, p.bot);
+    _grantRole(PAUSER, p.pauser);
 
-    lisAster = lisAster_;
-    staking = staking_;
-    rewards = rewards_;
-    waitingPeriod = waitingPeriod_;
+    asterToken = p.asterToken;
+    lisAster = p.lisAster;
+    vault = p.vault;
+    staking = p.staking;
+    rewards = p.rewards;
+    waitingPeriod = p.waitingPeriod;
   }
 
   /* RECORD INFLOW */
-  /// @notice Pulls `amount` lisAster from Rewards via transferFrom and bumps `totalNotified`.
+  /// @notice Pulls `amount` ASTER from Rewards via transferFrom and bumps `totalNotified`.
   /// @dev Rewards must `forceApprove(distributor, amount)` before this call.
   function notifyRewards(uint256 amount) external override whenNotPaused nonReentrant {
     require(msg.sender == rewards, "not rewards");
     require(amount > 0, "zero amount");
-    IERC20(lisAster).safeTransferFrom(msg.sender, address(this), amount);
+    IERC20(asterToken).safeTransferFrom(msg.sender, address(this), amount);
     totalNotified += amount;
     emit Notified(amount);
   }
@@ -188,21 +209,28 @@ contract LisAsterDistributor is
   ) external override whenNotPaused nonReentrant {
     require(account != address(0), "zero account");
     uint256 payable_ = _consume(account, cumulativeAmount, proof);
-    IERC20(lisAster).safeTransfer(account, payable_);
+    IERC20(asterToken).safeTransfer(account, payable_);
     emit Claimed(account, payable_, cumulativeAmount);
   }
 
-  /// @notice Self-only: `msg.sender` is the implicit recipient. Unlike `claim`, this entry
-  ///         point materially changes the caller's position (locks the proceeds in staking),
-  ///         so it does not accept a third-party `account` argument at all.
+  /// @notice Self-only: `msg.sender` is the implicit recipient. Routes ASTER through
+  ///         `Vault.deposit` (mints lisAster to this contract) and then `Staking.stakeFor`
+  ///         (places the position under `msg.sender`). Reverts if the payable amount is
+  ///         below `Vault.minDeposit` — fall back to `claim` for small balances.
   function claimAndStake(
     uint256 cumulativeAmount,
     bytes32[] calldata proof
   ) external override whenNotPaused nonReentrant {
     uint256 payable_ = _consume(msg.sender, cumulativeAmount, proof);
+
+    IERC20(asterToken).forceApprove(vault, payable_);
+    IAsterVault(vault).deposit(payable_, address(this));
+    IERC20(asterToken).forceApprove(vault, 0);
+
     IERC20(lisAster).forceApprove(staking, payable_);
     ILisAsterStaking(staking).stakeFor(msg.sender, payable_);
     IERC20(lisAster).forceApprove(staking, 0);
+
     emit ClaimedAndStaked(msg.sender, payable_, cumulativeAmount);
   }
 
@@ -213,7 +241,7 @@ contract LisAsterDistributor is
     bytes32[] calldata proof
   ) external view override returns (uint256) {
     if (merkleRoot == bytes32(0)) return 0;
-    bytes32 leaf = keccak256(abi.encode(block.chainid, account, lisAster, cumulativeAmount));
+    bytes32 leaf = keccak256(abi.encode(block.chainid, account, asterToken, cumulativeAmount));
     if (MerkleProof.processProofCalldata(proof, leaf) != merkleRoot) return 0;
     if (cumulativeAmount <= claimed[account]) return 0;
     return cumulativeAmount - claimed[account];
@@ -226,7 +254,7 @@ contract LisAsterDistributor is
     bytes32[] calldata proof
   ) internal returns (uint256 payable_) {
     require(merkleRoot != bytes32(0), "no root");
-    bytes32 leaf = keccak256(abi.encode(block.chainid, account, lisAster, cumulativeAmount));
+    bytes32 leaf = keccak256(abi.encode(block.chainid, account, asterToken, cumulativeAmount));
     require(MerkleProof.verifyCalldata(proof, merkleRoot, leaf), "invalid proof");
 
     uint256 already = claimed[account];
@@ -247,8 +275,8 @@ contract LisAsterDistributor is
   }
 
   /// @notice Escape hatch for stuck or mis-routed tokens (e.g. tokens accidentally sent to this
-  ///         contract, or lisAster that needs to be evacuated). Funds are sent to the MANAGER
-  ///         caller. Does not adjust accounting, so if lisAster is withdrawn the team must
+  ///         contract, or ASTER that needs to be evacuated). Funds are sent to the MANAGER
+  ///         caller. Does not adjust accounting, so if ASTER is withdrawn the team must
   ///         restage `totalNotified`/`totalAllocated` (or upgrade) before normal claims resume.
   function emergencyWithdraw(address token, uint256 amount) external onlyRole(MANAGER) {
     require(token != address(0), "zero token");

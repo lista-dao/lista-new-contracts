@@ -8,16 +8,14 @@ import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import { IAsterVault } from "./interface/IAsterVault.sol";
 import { ILisAsterDistributor } from "./interface/ILisAsterDistributor.sol";
 import { ILisAsterRewards } from "./interface/ILisAsterRewards.sol";
 
 /// @title LisAsterRewards
-/// @notice Reward converter and staging pool. MANAGER calls `notifyRewards` to forward
-///         ASTER returned via AstherusVault.withdraw through AsterVault.deposit, which mints
-///         lisAster back to this contract. BOT then calls `distributeRewards` to forward
-///         accumulated lisAster to the Distributor and bump its `totalNotified`. This
-///         contract itself does not hold the MINTER role.
+/// @notice ASTER reward pool + dispatcher. MANAGER calls `notifyRewards` to ingest ASTER
+///         returned via AstherusVault.withdraw; an optional fee is forwarded to `feeReceiver`
+///         and the net stays here as ASTER. BOT calls `distributeRewards` to push accumulated
+///         ASTER to the Distributor, which pulls via `transferFrom` and bumps `totalNotified`.
 contract LisAsterRewards is
   ILisAsterRewards,
   AccessControlEnumerableUpgradeable,
@@ -37,8 +35,6 @@ contract LisAsterRewards is
 
   /* IMMUTABLE-LIKE (set once in initialize) */
   address public asterToken;
-  address public lisAster;
-  address public vault;
 
   /* SET-ONCE (one-shot setter, breaks circular dep) */
   address public distributor;
@@ -59,17 +55,13 @@ contract LisAsterRewards is
     address pauser,
     address manager,
     address bot,
-    address asterToken_,
-    address lisAster_,
-    address vault_
+    address asterToken_
   ) external initializer {
     require(admin != address(0), "admin is zero");
     require(pauser != address(0), "pauser is zero");
     require(manager != address(0), "manager is zero");
     require(bot != address(0), "bot is zero");
     require(asterToken_ != address(0), "asterToken is zero");
-    require(lisAster_ != address(0), "lisAster is zero");
-    require(vault_ != address(0), "vault is zero");
 
     __AccessControlEnumerable_init();
     __Pausable_init();
@@ -82,8 +74,6 @@ contract LisAsterRewards is
     _grantRole(BOT, bot);
 
     asterToken = asterToken_;
-    lisAster = lisAster_;
-    vault = vault_;
   }
 
   /* ONE-SHOT SETTER */
@@ -126,34 +116,24 @@ contract LisAsterRewards is
     uint256 net = amount - fee;
     require(net > 0, "net is zero");
 
-    uint256 balBefore = IERC20(lisAster).balanceOf(address(this));
-    IERC20(asterToken).forceApprove(vault, net);
-    IAsterVault(vault).deposit(net, address(this));
-    IERC20(asterToken).forceApprove(vault, 0);
-
-    // Strict 1:1 invariant: AsterVault.deposit always mints exactly `net` lisAster.
-    // If Vault ever introduces an exchange rate, this assertion must be revisited.
-    uint256 minted = IERC20(lisAster).balanceOf(address(this)) - balBefore;
-    require(minted == net, "mint mismatch");
-
-    emit RewardsNotified(amount, fee, minted);
+    emit RewardsNotified(amount, fee, net);
   }
 
   function distributeRewards(uint256 amount) external override onlyRole(BOT) whenNotPaused nonReentrant {
     require(amount > 0, "zero amount");
     require(distributor != address(0), "distributor not set");
-    require(amount <= IERC20(lisAster).balanceOf(address(this)), "exceeds balance");
+    require(amount <= IERC20(asterToken).balanceOf(address(this)), "exceeds balance");
 
-    IERC20(lisAster).forceApprove(distributor, amount);
+    IERC20(asterToken).forceApprove(distributor, amount);
     ILisAsterDistributor(distributor).notifyRewards(amount);
-    IERC20(lisAster).forceApprove(distributor, 0);
+    IERC20(asterToken).forceApprove(distributor, 0);
 
     emit RewardsDistributed(amount);
   }
 
   /* VIEW */
-  function pendingLisAster() external view override returns (uint256) {
-    return IERC20(lisAster).balanceOf(address(this));
+  function pendingAster() external view override returns (uint256) {
+    return IERC20(asterToken).balanceOf(address(this));
   }
 
   /* ADMIN */

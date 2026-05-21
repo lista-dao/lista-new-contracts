@@ -11,14 +11,14 @@ interface ILisAsterDistributor {
   event ClaimedAndStaked(address indexed account, uint256 amount, uint256 cumulativeAmount);
   event EmergencyWithdrawn(address indexed token, address indexed to, uint256 amount);
 
-  /// @notice Called by Rewards. Pulls `amount` lisAster from Rewards via transferFrom and
-  ///         bumps `totalNotified`. Requires Rewards to approve beforehand.
+  /// @notice Called by Rewards. Pulls `amount` ASTER from Rewards via transferFrom and bumps
+  ///         `totalNotified`. Requires Rewards to approve beforehand.
   function notifyRewards(uint256 amount) external;
 
   /// @notice Stage a candidate Merkle root. Called by BOT. Leaf format:
-  ///         `keccak256(abi.encode(chainid, account, token, cumulativeAmount))`,
-  ///         where `token` is the distributor's reward token (currently `lisAster`).
-  ///         Validation runs here so the staged candidate is provably promotable later.
+  ///         `keccak256(abi.encode(chainid, account, asterToken, cumulativeAmount))`.
+  ///         `asterToken` is the distributor's reward token. Validation runs here so the
+  ///         staged candidate is provably promotable later.
   /// @param totalAllocated Sum of all leaves' `cumulativeAmount`. Must be monotonically
   ///        non-decreasing relative to the live `totalAllocated` and <= `totalNotified`.
   function setPendingMerkleRoot(bytes32 root, uint256 totalAllocated) external;
@@ -34,9 +34,13 @@ interface ILisAsterDistributor {
   /// @notice Tune the time-lock window between staging and acceptance. Admin-only.
   function changeWaitingPeriod(uint256 newWaitingPeriod) external;
 
+  /// @notice Transfers `cumulativeAmount - claimed[account]` ASTER to `account`. Permissionless.
   function claim(address account, uint256 cumulativeAmount, bytes32[] calldata proof) external;
 
-  /// @notice Self-only: claims for `msg.sender` and stakes the proceeds in one call.
+  /// @notice Self-only: claims for `msg.sender`, then routes the ASTER through Vault.deposit
+  ///         and Staking.stakeFor so the user ends with a staked lisAster position.
+  ///         Reverts if the claimable amount is below `AsterVault.minDeposit`; use `claim`
+  ///         instead in that case.
   function claimAndStake(uint256 cumulativeAmount, bytes32[] calldata proof) external;
 
   function claimable(

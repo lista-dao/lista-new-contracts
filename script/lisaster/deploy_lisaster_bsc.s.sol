@@ -103,17 +103,21 @@ contract DeployLisAsterBsc is Script {
 
     staking.initialize(admin, pauser, manager, address(lisAster));
 
-    rewards.initialize(admin, pauser, manager, bot, ASTER_TOKEN, address(lisAster), address(vault));
+    rewards.initialize(admin, pauser, manager, bot, ASTER_TOKEN);
 
     distributor.initialize(
-      admin,
-      manager,
-      bot,
-      pauser,
-      address(lisAster),
-      address(staking),
-      address(rewards),
-      DISTRIBUTOR_WAITING_PERIOD
+      LisAsterDistributor.InitParams({
+        admin: admin,
+        manager: manager,
+        bot: bot,
+        pauser: pauser,
+        asterToken: ASTER_TOKEN,
+        lisAster: address(lisAster),
+        vault: address(vault),
+        staking: address(staking),
+        rewards: address(rewards),
+        waitingPeriod: DISTRIBUTOR_WAITING_PERIOD
+      })
     );
 
     /* 3. Rewards post-init wiring (deployer holds Rewards.MANAGER at this point):

@@ -7,8 +7,8 @@ import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy
 import { LisAsterDistributor } from "../../src/lisaster/LisAsterDistributor.sol";
 
 contract LisAsterDistributorTest is LisAsterBase {
-  /// @dev Pushes `amount` lisAster through the full Astherus -> Vault -> Rewards -> Distributor
-  ///      flow and bumps `totalNotified`.
+  /// @dev Pushes `amount` ASTER through Rewards.notify -> Rewards.distribute -> Distributor and
+  ///      bumps `totalNotified`.
   function _injectNotified(uint256 amount) internal {
     _managerNotify(amount);
     _botDistribute(amount);
@@ -30,9 +30,8 @@ contract LisAsterDistributorTest is LisAsterBase {
 
   function test_notifyRewards_revertsWithoutAllowance() public {
     // Without prior approval, transferFrom in notifyRewards reverts.
-    // Mint lisAster to rewards (bypassing the normal flow) so balance is not the limiter.
-    vm.prank(address(vault));
-    lisAster.mint(address(rewards), 1 ether);
+    // Mint ASTER to rewards (bypassing the normal flow) so balance is not the limiter.
+    asterToken.mint(address(rewards), 1 ether);
 
     vm.prank(address(rewards));
     vm.expectRevert();
@@ -42,7 +41,7 @@ contract LisAsterDistributorTest is LisAsterBase {
   function test_notifyRewards_happyPathBumpsCounter() public {
     _injectNotified(7 ether);
     assertEq(distributor.totalNotified(), 7 ether);
-    assertEq(lisAster.balanceOf(address(distributor)), 7 ether);
+    assertEq(asterToken.balanceOf(address(distributor)), 7 ether);
   }
 
   /* ---------------- setPendingMerkleRoot / acceptMerkleRoot / revoke / waitingPeriod ---------------- */
@@ -263,7 +262,20 @@ contract LisAsterDistributorTest is LisAsterBase {
     uint256 minPeriod = freshImpl.MIN_WAITING_PERIOD();
 
     vm.expectRevert(bytes("waitingPeriod too short"));
-    fresh.initialize(admin, manager, bot, pauser, address(lisAster), address(staking), address(rewards), minPeriod - 1);
+    fresh.initialize(
+      LisAsterDistributor.InitParams({
+        admin: admin,
+        manager: manager,
+        bot: bot,
+        pauser: pauser,
+        asterToken: address(asterToken),
+        lisAster: address(lisAster),
+        vault: address(vault),
+        staking: address(staking),
+        rewards: address(rewards),
+        waitingPeriod: minPeriod - 1
+      })
+    );
   }
 
   /* ---------------- claim ---------------- */
@@ -278,7 +290,7 @@ contract LisAsterDistributorTest is LisAsterBase {
 
     distributor.claim(user, 4 ether, empty);
 
-    assertEq(lisAster.balanceOf(user), 4 ether);
+    assertEq(asterToken.balanceOf(user), 4 ether);
     assertEq(distributor.claimed(user), 4 ether);
     assertEq(distributor.totalClaimed(), 4 ether);
   }
@@ -290,12 +302,12 @@ contract LisAsterDistributorTest is LisAsterBase {
     // root 1: user cumulative = 3
     _setLiveMerkleRoot(_singleLeafRoot(user, 3 ether), 3 ether);
     distributor.claim(user, 3 ether, empty);
-    assertEq(lisAster.balanceOf(user), 3 ether);
+    assertEq(asterToken.balanceOf(user), 3 ether);
 
     // root 2: user cumulative = 7 -> only the 4-ether delta is paid.
     _setLiveMerkleRoot(_singleLeafRoot(user, 7 ether), 7 ether);
     distributor.claim(user, 7 ether, empty);
-    assertEq(lisAster.balanceOf(user), 7 ether);
+    assertEq(asterToken.balanceOf(user), 7 ether);
     assertEq(distributor.totalClaimed(), 7 ether);
   }
 
@@ -359,8 +371,8 @@ contract LisAsterDistributorTest is LisAsterBase {
     distributor.claim(user, 4 ether, p0);
     distributor.claim(other, 6 ether, p1);
 
-    assertEq(lisAster.balanceOf(user), 4 ether);
-    assertEq(lisAster.balanceOf(other), 6 ether);
+    assertEq(asterToken.balanceOf(user), 4 ether);
+    assertEq(asterToken.balanceOf(other), 6 ether);
     assertEq(distributor.totalClaimed(), 10 ether);
   }
 
@@ -413,8 +425,8 @@ contract LisAsterDistributorTest is LisAsterBase {
     vm.prank(other);
     distributor.claimAndStake(6 ether, p1);
 
-    // user holds wallet lisAster, other holds a staking position; aggregate accounting matches.
-    assertEq(lisAster.balanceOf(user), 4 ether);
+    // user holds wallet ASTER, other holds a staking position; aggregate accounting matches.
+    assertEq(asterToken.balanceOf(user), 4 ether);
     assertEq(staking.balanceOf(other), 6 ether);
     assertEq(distributor.totalClaimed(), 10 ether);
   }
@@ -423,14 +435,14 @@ contract LisAsterDistributorTest is LisAsterBase {
 
   function test_emergencyWithdraw_byManager() public {
     _injectNotified(5 ether);
-    uint256 distBalBefore = lisAster.balanceOf(address(distributor));
+    uint256 distBalBefore = asterToken.balanceOf(address(distributor));
 
     vm.prank(manager);
-    distributor.emergencyWithdraw(address(lisAster), 2 ether);
+    distributor.emergencyWithdraw(address(asterToken), 2 ether);
 
     // Funds always go to the MANAGER caller.
-    assertEq(lisAster.balanceOf(manager), 2 ether);
-    assertEq(lisAster.balanceOf(address(distributor)), distBalBefore - 2 ether);
+    assertEq(asterToken.balanceOf(manager), 2 ether);
+    assertEq(asterToken.balanceOf(address(distributor)), distBalBefore - 2 ether);
     // Accounting is intentionally not adjusted by emergencyWithdraw.
     assertEq(distributor.totalNotified(), 5 ether);
     assertEq(distributor.totalClaimed(), 0);
@@ -441,7 +453,7 @@ contract LisAsterDistributorTest is LisAsterBase {
     bytes32 role = distributor.MANAGER();
     vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, role));
     vm.prank(other);
-    distributor.emergencyWithdraw(address(lisAster), 1 ether);
+    distributor.emergencyWithdraw(address(asterToken), 1 ether);
   }
 
   function test_emergencyWithdraw_zeroChecks() public {
@@ -449,7 +461,7 @@ contract LisAsterDistributorTest is LisAsterBase {
     vm.expectRevert(bytes("zero token"));
     distributor.emergencyWithdraw(address(0), 1 ether);
     vm.expectRevert(bytes("zero amount"));
-    distributor.emergencyWithdraw(address(lisAster), 0);
+    distributor.emergencyWithdraw(address(asterToken), 0);
     vm.stopPrank();
   }
 
