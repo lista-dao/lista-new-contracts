@@ -225,11 +225,9 @@ contract LisAsterDistributor is
 
     IERC20(asterToken).forceApprove(vault, payable_);
     IAsterVault(vault).deposit(payable_, address(this));
-    IERC20(asterToken).forceApprove(vault, 0);
 
     IERC20(lisAster).forceApprove(staking, payable_);
     ILisAsterStaking(staking).stakeFor(msg.sender, payable_);
-    IERC20(lisAster).forceApprove(staking, 0);
 
     emit ClaimedAndStaked(msg.sender, payable_, cumulativeAmount);
   }

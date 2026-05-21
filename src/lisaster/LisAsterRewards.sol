@@ -126,7 +126,6 @@ contract LisAsterRewards is
 
     IERC20(asterToken).forceApprove(distributor, amount);
     ILisAsterDistributor(distributor).notifyRewards(amount);
-    IERC20(asterToken).forceApprove(distributor, 0);
 
     emit RewardsDistributed(amount);
   }
