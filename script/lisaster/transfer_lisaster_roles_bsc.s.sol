@@ -28,12 +28,12 @@ import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.so
 ///         Run: forge script script/lisaster/transfer_lisaster_roles_bsc.s.sol:TransferLisAsterRolesBsc \
 ///                 --rpc-url bsc --broadcast -vvvv
 contract TransferLisAsterRolesBsc is Script {
-  /* ----- Proxies (TODO: fill from deploy_lisaster_bsc broadcast output) ----- */
-  address constant LIS_ASTER = address(0); // TODO: LisAster proxy
-  address constant ASTER_VAULT = address(0); // TODO: AsterVault proxy
-  address constant LIS_ASTER_STAKING = address(0); // TODO: LisAsterStaking proxy
-  address constant LIS_ASTER_REWARDS = address(0); // TODO: LisAsterRewards proxy
-  address constant LIS_ASTER_DISTRIBUTOR = address(0); // TODO: LisAsterDistributor proxy
+  /* ----- Proxies (BSC mainnet) ----- */
+  address constant LIS_ASTER = 0xa17A497D20cC143508FE3b63578b13ba6b9c9f06;
+  address constant ASTER_VAULT = 0xb3Df1b695D720dDc5906005DD5448DB160687C42;
+  address constant LIS_ASTER_STAKING = 0x3D786C991452Cb7634D02b351374CB0aCC69fD71;
+  address constant LIS_ASTER_REWARDS = 0x2bB41616323994b4ADa381EA40Cb2d135f7b2462;
+  address constant LIS_ASTER_DISTRIBUTOR = 0x9e80FeC60bd4A9FeD7aF740Ba8d0104e05AC227d;
 
   /* ----- Final role holders ----- */
   /// @dev DEFAULT_ADMIN across all 5 proxies. Lista governance multisig.
