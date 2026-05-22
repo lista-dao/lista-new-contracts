@@ -220,4 +220,36 @@ contract AsterRewardsTest is LisAsterBase {
     assertEq(asterToken.balanceOf(recipient), 3 ether);
     assertEq(asterToken.balanceOf(address(rewards)), 7 ether);
   }
+
+  /* ---------------- pause / unpause ---------------- */
+
+  function test_pause_byPauser() public {
+    vm.prank(pauser);
+    rewards.pause();
+    assertTrue(rewards.paused());
+  }
+
+  function test_pause_revertsForOther() public {
+    bytes32 role = rewards.PAUSER();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, role));
+    vm.prank(other);
+    rewards.pause();
+  }
+
+  function test_unpause_byManager() public {
+    vm.prank(pauser);
+    rewards.pause();
+    vm.prank(manager);
+    rewards.unpause();
+    assertFalse(rewards.paused());
+  }
+
+  function test_unpause_revertsForPauser() public {
+    vm.prank(pauser);
+    rewards.pause();
+    bytes32 role = rewards.MANAGER();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, pauser, role));
+    vm.prank(pauser);
+    rewards.unpause();
+  }
 }

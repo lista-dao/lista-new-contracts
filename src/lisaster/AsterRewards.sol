@@ -136,11 +136,13 @@ contract AsterRewards is
   }
 
   /* ADMIN */
+  /// @notice PAUSER can fast-trip the contract in an incident;
+  ///         resuming requires the MANAGER multisig to deliberate.
   function pause() external onlyRole(PAUSER) {
     _pause();
   }
 
-  function unpause() external onlyRole(PAUSER) {
+  function unpause() external onlyRole(MANAGER) {
     _unpause();
   }
 

@@ -472,9 +472,18 @@ contract LisAsterDistributorTest is LisAsterBase {
     distributor.pause();
   }
 
-  function test_unpause_byPauser() public {
+  function test_unpause_byManager() public {
     vm.prank(pauser);
     distributor.pause();
+    vm.prank(manager);
+    distributor.unpause();
+  }
+
+  function test_unpause_revertsForPauser() public {
+    vm.prank(pauser);
+    distributor.pause();
+    bytes32 role = distributor.MANAGER();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, pauser, role));
     vm.prank(pauser);
     distributor.unpause();
   }
