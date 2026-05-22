@@ -5,10 +5,10 @@ import "forge-std/Script.sol";
 
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import { LisAsterRewards } from "../../src/lisaster/LisAsterRewards.sol";
+import { AsterRewards } from "../../src/lisaster/AsterRewards.sol";
 import { LisAsterDistributor } from "../../src/lisaster/LisAsterDistributor.sol";
 
-/// @title DeployLisAsterRewardsV2Bsc
+/// @title DeployAsterRewardsV2Bsc
 /// @notice BSC mainnet migration deploy: replaces the deprecated lisAster-denominated
 ///         Rewards + Distributor with ASTER-denominated v2 contracts. The retained
 ///         LisAster / AsterVault / LisAsterStaking proxies are reused as-is.
@@ -19,9 +19,9 @@ import { LisAsterDistributor } from "../../src/lisaster/LisAsterDistributor.sol"
 ///
 ///         Run AFTER the deprecated proxies have been paused (see runbook).
 ///
-///         Run: forge script script/lisaster/deploy_lisaster_rewards_v2_bsc.s.sol:DeployLisAsterRewardsV2Bsc \
+///         Run: forge script script/lisaster/deploy_lisaster_rewards_v2_bsc.s.sol:DeployAsterRewardsV2Bsc \
 ///                 --rpc-url bsc --broadcast --verify -vvvv
-contract DeployLisAsterRewardsV2Bsc is Script {
+contract DeployAsterRewardsV2Bsc is Script {
   /* ----- BSC mainnet externals ----- */
   address constant ASTER_TOKEN = 0x000Ae314E2A2172a039B26378814C252734f556A;
 
@@ -31,7 +31,7 @@ contract DeployLisAsterRewardsV2Bsc is Script {
   address constant LIS_ASTER_STAKING_PROXY = 0x3D786C991452Cb7634D02b351374CB0aCC69fD71;
 
   /* ----- Tunables ----- */
-  /// @dev LisAsterRewards fee rate (1e18 = 100%); capped at MAX_FEE_RATE = 3e17 (30%).
+  /// @dev AsterRewards fee rate (1e18 = 100%); capped at MAX_FEE_RATE = 3e17 (30%).
   uint256 constant FEE_RATE = 1e17; // 10%
   /// @dev Distributor pending-root time-lock; floor MIN_WAITING_PERIOD = 6h.
   uint256 constant DISTRIBUTOR_WAITING_PERIOD = 6 hours;
@@ -60,7 +60,7 @@ contract DeployLisAsterRewardsV2Bsc is Script {
     vm.startBroadcast(deployerPk);
 
     /* 1. Deploy 2 new proxies. */
-    LisAsterRewards rewards = LisAsterRewards(address(new ERC1967Proxy(address(new LisAsterRewards()), "")));
+    AsterRewards rewards = AsterRewards(address(new ERC1967Proxy(address(new AsterRewards()), "")));
     LisAsterDistributor distributor = LisAsterDistributor(
       address(new ERC1967Proxy(address(new LisAsterDistributor()), ""))
     );
@@ -103,7 +103,7 @@ contract DeployLisAsterRewardsV2Bsc is Script {
     require(distributor.staking() == LIS_ASTER_STAKING_PROXY, "staking mismatch");
 
     console.log("---- New proxies ----");
-    console.log("LisAsterRewards (v2):    ", address(rewards));
+    console.log("AsterRewards (v2):    ", address(rewards));
     console.log("LisAsterDistributor (v2):", address(distributor));
     console.log("---- Rewards fee ----");
     console.log("feeReceiver:        ", feeReceiver);

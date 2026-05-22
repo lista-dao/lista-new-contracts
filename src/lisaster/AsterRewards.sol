@@ -9,15 +9,15 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import { ILisAsterDistributor } from "./interface/ILisAsterDistributor.sol";
-import { ILisAsterRewards } from "./interface/ILisAsterRewards.sol";
+import { IAsterRewards } from "./interface/IAsterRewards.sol";
 
-/// @title LisAsterRewards
+/// @title AsterRewards
 /// @notice ASTER reward pool + dispatcher. MANAGER calls `notifyRewards` to ingest ASTER
 ///         returned via AstherusVault.withdraw; an optional fee is forwarded to `feeReceiver`
 ///         and the net stays here as ASTER. BOT calls `distributeRewards` to push accumulated
 ///         ASTER to the Distributor, which pulls via `transferFrom` and bumps `totalNotified`.
-contract LisAsterRewards is
-  ILisAsterRewards,
+contract AsterRewards is
+  IAsterRewards,
   AccessControlEnumerableUpgradeable,
   PausableUpgradeable,
   ReentrancyGuardUpgradeable,

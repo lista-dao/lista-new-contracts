@@ -8,7 +8,7 @@ import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy
 import { LisAster } from "../../src/lisaster/LisAster.sol";
 import { AsterVault } from "../../src/lisaster/AsterVault.sol";
 import { LisAsterStaking } from "../../src/lisaster/LisAsterStaking.sol";
-import { LisAsterRewards } from "../../src/lisaster/LisAsterRewards.sol";
+import { AsterRewards } from "../../src/lisaster/AsterRewards.sol";
 import { LisAsterDistributor } from "../../src/lisaster/LisAsterDistributor.sol";
 
 /// @title DeployLisAsterTestnet
@@ -59,7 +59,7 @@ contract DeployLisAsterTestnet is Script {
     LisAster lisAster = LisAster(address(new ERC1967Proxy(address(new LisAster()), "")));
     AsterVault vault = AsterVault(address(new ERC1967Proxy(address(new AsterVault()), "")));
     LisAsterStaking staking = LisAsterStaking(address(new ERC1967Proxy(address(new LisAsterStaking()), "")));
-    LisAsterRewards rewards = LisAsterRewards(address(new ERC1967Proxy(address(new LisAsterRewards()), "")));
+    AsterRewards rewards = AsterRewards(address(new ERC1967Proxy(address(new AsterRewards()), "")));
     LisAsterDistributor distributor = LisAsterDistributor(
       address(new ERC1967Proxy(address(new LisAsterDistributor()), ""))
     );
@@ -111,7 +111,7 @@ contract DeployLisAsterTestnet is Script {
     console.log("LisAster:            ", address(lisAster));
     console.log("AsterVault:          ", address(vault));
     console.log("LisAsterStaking:     ", address(staking));
-    console.log("LisAsterRewards:     ", address(rewards));
+    console.log("AsterRewards:     ", address(rewards));
     console.log("LisAsterDistributor: ", address(distributor));
     console.log("---- Rewards fee ----");
     console.log("feeReceiver:         ", feeReceiver);

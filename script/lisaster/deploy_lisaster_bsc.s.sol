@@ -8,7 +8,8 @@ import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy
 import { LisAster } from "../../src/lisaster/LisAster.sol";
 import { AsterVault } from "../../src/lisaster/AsterVault.sol";
 import { LisAsterStaking } from "../../src/lisaster/LisAsterStaking.sol";
-import { LisAsterRewards } from "../../src/lisaster/LisAsterRewards.sol";
+import { AsterRewards } from "../../src/lisaster/AsterRewards.sol";
+
 import { LisAsterDistributor } from "../../src/lisaster/LisAsterDistributor.sol";
 
 /// @title DeployLisAsterBsc
@@ -34,7 +35,7 @@ contract DeployLisAsterBsc is Script {
   uint256 constant BROKER = 1;
   /// @dev Minimum AsterVault.deposit amount (ASTER, 18 decimals). 0.1 ASTER.
   uint256 constant MIN_DEPOSIT = 0.1 ether;
-  /// @dev LisAsterRewards fee rate (1e18 = 100%). Capped at MAX_FEE_RATE = 3e17 (30%).
+  /// @dev AsterRewards fee rate (1e18 = 100%). Capped at MAX_FEE_RATE = 3e17 (30%).
   ///      TODO: confirm production fee rate with ops before broadcast.
   uint256 constant FEE_RATE = 1e17; // 10%
   /// @dev LisAsterDistributor pending-root time-lock. Hard floor MIN_WAITING_PERIOD = 6h.
@@ -48,7 +49,7 @@ contract DeployLisAsterBsc is Script {
   address constant BOT_ADDR = 0x91fC4BA20685339781888eCA3E9E1c12d40F0e13;
   /// @dev forAddress passed to AstherusVault.depositFor — Lista-operated EOA mirrored on Aster Chain.
   address constant LIS_ASTER_MANAGER = 0x7ae0D99f5F7BF89282d28eE013BBb6e19fCb76cB;
-  /// @dev ASTER fee recipient inside LisAsterRewards.notifyRewards.
+  /// @dev ASTER fee recipient inside AsterRewards.notifyRewards.
   address constant FEE_RECEIVER = 0x34B504A5CF0fF41F8A480580533b6Dda687fa3Da;
 
   function run() public {
@@ -81,7 +82,7 @@ contract DeployLisAsterBsc is Script {
     LisAster lisAster = LisAster(address(new ERC1967Proxy(address(new LisAster()), "")));
     AsterVault vault = AsterVault(address(new ERC1967Proxy(address(new AsterVault()), "")));
     LisAsterStaking staking = LisAsterStaking(address(new ERC1967Proxy(address(new LisAsterStaking()), "")));
-    LisAsterRewards rewards = LisAsterRewards(address(new ERC1967Proxy(address(new LisAsterRewards()), "")));
+    AsterRewards rewards = AsterRewards(address(new ERC1967Proxy(address(new AsterRewards()), "")));
     LisAsterDistributor distributor = LisAsterDistributor(
       address(new ERC1967Proxy(address(new LisAsterDistributor()), ""))
     );
@@ -139,7 +140,7 @@ contract DeployLisAsterBsc is Script {
     console.log("LisAster:            ", address(lisAster));
     console.log("AsterVault:          ", address(vault));
     console.log("LisAsterStaking:     ", address(staking));
-    console.log("LisAsterRewards:     ", address(rewards));
+    console.log("AsterRewards:     ", address(rewards));
     console.log("LisAsterDistributor: ", address(distributor));
     console.log("---- Rewards fee ----");
     console.log("feeReceiver:         ", feeReceiver);

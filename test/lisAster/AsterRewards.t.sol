@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import { LisAsterBase } from "./LisAsterBase.t.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 
-contract LisAsterRewardsTest is LisAsterBase {
+contract AsterRewardsTest is LisAsterBase {
   /* ---------------- notifyRewards ---------------- */
 
   function test_notifyRewards_holdsAster() public {

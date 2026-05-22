@@ -86,7 +86,7 @@ contract TransferLisAsterRolesBsc is Script {
     _rotateRole(LIS_ASTER_STAKING, MANAGER_ROLE, deployer, MANAGER);
     _rotateAdmin(LIS_ASTER_STAKING, deployer, ADMIN);
 
-    /* ----- LisAsterRewards: DEFAULT_ADMIN + MANAGER (BOT already wired at deploy) ----- */
+    /* ----- AsterRewards: DEFAULT_ADMIN + MANAGER (BOT already wired at deploy) ----- */
     _rotateRole(LIS_ASTER_REWARDS, MANAGER_ROLE, deployer, MANAGER);
     _rotateAdmin(LIS_ASTER_REWARDS, deployer, ADMIN);
 

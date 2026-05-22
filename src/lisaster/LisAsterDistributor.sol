@@ -55,7 +55,7 @@ contract LisAsterDistributor is
   /// @notice LisAsterStaking proxy. `claimAndStake` calls `stakeFor(msg.sender, payable_)`
   ///         to place the staked position on the user's behalf.
   address public staking;
-  /// @notice The LisAsterRewards proxy authorised to call `notifyRewards`.
+  /// @notice The AsterRewards proxy authorised to call `notifyRewards`.
   address public rewards;
 
   /* MERKLE STATE */

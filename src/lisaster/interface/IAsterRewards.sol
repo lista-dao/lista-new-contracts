@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-interface ILisAsterRewards {
+interface IAsterRewards {
   event RewardsNotified(uint256 asterAmount, uint256 fee, uint256 net);
   event RewardsDistributed(uint256 amount);
   event DistributorSet(address indexed distributor);

@@ -7,8 +7,8 @@ interface IAsterVault {
   /// @notice Deposit ASTER. Internally calls `AstherusVault.depositFor` with
   ///         `forAddress = lisAsterManager`; Astherus's backend syncs the credited balance to
   ///         Aster Chain within 1-3 minutes. Mints lisAster 1:1 to `receiver` in the same tx.
-  /// @dev Callable by anyone. Two production callers: user deposits, and `LisAsterRewards`
-  ///      re-depositing reward ASTER returned via Astherus.withdraw (not a reentry attack
-  ///      surface -- the vault is `nonReentrant` and this is a legitimate outer-frame entry).
+  /// @dev Callable by anyone. Two production callers: user deposits, and
+  ///      `LisAsterDistributor.claimAndStake` routing claimed ASTER into a staked position
+  ///      (legitimate outer-frame entry; the vault is `nonReentrant`).
   function deposit(uint256 amount, address receiver) external;
 }

@@ -7,7 +7,7 @@ import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy
 import { LisAster } from "../../src/lisaster/LisAster.sol";
 import { AsterVault } from "../../src/lisaster/AsterVault.sol";
 import { LisAsterStaking } from "../../src/lisaster/LisAsterStaking.sol";
-import { LisAsterRewards } from "../../src/lisaster/LisAsterRewards.sol";
+import { AsterRewards } from "../../src/lisaster/AsterRewards.sol";
 import { LisAsterDistributor } from "../../src/lisaster/LisAsterDistributor.sol";
 
 import { MockERC20 } from "../../src/mock/MockERC20.sol";
@@ -31,7 +31,7 @@ abstract contract LisAsterBase is Test {
   LisAster internal lisAster;
   AsterVault internal vault;
   LisAsterStaking internal staking;
-  LisAsterRewards internal rewards;
+  AsterRewards internal rewards;
   LisAsterDistributor internal distributor;
 
   function setUp() public virtual {
@@ -42,7 +42,7 @@ abstract contract LisAsterBase is Test {
     lisAster = LisAster(address(new ERC1967Proxy(address(new LisAster()), "")));
     vault = AsterVault(address(new ERC1967Proxy(address(new AsterVault()), "")));
     staking = LisAsterStaking(address(new ERC1967Proxy(address(new LisAsterStaking()), "")));
-    rewards = LisAsterRewards(address(new ERC1967Proxy(address(new LisAsterRewards()), "")));
+    rewards = AsterRewards(address(new ERC1967Proxy(address(new AsterRewards()), "")));
     distributor = LisAsterDistributor(address(new ERC1967Proxy(address(new LisAsterDistributor()), "")));
 
     // 2. Initialize. All required roles are granted inside each initialize call.
