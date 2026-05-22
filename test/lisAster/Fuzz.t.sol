@@ -105,30 +105,33 @@ contract FuzzTest is LisAsterBase {
   ///         payable amount and the same totalClaimed delta; only the destination differs
   ///         (wallet vs staking position).
   function testFuzz_claimAndStakeEquivalence(uint256 cum) public {
-    cum = bound(cum, 1, MAX_AMOUNT / 2);
+    // claimAndStake routes through Vault.deposit which enforces minDeposit; bound accordingly.
+    cum = bound(cum, vault.minDeposit(), MAX_AMOUNT / 2);
     _seedNotified();
 
     (bytes32 root, bytes32[] memory pUser, bytes32[] memory pOther) = _twoLeafTree(user, cum, other, cum);
     _setLiveMerkleRoot(root, 2 * cum);
 
-    uint256 totalSupplyBefore = lisAster.totalSupply();
+    uint256 lisAsterSupplyBefore = lisAster.totalSupply();
 
     distributor.claim(user, cum, pUser);
     vm.prank(other);
     distributor.claimAndStake(cum, pOther);
 
-    // claim: user holds wallet lisAster.
-    assertEq(lisAster.balanceOf(user), cum, "user wallet");
+    // claim: user receives ASTER directly.
+    assertEq(asterToken.balanceOf(user), cum, "user wallet");
     assertEq(staking.balanceOf(user), 0, "user not staked");
+    assertEq(lisAster.balanceOf(user), 0, "user holds no lisAster");
 
-    // claimAndStake: other has a staking position rather than a wallet balance.
-    assertEq(lisAster.balanceOf(other), 0, "other not in wallet");
+    // claimAndStake: other ends with a staking position (ASTER converted to lisAster en route).
+    assertEq(asterToken.balanceOf(other), 0, "other holds no ASTER");
+    assertEq(lisAster.balanceOf(other), 0, "other holds no lisAster directly");
     assertEq(staking.balanceOf(other), cum, "other staked");
 
     // Both paths consume the same totalClaimed delta (sum equals 2*cum).
     assertEq(distributor.totalClaimed(), 2 * cum, "totalClaimed equivalence");
-    // lisAster total supply is unchanged (existing distributor balance is moved, not minted).
-    assertEq(lisAster.totalSupply(), totalSupplyBefore, "no mint/burn during claim");
+    // claimAndStake's Vault.deposit minted `cum` new lisAster against the staking pool.
+    assertEq(lisAster.totalSupply(), lisAsterSupplyBefore + cum, "lisAster minted for staked half only");
   }
 
   /* ---------------- multi-round cumulative claimed at once ---------------- */
@@ -151,7 +154,7 @@ contract FuzzTest is LisAsterBase {
     // user claims only against the final round's root.
     distributor.claim(user, cum3, empty);
 
-    assertEq(lisAster.balanceOf(user), cum3, "lifetime cum claimed at once");
+    assertEq(asterToken.balanceOf(user), cum3, "lifetime cum claimed at once");
     assertEq(distributor.claimed(user), cum3);
     assertEq(distributor.totalClaimed(), cum3);
   }

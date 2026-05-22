@@ -4,27 +4,22 @@ pragma solidity ^0.8.24;
 import { LisAsterBase } from "./LisAsterBase.t.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 
-contract LisAsterRewardsTest is LisAsterBase {
+contract AsterRewardsTest is LisAsterBase {
   /* ---------------- notifyRewards ---------------- */
 
-  function test_notifyRewards_mint1to1() public {
+  function test_notifyRewards_holdsAster() public {
     asterToken.mint(manager, 5 ether);
     vm.startPrank(manager);
     asterToken.approve(address(rewards), 5 ether);
     rewards.notifyRewards(5 ether);
     vm.stopPrank();
 
-    // ASTER traverses manager -> rewards -> vault -> AstherusVault BSC contract.
+    // ASTER lands in Rewards. No Vault round-trip; no lisAster minted.
     assertEq(asterToken.balanceOf(manager), 0);
-    assertEq(asterToken.balanceOf(address(rewards)), 0);
-    assertEq(asterToken.balanceOf(address(vault)), 0);
-    assertEq(asterToken.balanceOf(address(astherusVault)), 5 ether);
-
-    // Rewards now holds 5 lisAster.
-    assertEq(lisAster.balanceOf(address(rewards)), 5 ether);
-    assertEq(rewards.pendingLisAster(), 5 ether);
-    // Total supply increased.
-    assertEq(lisAster.totalSupply(), 5 ether);
+    assertEq(asterToken.balanceOf(address(rewards)), 5 ether);
+    assertEq(asterToken.balanceOf(address(astherusVault)), 0);
+    assertEq(rewards.pendingAster(), 5 ether);
+    assertEq(lisAster.totalSupply(), 0);
   }
 
   function test_notifyRewards_onlyManager() public {
@@ -52,10 +47,9 @@ contract LisAsterRewardsTest is LisAsterBase {
     vm.prank(bot);
     rewards.distributeRewards(3 ether);
 
-    // lisAster flows into distributor.
-    assertEq(lisAster.balanceOf(address(rewards)), 7 ether);
-    assertEq(lisAster.balanceOf(address(distributor)), 3 ether);
-    // distributor totalNotified bumped.
+    // ASTER flows into distributor.
+    assertEq(asterToken.balanceOf(address(rewards)), 7 ether);
+    assertEq(asterToken.balanceOf(address(distributor)), 3 ether);
     assertEq(distributor.totalNotified(), 3 ether);
   }
 
@@ -65,8 +59,8 @@ contract LisAsterRewardsTest is LisAsterBase {
     _botDistribute(2 ether);
     _botDistribute(5 ether);
 
-    assertEq(lisAster.balanceOf(address(rewards)), 3 ether);
-    assertEq(lisAster.balanceOf(address(distributor)), 7 ether);
+    assertEq(asterToken.balanceOf(address(rewards)), 3 ether);
+    assertEq(asterToken.balanceOf(address(distributor)), 7 ether);
     assertEq(distributor.totalNotified(), 7 ether);
   }
 
@@ -160,8 +154,7 @@ contract LisAsterRewardsTest is LisAsterBase {
     vm.stopPrank();
 
     assertEq(asterToken.balanceOf(recipient), 0, "no fee taken");
-    assertEq(lisAster.balanceOf(address(rewards)), 10 ether, "all minted");
-    assertEq(asterToken.balanceOf(address(astherusVault)), 10 ether, "all bridged");
+    assertEq(asterToken.balanceOf(address(rewards)), 10 ether, "all retained");
   }
 
   function test_notifyRewards_withFee_splitsCorrectly() public {
@@ -177,15 +170,12 @@ contract LisAsterRewardsTest is LisAsterBase {
     rewards.notifyRewards(10 ether);
     vm.stopPrank();
 
-    // 10% fee = 1 ASTER to recipient, 9 ASTER bridged → 9 lisAster minted.
+    // 10% fee = 1 ASTER to recipient, 9 ASTER stays in Rewards as ASTER.
     assertEq(asterToken.balanceOf(recipient), 1 ether, "fee transferred");
-    assertEq(asterToken.balanceOf(address(astherusVault)), 9 ether, "net bridged");
-    assertEq(lisAster.balanceOf(address(rewards)), 9 ether, "net minted");
-    assertEq(lisAster.totalSupply(), 9 ether);
+    assertEq(asterToken.balanceOf(address(rewards)), 9 ether, "net retained");
   }
 
   function test_notifyRewards_feeRateSetButNoReceiver_skipsFee() public {
-    // feeRate set but feeReceiver still 0 -> outer guard skips the fee path entirely.
     vm.prank(manager);
     rewards.setFeeRate(1e17); // 10%
 
@@ -195,13 +185,11 @@ contract LisAsterRewardsTest is LisAsterBase {
     rewards.notifyRewards(10 ether);
     vm.stopPrank();
 
-    // No fee transferred anywhere; full 10 ether bridged + minted.
-    assertEq(asterToken.balanceOf(address(astherusVault)), 10 ether);
-    assertEq(lisAster.balanceOf(address(rewards)), 10 ether);
+    // No fee transferred anywhere; full 10 ether retained.
+    assertEq(asterToken.balanceOf(address(rewards)), 10 ether);
   }
 
   function test_notifyRewards_receiverSetButZeroRate_skipsFee() public {
-    // Mirror case: feeReceiver set but feeRate=0 -> still no fee.
     address recipient = makeAddr("feeRecipient");
     vm.prank(manager);
     rewards.setFeeReceiver(recipient);
@@ -213,7 +201,7 @@ contract LisAsterRewardsTest is LisAsterBase {
     vm.stopPrank();
 
     assertEq(asterToken.balanceOf(recipient), 0);
-    assertEq(lisAster.balanceOf(address(rewards)), 10 ether);
+    assertEq(asterToken.balanceOf(address(rewards)), 10 ether);
   }
 
   function test_notifyRewards_atCapFee() public {
@@ -230,6 +218,38 @@ contract LisAsterRewardsTest is LisAsterBase {
     vm.stopPrank();
 
     assertEq(asterToken.balanceOf(recipient), 3 ether);
-    assertEq(lisAster.balanceOf(address(rewards)), 7 ether);
+    assertEq(asterToken.balanceOf(address(rewards)), 7 ether);
+  }
+
+  /* ---------------- pause / unpause ---------------- */
+
+  function test_pause_byPauser() public {
+    vm.prank(pauser);
+    rewards.pause();
+    assertTrue(rewards.paused());
+  }
+
+  function test_pause_revertsForOther() public {
+    bytes32 role = rewards.PAUSER();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, role));
+    vm.prank(other);
+    rewards.pause();
+  }
+
+  function test_unpause_byManager() public {
+    vm.prank(pauser);
+    rewards.pause();
+    vm.prank(manager);
+    rewards.unpause();
+    assertFalse(rewards.paused());
+  }
+
+  function test_unpause_revertsForPauser() public {
+    vm.prank(pauser);
+    rewards.pause();
+    bytes32 role = rewards.MANAGER();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, pauser, role));
+    vm.prank(pauser);
+    rewards.unpause();
   }
 }

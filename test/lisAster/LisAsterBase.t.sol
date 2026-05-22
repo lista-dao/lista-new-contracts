@@ -7,7 +7,7 @@ import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy
 import { LisAster } from "../../src/lisaster/LisAster.sol";
 import { AsterVault } from "../../src/lisaster/AsterVault.sol";
 import { LisAsterStaking } from "../../src/lisaster/LisAsterStaking.sol";
-import { LisAsterRewards } from "../../src/lisaster/LisAsterRewards.sol";
+import { AsterRewards } from "../../src/lisaster/AsterRewards.sol";
 import { LisAsterDistributor } from "../../src/lisaster/LisAsterDistributor.sol";
 
 import { MockERC20 } from "../../src/mock/MockERC20.sol";
@@ -31,7 +31,7 @@ abstract contract LisAsterBase is Test {
   LisAster internal lisAster;
   AsterVault internal vault;
   LisAsterStaking internal staking;
-  LisAsterRewards internal rewards;
+  AsterRewards internal rewards;
   LisAsterDistributor internal distributor;
 
   function setUp() public virtual {
@@ -42,7 +42,7 @@ abstract contract LisAsterBase is Test {
     lisAster = LisAster(address(new ERC1967Proxy(address(new LisAster()), "")));
     vault = AsterVault(address(new ERC1967Proxy(address(new AsterVault()), "")));
     staking = LisAsterStaking(address(new ERC1967Proxy(address(new LisAsterStaking()), "")));
-    rewards = LisAsterRewards(address(new ERC1967Proxy(address(new LisAsterRewards()), "")));
+    rewards = AsterRewards(address(new ERC1967Proxy(address(new AsterRewards()), "")));
     distributor = LisAsterDistributor(address(new ERC1967Proxy(address(new LisAsterDistributor()), "")));
 
     // 2. Initialize. All required roles are granted inside each initialize call.
@@ -59,16 +59,20 @@ abstract contract LisAsterBase is Test {
       0.1 ether // minDeposit
     );
     staking.initialize(admin, pauser, manager, address(lisAster));
-    rewards.initialize(admin, pauser, manager, bot, address(asterToken), address(lisAster), address(vault));
+    rewards.initialize(admin, pauser, manager, bot, address(asterToken));
     distributor.initialize(
-      admin,
-      manager,
-      bot,
-      pauser,
-      address(lisAster),
-      address(staking),
-      address(rewards),
-      DISTRIBUTOR_WAITING_PERIOD
+      LisAsterDistributor.InitParams({
+        admin: admin,
+        manager: manager,
+        bot: bot,
+        pauser: pauser,
+        asterToken: address(asterToken),
+        lisAster: address(lisAster),
+        vault: address(vault),
+        staking: address(staking),
+        rewards: address(rewards),
+        waitingPeriod: DISTRIBUTOR_WAITING_PERIOD
+      })
     );
 
     // 3. Rewards one-shot setDistributor (MANAGER-gated; only Rewards still wires distributor on-chain).
@@ -90,8 +94,8 @@ abstract contract LisAsterBase is Test {
     vm.stopPrank();
   }
 
-  /// @dev Rewards.MANAGER receives ASTER returned via Astherus and re-deposits via Vault,
-  ///      minting lisAster to Rewards.
+  /// @dev Rewards.MANAGER receives ASTER returned via Astherus and stages it in Rewards as
+  ///      ASTER (no more Vault round-trip).
   function _managerNotify(uint256 amount) internal {
     asterToken.mint(manager, amount);
     vm.startPrank(manager);
@@ -100,7 +104,7 @@ abstract contract LisAsterBase is Test {
     vm.stopPrank();
   }
 
-  /// @dev BOT pushes lisAster to Distributor and triggers notify.
+  /// @dev BOT pushes ASTER from Rewards to Distributor and triggers notify.
   function _botDistribute(uint256 amount) internal {
     vm.prank(bot);
     rewards.distributeRewards(amount);
@@ -118,7 +122,7 @@ abstract contract LisAsterBase is Test {
   /* ----------------- minimal Merkle helpers (1-leaf / 2-leaf) ----------------- */
 
   function _leaf(address account, uint256 cumulative) internal view returns (bytes32) {
-    return keccak256(abi.encode(block.chainid, account, address(lisAster), cumulative));
+    return keccak256(abi.encode(block.chainid, account, address(asterToken), cumulative));
   }
 
   function _hashPair(bytes32 a, bytes32 b) internal pure returns (bytes32) {

@@ -5,7 +5,8 @@ import { LisAsterBase } from "./LisAsterBase.t.sol";
 
 /// @notice Scenario coverage for the key invariants spelled out in the design doc.
 contract InvariantTest is LisAsterBase {
-  /* I-1: LisAster.totalSupply == sum of AsterVault.deposit (user deposits + notifyRewards reentry). */
+  /* I-1: LisAster.totalSupply == sum of AsterVault.deposit (user deposits only — rewards no
+   *      longer re-enter Vault under the ASTER-denominated design). */
   function test_invariant_totalSupplyEqualsDeposits() public {
     _giveAster(user, 3 ether);
     _userDeposit(user, 1 ether, user);
@@ -13,12 +14,14 @@ contract InvariantTest is LisAsterBase {
 
     _managerNotify(5 ether);
 
-    // User deposits 1 + 2 = 3, notifyRewards 5; total 8 == sum of AsterVault.deposit.
-    assertEq(lisAster.totalSupply(), 8 ether);
-    assertEq(asterToken.balanceOf(address(astherusVault)), 8 ether);
+    // Only user deposits (1 + 2 = 3 ether) mint lisAster; the 5 ether reward stays as ASTER
+    // in Rewards.
+    assertEq(lisAster.totalSupply(), 3 ether);
+    assertEq(asterToken.balanceOf(address(astherusVault)), 3 ether);
+    assertEq(asterToken.balanceOf(address(rewards)), 5 ether);
   }
 
-  /* I-2: LisAster.balanceOf(Distributor) == totalNotified - totalClaimed. */
+  /* I-2: ASTER.balanceOf(Distributor) == totalNotified - totalClaimed. */
   function test_invariant_distributorBalanceMatchesAccounting() public {
     _managerNotify(10 ether);
     _botDistribute(7 ether);
@@ -26,7 +29,7 @@ contract InvariantTest is LisAsterBase {
     // notify 7, claim 0.
     assertEq(distributor.totalNotified(), 7 ether);
     assertEq(distributor.totalClaimed(), 0);
-    assertEq(lisAster.balanceOf(address(distributor)), 7 ether);
+    assertEq(asterToken.balanceOf(address(distributor)), 7 ether);
 
     // Run a claim.
     bytes32[] memory empty = new bytes32[](0);
@@ -35,18 +38,19 @@ contract InvariantTest is LisAsterBase {
 
     assertEq(distributor.totalNotified(), 7 ether);
     assertEq(distributor.totalClaimed(), 3 ether);
-    assertEq(lisAster.balanceOf(address(distributor)), 4 ether);
-    assertEq(lisAster.balanceOf(address(distributor)), distributor.totalNotified() - distributor.totalClaimed());
+    assertEq(asterToken.balanceOf(address(distributor)), 4 ether);
+    assertEq(asterToken.balanceOf(address(distributor)), distributor.totalNotified() - distributor.totalClaimed());
+    assertEq(asterToken.balanceOf(user), 3 ether);
   }
 
-  /* I-3: LisAster.balanceOf(Rewards) == sum(notifyRewards) - sum(distributeRewards). */
+  /* I-3: ASTER.balanceOf(Rewards) == sum(net notifyRewards) - sum(distributeRewards). */
   function test_invariant_rewardsBalance() public {
     _managerNotify(5 ether);
     _managerNotify(3 ether);
     _botDistribute(4 ether);
 
-    assertEq(lisAster.balanceOf(address(rewards)), 4 ether); // 5+3-4
-    assertEq(rewards.pendingLisAster(), 4 ether);
+    assertEq(asterToken.balanceOf(address(rewards)), 4 ether); // 5+3-4
+    assertEq(rewards.pendingAster(), 4 ether);
   }
 
   /* I-4: totalAllocated <= totalNotified -- BOT cannot stage an over-allocated root. */
