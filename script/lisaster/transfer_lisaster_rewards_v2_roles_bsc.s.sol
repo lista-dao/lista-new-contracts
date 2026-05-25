@@ -24,9 +24,9 @@ import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.so
 ///         Run: forge script script/lisaster/transfer_lisaster_rewards_v2_roles_bsc.s.sol:TransferAsterRewardsV2RolesBsc \
 ///                 --rpc-url bsc --broadcast -vvvv
 contract TransferAsterRewardsV2RolesBsc is Script {
-  /* ----- v2 proxies (TODO: fill from deploy_lisaster_rewards_v2_bsc broadcast output) ----- */
-  address constant ASTER_REWARDS_V2 = address(0); // TODO: AsterRewards v2 proxy
-  address constant LIS_ASTER_DISTRIBUTOR_V2 = address(0); // TODO: LisAsterDistributor v2 proxy
+  /* ----- v2 proxies (BSC mainnet) ----- */
+  address constant ASTER_REWARDS_V2 = 0xe477D5d78675780aaF41344211781966dc619D38;
+  address constant LIS_ASTER_DISTRIBUTOR_V2 = 0x4fE7fE032260df5002Ff9b1E4d3CaADcf4b43386;
 
   /* ----- Final role holders (same multisigs as the original transfer script) ----- */
   /// @dev DEFAULT_ADMIN across both v2 proxies. Lista governance multisig.
