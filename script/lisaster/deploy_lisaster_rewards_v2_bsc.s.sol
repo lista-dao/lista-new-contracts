@@ -59,16 +59,13 @@ contract DeployAsterRewardsV2Bsc is Script {
 
     vm.startBroadcast(deployerPk);
 
-    /* 1. Deploy 2 new proxies. */
-    AsterRewards rewards = AsterRewards(address(new ERC1967Proxy(address(new AsterRewards()), "")));
-    LisAsterDistributor distributor = LisAsterDistributor(
-      address(new ERC1967Proxy(address(new LisAsterDistributor()), ""))
-    );
+    /* 1. Deploy both proxies with init data atomically baked into the constructor call so
+     *    no init-front-run window exists between proxy CREATE and `initialize`. */
+    bytes memory rewardsInit = abi.encodeCall(AsterRewards.initialize, (admin, pauser, manager, bot, ASTER_TOKEN));
+    AsterRewards rewards = AsterRewards(address(new ERC1967Proxy(address(new AsterRewards()), rewardsInit)));
 
-    /* 2. Initialize in dependency order. */
-    rewards.initialize(admin, pauser, manager, bot, ASTER_TOKEN);
-
-    distributor.initialize(
+    bytes memory distributorInit = abi.encodeCall(
+      LisAsterDistributor.initialize,
       LisAsterDistributor.InitParams({
         admin: admin,
         manager: manager,
@@ -82,8 +79,12 @@ contract DeployAsterRewardsV2Bsc is Script {
         waitingPeriod: DISTRIBUTOR_WAITING_PERIOD
       })
     );
+    LisAsterDistributor distributor = LisAsterDistributor(
+      address(new ERC1967Proxy(address(new LisAsterDistributor()), distributorInit))
+    );
 
-    /* 3. Rewards post-init wiring (deployer holds Rewards.MANAGER at this point):
+    /* 2. Rewards post-init wiring. All three calls are MANAGER-gated, so no front-run risk:
+     *    only the deployer (current MANAGER) can call them.
      *    - one-shot setDistributor (breaks Rewards <-> Distributor circular dep)
      *    - fee config (receiver + rate). Both must be set; either being 0 disables the fee path.
      *      TODO: drop both calls if FEE_RATE = 0 desired at launch. */

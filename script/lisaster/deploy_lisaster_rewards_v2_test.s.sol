@@ -56,16 +56,13 @@ contract DeployLisAsterRewardsV2Testnet is Script {
 
     vm.startBroadcast(deployerPk);
 
-    /* 1. Deploy 2 new proxies. */
-    AsterRewards rewards = AsterRewards(address(new ERC1967Proxy(address(new AsterRewards()), "")));
-    LisAsterDistributor distributor = LisAsterDistributor(
-      address(new ERC1967Proxy(address(new LisAsterDistributor()), ""))
-    );
+    /* 1. Atomic init: bake initialize calldata into proxy CREATE so attackers cannot
+     *    front-run a separate `initialize` tx. */
+    bytes memory rewardsInit = abi.encodeCall(AsterRewards.initialize, (admin, pauser, manager, bot, ASTER_TOKEN));
+    AsterRewards rewards = AsterRewards(address(new ERC1967Proxy(address(new AsterRewards()), rewardsInit)));
 
-    /* 2. Initialize in dependency order. */
-    rewards.initialize(admin, pauser, manager, bot, ASTER_TOKEN);
-
-    distributor.initialize(
+    bytes memory distributorInit = abi.encodeCall(
+      LisAsterDistributor.initialize,
       LisAsterDistributor.InitParams({
         admin: admin,
         manager: manager,
@@ -79,8 +76,11 @@ contract DeployLisAsterRewardsV2Testnet is Script {
         waitingPeriod: DISTRIBUTOR_WAITING_PERIOD
       })
     );
+    LisAsterDistributor distributor = LisAsterDistributor(
+      address(new ERC1967Proxy(address(new LisAsterDistributor()), distributorInit))
+    );
 
-    /* 3. Rewards post-init wiring (deployer holds Rewards.MANAGER on testnet):
+    /* 2. Rewards post-init wiring -- MANAGER-gated, no front-run risk.
      *    - one-shot setDistributor
      *    - fee config (receiver + rate) */
     rewards.setDistributor(address(distributor));
