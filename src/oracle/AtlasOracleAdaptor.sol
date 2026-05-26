@@ -41,8 +41,8 @@ contract AtlasOracleAdaptor is AggregatorV3Interface {
     return atlasFeed.description();
   }
 
-  function version() external pure returns (uint256) {
-    return 1;
+  function version() external view returns (uint256) {
+    return atlasFeed.version();
   }
 
   function latestAnswer() external view returns (int256) {
