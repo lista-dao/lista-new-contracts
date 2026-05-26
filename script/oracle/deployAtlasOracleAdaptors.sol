@@ -3,11 +3,11 @@ pragma solidity ^0.8.10;
 
 import "forge-std/Script.sol";
 
-import { AltasOracleAdaptor } from "@src/oracle/AltasOracleAdaptor.sol";
+import { AtlasOracleAdaptor } from "@src/oracle/AtlasOracleAdaptor.sol";
 
 /**
  * @title DeployAtlasOracleAdaptors
- * @notice Deploys one AltasOracleAdaptor per unique Atlas Oracle push feed
+ * @notice Deploys one AtlasOracleAdaptor per unique Atlas Oracle push feed
  * Run with:
  *   forge script script/oracle/deployAtlasOracleAdaptors.sol:DeployAtlasOracleAdaptors \
  *     --rpc-url $BSC_RPC --broadcast --slow -vvvv
@@ -51,8 +51,8 @@ contract DeployAtlasOracleAdaptors is Script {
     vm.startBroadcast(deployerPrivateKey);
 
     for (uint256 i = 0; i < feeds.length; i++) {
-      AltasOracleAdaptor adaptor = new AltasOracleAdaptor(feeds[i].pushContract);
-      console.log("AltasOracleAdaptor", feeds[i].symbol, "->", address(adaptor));
+      AtlasOracleAdaptor adaptor = new AtlasOracleAdaptor(feeds[i].pushContract);
+      console.log("AtlasOracleAdaptor", feeds[i].symbol, "->", address(adaptor));
       console.log("  underlying Atlas feed:", feeds[i].pushContract);
     }
 

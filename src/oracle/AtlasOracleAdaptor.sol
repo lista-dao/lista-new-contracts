@@ -5,7 +5,7 @@ import "./interfaces/OracleInterface.sol";
 import "./libraries/FullMath.sol";
 
 /**
- * @title AltasOracleAdaptor
+ * @title AtlasOracleAdaptor
  * @author Lista
  * @notice Adaptor that wraps an Atlas Oracle push feed (18-decimal Chainlink-style)
  * and exposes it as an 8-decimal AggregatorV3Interface so it can be plugged into ResilientOracle.
@@ -14,7 +14,7 @@ import "./libraries/FullMath.sol";
  * `timeDeltaTolerance` in TokenConfig, so this adaptor deliberately does not
  * perform a staleness check.
  */
-contract AltasOracleAdaptor is AggregatorV3Interface {
+contract AtlasOracleAdaptor is AggregatorV3Interface {
 
   /// @notice Source decimals of the Atlas Oracle push feed.
   uint256 private constant SOURCE_SCALE = 1e18;
@@ -25,10 +25,10 @@ contract AltasOracleAdaptor is AggregatorV3Interface {
   AggregatorV3Interface public immutable atlasFeed;
 
   constructor(address _atlasFeed) {
-    require(_atlasFeed != address(0), "AltasOracleAdaptor/zero-feed");
+    require(_atlasFeed != address(0), "AtlasOracleAdaptor/zero-feed");
     require(
       AggregatorV3Interface(_atlasFeed).decimals() == 18,
-      "AltasOracleAdaptor/feed-decimals-not-18"
+      "AtlasOracleAdaptor/feed-decimals-not-18"
     );
     atlasFeed = AggregatorV3Interface(_atlasFeed);
   }
