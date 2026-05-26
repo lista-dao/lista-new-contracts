@@ -83,6 +83,12 @@ contract AtlasOracleAdaptor is AggregatorV3Interface {
    * avoid intermediate overflow. Non-positive answers are coerced to zero,
    * which ResilientOracle treats as INVALID_PRICE (preventing a signed-to-
    * unsigned underflow wrap when uint256(answer) is taken downstream).
+   *
+   * NOTE: The conversion truncates toward zero. Any underlying answer below
+   * 1e10 (~$1e-8 USD at 18 decimals) rounds down to 0 and is treated as
+   * INVALID_PRICE by ResilientOracle. This is safe for the current asset
+   * list — operators must revisit this math before listing ultra-low-priced
+   * feeds where truncation could mask a legitimate non-zero price.
    */
   function _scale(int256 ans) internal pure returns (int256) {
     if (ans <= 0) return 0;
