@@ -21,9 +21,25 @@ import { IXAUEOracle } from "./interface/IXAUEOracle.sol";
  *         - mint() is synchronous (sync mint, returns shares immediately)
  *         - requestRedemption() is async step 1 (shares burn here, asset locked at NAV)
  *         - XAUE REDEMPTION_APPROVER then calls approveRedemption (asset → this adapter)
+ *         - XAUE REDEMPTION_APPROVER may instead reject; shares are re-minted back to adapter.
  *
- *         Phase 1 does NOT handle rejectRedemption (XAUE side path, manager-only, rarely triggered).
- *         Off-chain monitoring covers BOT and XAUE state.
+ *         Accounting baseline: NAV math runs against `expectedShareBalance` (the share count adapter
+ *         knows it owns), NOT the raw `balanceOf(this)`. Unsolicited dust transfers and not-yet-acked
+ *         reject shares therefore have zero effect on NAV / fee / interest until MANAGER explicitly
+ *         brings them in. `_updateVaultAssets` tolerates EXCESS actual (`balanceOf >= expectedShareBalance`)
+ *         but fail-closes on a DEFICIT — actual < expected would imply we'd be crediting interest on
+ *         shares we don't actually hold, so the function reverts and MANAGER must reconcile.
+ *
+ *         Reject handling: after XAUE rejects a redemption, BOT calls `acknowledgeReject(reqId)`.
+ *         It is a pure accounting bump — `expectedShareBalance += shareAmount` and
+ *         `lastVaultTotalAssets += lockedAssetAmount` (request-time XAUT value). No interest /
+ *         loss is pushed in this call. Any pending NAV delta (active slice since last sync +
+ *         the rejected slice's in-flight delta) surfaces as a normal `getVault - lastVault`
+ *         delta on the next `_updateVaultAssets` and is handled by the standard fee + cap +
+ *         totalSupply-zero path. The `rejectAcknowledged[reqId]` map enforces one-shot ack.
+ *
+ *         User-side compensation (slisXAUE already burned at requestWithdraw) is out-of-scope here and
+ *         handled via Lista off-chain runbook (M-05).
  */
 contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, ReentrancyGuardUpgradeable {
   using SafeERC20 for IERC20;
@@ -36,6 +52,10 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
   address public xaueOracle;
   /// @notice XAUTStaking — receives interest & withdrawal funds
   address public staking;
+  /// @notice slisXAUE share token. Cached at initialize to avoid an extra cross-contract hop on
+  ///         every NAV sync (`_pushInterest` / `_pushLoss` need `totalSupply` for the no-holders
+  ///         protocol-surplus branch).
+  address public slisXAUE;
   /// @notice Fee recipient (XAUT)
   address public feeReceiver;
   /// @notice Protocol fee rate on XAUE NAV profit, 1e18 precision (e.g. 0.2e18 = 20%)
@@ -44,6 +64,22 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
   uint256 public fee;
   /// @notice Last seen XAUT-value of adapter's XAUE holdings (6-dec)
   uint256 public lastVaultTotalAssets;
+  /// @notice XAUE share count adapter has explicitly minted (or had credited back via acknowledgeReject).
+  ///         The sole basis for NAV math in `getVaultTotalAssets`; drift between this and
+  ///         `balanceOf(this)` is tolerated (dust / not-yet-acked reject extras) and does NOT affect
+  ///         interest / loss propagation to staking until MANAGER brings the extras in via
+  ///         `acknowledgeReject` (or removes them via `emergencyWithdraw`).
+  uint256 public expectedShareBalance;
+  /// @notice MANAGER-tunable cap on per-update absolute change in totalVaultAssets, basis points.
+  ///         Defaults to 1000 (10%); upper bound MAX_DELTA_BPS_CAP (3000 = 30%) keeps MANAGER
+  ///         from making the bound meaningless. Defends against oracle anomalies; per XAUE Oracle
+  ///         design (maxAprDelta=5%/update, minUpdateInterval=1 day) a healthy NAV move never
+  ///         approaches this cap. If exceeded, the call reverts -- MANAGER must investigate.
+  uint256 public maxDeltaBps;
+  /// @notice Per-reqId guard: prevents `acknowledgeReject` from re-crediting the same rejected
+  ///         redemption when multiple rejects are outstanding (the actualShares >= expected+amount
+  ///         check is satisfiable twice for the same reqId if other unack'd rejects exist).
+  mapping(uint256 => bool) public rejectAcknowledged;
 
   /* CONSTANTS */
   bytes32 public constant MANAGER = keccak256("MANAGER");
@@ -51,11 +87,12 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
 
   uint256 public constant PRECISION = 1e18;
   uint256 public constant MAX_FEE_RATE = 0.3e18; // 30%
-  /// @notice Hard cap on per-update absolute change in totalVaultAssets, in basis points.
-  ///         10% — defends against oracle anomalies. Per XAUE Oracle design (maxAprDelta=5%/update,
-  ///         minUpdateInterval=1 day), a healthy NAV move never approaches this cap.
-  ///         If exceeded, MANAGER must investigate and unblock via pause + emergencyWithdraw + upgrade.
-  uint256 public constant MAX_DELTA_BPS = 1000;
+  /// @notice Upper bound on `maxDeltaBps` to keep the sanity cap meaningful (30%).
+  uint256 public constant MAX_DELTA_BPS_CAP = 3000;
+  /// @notice Default value of `maxDeltaBps` set at initialize time.
+  uint256 public constant DEFAULT_MAX_DELTA_BPS = 1000;
+  /// @notice XAUE FundToken's RedemptionStatus.Rejected enum value
+  uint8 public constant REDEMPTION_STATUS_REJECTED = 1;
 
   /* IMMUTABLE */
   /// @notice XAUT token (6-dec, the underlying for both XAUTStaking and XAUE Protocol)
@@ -70,8 +107,11 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
   event SetFeeReceiver(address feeReceiver);
   event SetFeeRate(uint256 feeRate);
   event SetStaking(address staking);
+  event SetSlisXAUE(address slisXAUE);
   event SetXAUEFundToken(address xaueFundToken);
   event SetXAUEOracle(address xaueOracle);
+  event SetMaxDeltaBps(uint256 oldBps, uint256 newBps);
+  event RedemptionRejectAcknowledged(uint256 indexed reqId, uint256 shareAmount);
   event EmergencyWithdraw(address token, uint256 amount);
 
   /* CONSTRUCTOR */
@@ -84,20 +124,31 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
   }
 
   /* INITIALIZER */
+  /**
+   * @dev `staking` is NOT set here because XAUTStaking init requires the adapter address (circular
+   *      dep at construction time). MANAGER wires it in via `setStaking` after all three proxies
+   *      are deployed. BOT entry points (depositToVault, requestWithdrawFromVault,
+   *      finishEarnPoolWithdraw, acknowledgeReject) all touch `staking`, so they will revert until
+   *      it is set — surfaces a configuration error loudly.
+   */
   function initialize(
     address _admin,
     address _manager,
     address _bot,
-    address _staking,
+    address _slisXAUE,
     address _xaueFundToken,
-    address _xaueOracle
+    address _xaueOracle,
+    address _feeReceiver,
+    uint256 _feeRate
   ) public initializer {
     require(_admin != address(0), "admin is zero");
     require(_manager != address(0), "manager is zero");
     require(_bot != address(0), "bot is zero");
-    require(_staking != address(0), "staking is zero");
+    require(_slisXAUE != address(0), "slisXAUE is zero");
     require(_xaueFundToken != address(0), "xaueFundToken is zero");
     require(_xaueOracle != address(0), "xaueOracle is zero");
+    require(_feeReceiver != address(0), "feeReceiver is zero");
+    require(_feeRate <= MAX_FEE_RATE, "fee rate too high");
 
     __AccessControl_init();
     __ReentrancyGuard_init();
@@ -106,13 +157,19 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
     _grantRole(MANAGER, _manager);
     _grantRole(BOT, _bot);
 
-    staking = _staking;
+    slisXAUE = _slisXAUE;
     xaueFundToken = _xaueFundToken;
     xaueOracle = _xaueOracle;
+    feeReceiver = _feeReceiver;
+    feeRate = _feeRate;
+    maxDeltaBps = DEFAULT_MAX_DELTA_BPS;
 
-    emit SetStaking(_staking);
+    emit SetSlisXAUE(_slisXAUE);
     emit SetXAUEFundToken(_xaueFundToken);
     emit SetXAUEOracle(_xaueOracle);
+    emit SetFeeReceiver(_feeReceiver);
+    emit SetFeeRate(_feeRate);
+    emit SetMaxDeltaBps(0, DEFAULT_MAX_DELTA_BPS);
   }
 
   /* BOT ENTRY POINTS */
@@ -130,6 +187,7 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
     uint256 sharesReceived = IXAUEFundToken(xaueFundToken).mint(assetAmount);
     IERC20(asset).forceApprove(xaueFundToken, 0);
 
+    expectedShareBalance += sharesReceived;
     lastVaultTotalAssets = getVaultTotalAssets();
     emit DepositToVault(assetAmount, sharesReceived);
   }
@@ -156,14 +214,15 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
 
     uint256 reqId = IXAUEFundToken(xaueFundToken).requestRedemption(shareAmount);
 
+    expectedShareBalance -= shareAmount;
     lastVaultTotalAssets = getVaultTotalAssets();
     emit RequestRedeemFromVault(reqId, assetAmount, shareAmount);
   }
 
   /**
-   * @notice Forward XAUT held by this adapter (received from XAUE approveRedemption) to XAUTStaking
-   *         so it can confirm pending batches. Pass amount=0 to just tick the batch state on the
-   *         staking side without delivering new funds.
+   * @notice Forward XAUT held by this adapter (received from XAUE approveRedemption) to XAUTStaking so
+   *         it can confirm pending batches. Pass `amount=0` to just tick batch state without delivering
+   *         new funds.
    */
   function finishEarnPoolWithdraw(uint256 amount) external onlyRole(BOT) nonReentrant {
     if (amount > 0) {
@@ -202,12 +261,15 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
 
   /* VIEW */
 
-  /// @notice Current XAUT-equivalent value of adapter's XAUE share holdings (6-dec).
+  /// @notice Canonical XAUT-equivalent value of adapter's XAUE share holdings (6-dec).
+  ///         Uses `expectedShareBalance` instead of `balanceOf(this)` so unsolicited dust transfers
+  ///         and not-yet-acknowledged reject shares do NOT bleed into NAV accounting. Drift between
+  ///         expected and actual is therefore harmless to staking-side accounting; MANAGER reconciles
+  ///         only when shares need to be brought in (acknowledgeReject) or removed (emergencyWithdraw).
   function getVaultTotalAssets() public view returns (uint256) {
-    uint256 shareBalance = IERC20(xaueFundToken).balanceOf(address(this));
     uint256 nav = IXAUEOracle(xaueOracle).getLatestPrice();
-    // XAUT-wei = shareBalance × nav / 1e30  (shareBalance 18-dec × nav 1e18 / 1e30 = 6-dec)
-    return shareBalance.mulDiv(nav, 1e30);
+    // XAUT-wei = expectedShareBalance × nav / 1e30  (shares 18-dec × nav 1e18 / 1e30 = 6-dec)
+    return expectedShareBalance.mulDiv(nav, 1e30);
   }
 
   /* MANAGER */
@@ -224,10 +286,85 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
     emit SetFeeRate(_feeRate);
   }
 
+  function setMaxDeltaBps(uint256 _maxDeltaBps) external onlyRole(MANAGER) {
+    require(_maxDeltaBps > 0, "maxDeltaBps is zero");
+    require(_maxDeltaBps <= MAX_DELTA_BPS_CAP, "maxDeltaBps too high");
+    uint256 old = maxDeltaBps;
+    maxDeltaBps = _maxDeltaBps;
+    emit SetMaxDeltaBps(old, _maxDeltaBps);
+  }
+
+  /**
+   * @notice Wire the XAUTStaking address after deployment. `staking` is intentionally NOT set in
+   *         `initialize` because of the circular construction-time dep (staking init wants the
+   *         adapter address). Deploy script flow: deploy all three proxies → call `setStaking`.
+   *         MANAGER-restricted; can be re-pointed during operations / migrations.
+   */
+  function setStaking(address _staking) external onlyRole(MANAGER) {
+    require(_staking != address(0), "staking is zero");
+    staking = _staking;
+    emit SetStaking(_staking);
+  }
+
   function emergencyWithdraw(address token, uint256 amount) external onlyRole(MANAGER) {
     require(amount > 0, "amount is zero");
     IERC20(token).safeTransfer(msg.sender, amount);
     emit EmergencyWithdraw(token, amount);
+  }
+
+  /**
+   * @notice Acknowledge that XAUE rejected redemption `reqId` and re-credit the returned shares into
+   *         the adapter's accounting baseline. shareAmount and lockedAssetAmount are read from XAUE's
+   *         public `redemptions(reqId)` getter so adapter doesn't duplicate XAUE state.
+   * @dev    Validates (1) reqId hasn't already been acknowledged, (2) reqId belongs to this adapter,
+   *         (3) XAUE marks it as Rejected, and (4) the adapter's actual XAUE share balance is at
+   *         least `expectedShareBalance + shareAmount`. `>=` lets BOT drain multiple rejects in any
+   *         order; the explicit `rejectAcknowledged` map prevents the balance check from being
+   *         satisfied twice for the same reqId when other unack'd rejects inflate `actualShares`.
+   *
+   *         BOT-callable because every validation above is on-chain — the function fail-closes on
+   *         missing precondition (wrong reqId owner, wrong status, share-delta mismatch) so there
+   *         is no manual decision to make. BOT monitors XAUE for RedemptionRejected events and
+   *         calls this in response.
+   *
+   *         Accounting: re-credit the rejected shares as PRINCIPAL at request-time NAV
+   *         (= XAUE's `lockedAssetAmount`): `expectedShareBalance += shareAmount`,
+   *         `lastVaultTotalAssets += lockedAssetAmount`. Any NAV delta (both the un-rejected
+   *         slice's delta since last sync AND the rejected slice's in-flight delta) surfaces as
+   *         `getVault - lastVault` on the next `_updateVaultAssets` and goes through the standard
+   *         fee + cap + totalSupply-zero machinery in a single push.
+   *
+   *         The combined delta is normally well under maxDeltaBps (BOT heartbeat keeps active-slice
+   *         delta small per sync, and XAUE Oracle moves at most ~5%/day). If a long heartbeat
+   *         outage + reject pushes the combined delta over cap, MANAGER can temporarily raise
+   *         `maxDeltaBps` via `setMaxDeltaBps` to clear the backlog.
+   *
+   *         User-side compensation (slisXAUE was already burned in XAUTStaking.requestWithdraw and the
+   *         WithdrawalRequest sits in queue) is handled off-chain via Lista runbook (M-05).
+   * @param reqId The XAUE redemption request id that was rejected
+   */
+  function acknowledgeReject(uint256 reqId) external onlyRole(BOT) nonReentrant {
+    require(!rejectAcknowledged[reqId], "reqId already acknowledged");
+
+    (, address reqUser, uint256 lockedAssetAmount, uint256 shareAmount, , uint8 status) = IXAUEFundToken(xaueFundToken)
+      .redemptions(reqId);
+    require(reqUser == address(this), "not our reqId");
+    require(status == REDEMPTION_STATUS_REJECTED, "not rejected");
+
+    uint256 actualShares = IERC20(xaueFundToken).balanceOf(address(this));
+    require(actualShares >= expectedShareBalance + shareAmount, "share balance below expected");
+
+    rejectAcknowledged[reqId] = true;
+
+    // Re-credit rejected shares as principal at request-time NAV. Any NAV delta (active slice
+    // since last sync + the in-flight delta on these returned shares) surfaces as a normal
+    // `getVault - lastVault` delta on the next `_updateVaultAssets` and is handled by the
+    // standard fee + cap + totalSupply-zero path. We don't sync here — ack is a pure
+    // accounting bump.
+    expectedShareBalance += shareAmount;
+    lastVaultTotalAssets += lockedAssetAmount;
+
+    emit RedemptionRejectAcknowledged(reqId, shareAmount);
   }
 
   /* INTERNAL */
@@ -238,31 +375,80 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
    *      - NAV down (loss): push the full loss to staking; users bear it pro-rata via convertRate.
    *        Fee is NOT clawed back (already credited on past upside).
    *
-   *      Per-update absolute delta is capped at `MAX_DELTA_BPS` (10%) of `lastVaultTotalAssets`.
-   *      Defends against oracle anomalies (unrealistically high or low NAV reads). If exceeded,
-   *      the call reverts — MANAGER must investigate before any further state changes proceed.
+   *      Per-update absolute delta is capped at `maxDeltaBps` of `lastVaultTotalAssets` (default 10%,
+   *      MANAGER-tunable up to MAX_DELTA_BPS_CAP). Defends against oracle anomalies; if exceeded,
+   *      the call reverts and MANAGER must investigate before any further state changes proceed.
    */
   function _updateVaultAssets() private {
+    // Hard invariant: actual XAUE shares must back at least the tracked `expectedShareBalance`.
+    // Excess actual (dust, not-yet-acked rejects) is harmless and ignored by the NAV math; a
+    // DEFICIT (actual < expected, e.g., after MANAGER emergencyWithdraw on xaueFundToken without
+    // a matching expectedShareBalance adjustment) means we'd otherwise compute interest on shares
+    // we don't actually hold — revert and force MANAGER to reconcile via upgrade.
+    require(IERC20(xaueFundToken).balanceOf(address(this)) >= expectedShareBalance, "share balance below expected");
+
     uint256 newVaultTotalAssets = getVaultTotalAssets();
     if (newVaultTotalAssets > lastVaultTotalAssets) {
       uint256 totalInterest = newVaultTotalAssets - lastVaultTotalAssets;
-      // Sanity bound: cap per-update growth at MAX_DELTA_BPS of base.
-      require(totalInterest * 10000 <= lastVaultTotalAssets * MAX_DELTA_BPS, "delta exceeds max");
-      uint256 interestFee = totalInterest.mulDiv(feeRate, PRECISION);
-      fee += interestFee;
-      uint256 netInterest = totalInterest - interestFee;
-      if (netInterest > 0) {
-        IXAUTStaking(staking).increaseTotalAssets(netInterest);
-      }
+      (uint256 interestFee, uint256 netInterest) = _pushInterest(totalInterest, lastVaultTotalAssets);
       emit UpdateVaultAssets(newVaultTotalAssets, totalInterest, interestFee, netInterest);
     } else if (newVaultTotalAssets < lastVaultTotalAssets) {
       uint256 totalLoss = lastVaultTotalAssets - newVaultTotalAssets;
-      // Sanity bound: cap per-update decline at MAX_DELTA_BPS of base (symmetric protection).
-      require(totalLoss * 10000 <= lastVaultTotalAssets * MAX_DELTA_BPS, "delta exceeds max");
-      IXAUTStaking(staking).decreaseTotalAssets(totalLoss);
+      _pushLoss(totalLoss, lastVaultTotalAssets);
       emit VaultLoss(newVaultTotalAssets, totalLoss);
     }
     lastVaultTotalAssets = newVaultTotalAssets;
+  }
+
+  /**
+   * @dev Charge feeRate% on `gain` to `fee`, push net to staking via increaseTotalAssets. Reverts
+   *      if `gain / baseValue > maxDeltaBps / 10000` (oracle anomaly guard).
+   *
+   *      Special-case when there are no slisXAUE holders (`totalSupply == 0`): the entire `gain` is
+   *      attributed to `fee`. Protocol is the only stakeholder during such windows, so no user
+   *      portion exists. This also avoids leaving an "orphan" value buried in adapter principal
+   *      that nobody has a claim on.
+   *
+   *      Called only by `_updateVaultAssets`. `acknowledgeReject` defers any in-flight gain to
+   *      the next sync rather than pushing here directly.
+   */
+  function _pushInterest(uint256 gain, uint256 baseValue) private returns (uint256 gainFee, uint256 netGain) {
+    require(gain * 10000 <= baseValue * maxDeltaBps, "delta exceeds max");
+
+    if (IERC20(slisXAUE).totalSupply() == 0) {
+      fee += gain;
+      return (gain, 0);
+    }
+
+    gainFee = gain.mulDiv(feeRate, PRECISION);
+    fee += gainFee;
+    netGain = gain - gainFee;
+    if (netGain > 0) {
+      IXAUTStaking(staking).increaseTotalAssets(netGain);
+    }
+  }
+
+  /**
+   * @dev Push the full `loss` to staking via decreaseTotalAssets. Reverts on cap breach. Fee is NOT
+   *      clawed back (already credited on past upside).
+   *
+   *      Special-case when there are no slisXAUE holders (`totalSupply == 0`): symmetric with the
+   *      gain path — `fee` absorbs the loss up to its current balance. Any residual is silently
+   *      absorbed by adapter's principal (the orphan share value lastVault drop already reflects).
+   *
+   *      Called only by `_updateVaultAssets`. `acknowledgeReject` defers any in-flight loss to
+   *      the next sync rather than pushing here directly.
+   */
+  function _pushLoss(uint256 loss, uint256 baseValue) private {
+    require(loss * 10000 <= baseValue * maxDeltaBps, "delta exceeds max");
+
+    if (IERC20(slisXAUE).totalSupply() == 0) {
+      uint256 absorbed = loss > fee ? fee : loss;
+      fee -= absorbed;
+      return;
+    }
+
+    IXAUTStaking(staking).decreaseTotalAssets(loss);
   }
 
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}

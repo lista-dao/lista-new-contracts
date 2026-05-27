@@ -86,6 +86,10 @@ contract XAUTStaking is
   event ClaimWithdrawal(address indexed user, uint256 idx, uint256 amount);
   event IncreaseTotalAssets(uint256 amount);
   event DecreaseTotalAssets(uint256 amount);
+  /// @notice Emitted when adapter pushed interest/loss while no slisXAUE holders existed. Value stays
+  ///         as adapter-side principal buffer; off-chain monitor should pick this up for reconciliation.
+  event IncreaseTotalAssetsSkipped(uint256 amount);
+  event DecreaseTotalAssetsSkipped(uint256 amount);
   event MintCapUpdated(uint256 oldCap, uint256 newCap);
   event SetMinDeposit(uint256 minDeposit);
   event SetMinWithdraw(uint256 minWithdraw);
@@ -229,13 +233,13 @@ contract XAUTStaking is
   }
 
   /**
-   * @notice Claim an already-finalized withdrawal request. shares were burned at request time, so this
-   *         only transfers XAUT out.
-   * @param user The owner of the request
-   * @param idx Index into user's request array (swap-and-pop after claim)
+   * @notice Claim an already-finalized withdrawal request belonging to `msg.sender`. Shares were
+   *         burned at request time, so this only transfers XAUT out. Self-only -- third parties
+   *         cannot trigger another user's claim.
+   * @param idx Index into the caller's request array (swap-and-pop after claim)
    */
-  function claimWithdraw(address user, uint256 idx) external whenNotPaused nonReentrant {
-    WithdrawalRequest[] storage userRequests = userWithdrawalRequests[user];
+  function claimWithdraw(uint256 idx) external whenNotPaused nonReentrant {
+    WithdrawalRequest[] storage userRequests = userWithdrawalRequests[msg.sender];
     require(idx < userRequests.length, "invalid index");
     WithdrawalRequest memory req = userRequests[idx];
     require(req.batchId <= confirmedBatchId, "not claimable yet");
@@ -244,17 +248,27 @@ contract XAUTStaking is
     userRequests[idx] = userRequests[userRequests.length - 1];
     userRequests.pop();
 
-    IERC20(asset).safeTransfer(user, req.amount);
-    emit ClaimWithdrawal(user, idx, req.amount);
+    IERC20(asset).safeTransfer(msg.sender, req.amount);
+    emit ClaimWithdrawal(msg.sender, idx, req.amount);
   }
 
   /* ADAPTER CALLBACKS */
 
   /**
    * @notice Push net interest (XAUT-equivalent value) from Adapter. Updates convertRate immediately.
+   * @dev    No-op when `slisXAUE.totalSupply() == 0`. Crediting interest while there are no holders
+   *         would leave `userTotalAssetsScaled > 0` with `totalSupply == 0`, which would mis-price the
+   *         next deposit's shares (next user gets fewer slisXAUE than 1:1 → unintended windfall, since
+   *         their shares end up entitled to a share of the orphan value). The NAV-driven gain stays
+   *         as a buffer on the adapter side (lastVaultTotalAssets grows without a matching staking
+   *         credit); MANAGER can later move it via `emergencyWithdraw` if needed.
    */
   function increaseTotalAssets(uint256 amount) external {
     require(msg.sender == adapter, "only adapter");
+    if (slisXAUE.totalSupply() == 0) {
+      emit IncreaseTotalAssetsSkipped(amount);
+      return;
+    }
     userTotalAssetsScaled += amount * SCALE_RATIO;
     emit IncreaseTotalAssets(amount);
   }
@@ -264,9 +278,15 @@ contract XAUTStaking is
    *         Caps at current `userTotalAssetsScaled` to avoid underflow; any leftover is silently
    *         dropped — at that point adapter is over-reporting loss vs what users still own, which is
    *         only possible if all active stake has been withdrawn.
+   * @dev    Also no-ops when `slisXAUE.totalSupply() == 0` (no holders to absorb the loss). Mirror
+   *         of the increaseTotalAssets guard.
    */
   function decreaseTotalAssets(uint256 amount) external {
     require(msg.sender == adapter, "only adapter");
+    if (slisXAUE.totalSupply() == 0) {
+      emit DecreaseTotalAssetsSkipped(amount);
+      return;
+    }
     uint256 scaled = amount * SCALE_RATIO;
     if (scaled >= userTotalAssetsScaled) {
       scaled = userTotalAssetsScaled; // cap
