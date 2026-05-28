@@ -55,14 +55,21 @@ contract SlisXAUETest is Test {
 
     slisXAUE.initialize(admin, address(staking), "Lista Staked XAUE", "slisXAUE");
     staking.initialize(admin, manager, pauser, address(xaut), address(slisXAUE), address(adapter), MINT_CAP);
-    adapter.initialize(admin, manager, bot, address(staking), address(fundToken), address(oracle));
+    adapter.initialize(
+      admin,
+      manager,
+      bot,
+      address(slisXAUE),
+      address(fundToken),
+      address(oracle),
+      feeReceiver,
+      FEE_RATE
+    );
+    vm.prank(manager);
+    adapter.setStaking(address(staking));
 
-    // Adapter parameters
-    vm.startPrank(manager);
-    adapter.setFeeReceiver(feeReceiver);
-    adapter.setFeeRate(FEE_RATE);
+    vm.prank(manager);
     staking.setMinDeposit(MIN_DEPOSIT);
-    vm.stopPrank();
 
     // Whitelist adapter on XAUE
     fundToken.addToWhitelist(address(adapter));
@@ -208,18 +215,15 @@ contract SlisXAUETest is Test {
     // Pre-claim: not yet claimable
     vm.prank(alice);
     vm.expectRevert(bytes("not claimable yet"));
-    staking.claimWithdraw(alice, 0);
+    staking.claimWithdraw(0);
 
-    // Simulate adapter delivering XAUT back (bypass actual XAUE flow — just push asset)
-    // Mint XAUT to adapter and let it call finishEarnPoolWithdraw
-    xaut.mint(address(adapter), 30e6);
-    vm.prank(bot);
-    adapter.finishEarnPoolWithdraw(30e6);
+    // Run the full XAUE redemption flow (depositToVault → requestRedemption → approve → finish)
+    _runRedemption(30e6);
 
     // Batch should now be confirmed; alice can claim
     uint256 balBefore = xaut.balanceOf(alice);
     vm.prank(alice);
-    staking.claimWithdraw(alice, 0);
+    staking.claimWithdraw(0);
     assertEq(xaut.balanceOf(alice) - balBefore, 30e6, "alice received 30 XAUT");
 
     // Request popped
@@ -238,28 +242,24 @@ contract SlisXAUETest is Test {
     vm.prank(bob);
     staking.requestWithdraw(20e6, 0, bob);
 
-    // Adapter delivers 20 XAUT — not enough to cover batch 1 (30), so neither confirms
-    xaut.mint(address(adapter), 20e6);
-    vm.prank(bot);
-    adapter.finishEarnPoolWithdraw(20e6);
+    // Adapter redeems 20 XAUT — not enough to cover batch 1 (30), so neither confirms
+    _runRedemption(20e6);
 
     vm.prank(alice);
     vm.expectRevert(bytes("not claimable yet"));
-    staking.claimWithdraw(alice, 0);
+    staking.claimWithdraw(0);
 
     // Top up to fully cover batch 1
-    xaut.mint(address(adapter), 10e6);
-    vm.prank(bot);
-    adapter.finishEarnPoolWithdraw(10e6);
+    _runRedemption(10e6);
 
     // Alice can now claim (batch 1 confirmed)
     vm.prank(alice);
-    staking.claimWithdraw(alice, 0);
+    staking.claimWithdraw(0);
 
     // Bob still cannot (batch 2 needs 20 but quota = 0 again after batch 1 consumed)
     vm.prank(bob);
     vm.expectRevert(bytes("not claimable yet"));
-    staking.claimWithdraw(bob, 0);
+    staking.claimWithdraw(0);
   }
 
   // ─── increaseTotalAssets jumps convertRate immediately ─────────────────────────────
@@ -558,16 +558,14 @@ contract SlisXAUETest is Test {
     _deposit(alice, 100e6);
     vm.prank(alice);
     staking.requestWithdraw(30e6, 0, alice);
-    xaut.mint(address(adapter), 30e6);
-    vm.prank(bot);
-    adapter.finishEarnPoolWithdraw(30e6);
+    _runRedemption(30e6);
 
     vm.prank(pauser);
     staking.pause();
 
     vm.prank(alice);
     vm.expectRevert();
-    staking.claimWithdraw(alice, 0);
+    staking.claimWithdraw(0);
   }
 
   // ─── SlisXAUE MINTER access control ──────────────────────────────────
@@ -590,6 +588,345 @@ contract SlisXAUETest is Test {
     assertEq(slisXAUE.balanceOf(bob), 50e18);
   }
 
+  // ─── Reject handling + expectedShareBalance invariant ─────────────────────
+
+  function test_expectedShareBalance_tracks_deposit_and_request() public {
+    _deposit(alice, 100e6);
+
+    // Before BOT acts: adapter holds idle XAUT, no XAUE shares; expectedShareBalance = 0
+    assertEq(adapter.expectedShareBalance(), 0);
+
+    vm.prank(bot);
+    adapter.depositToVault(100e6);
+
+    uint256 sharesHeld = fundToken.balanceOf(address(adapter));
+    assertGt(sharesHeld, 0, "shares minted");
+    assertEq(adapter.expectedShareBalance(), sharesHeld, "expected matches actual after deposit");
+
+    // Initiate a redemption — expectedShareBalance drops by shareAmount; XAUE owns the per-request state
+    uint256 reqId = fundToken.redemptionsLength();
+    vm.prank(bot);
+    adapter.requestWithdrawFromVault(30e6);
+    (, , uint256 assetAmount, uint256 shareAmount, , ) = fundToken.redemptions(reqId);
+    assertEq(adapter.expectedShareBalance(), fundToken.balanceOf(address(adapter)), "still matches after request");
+
+    // Approve + forward
+    fundToken.approveRedemption(reqId, address(adapter), assetAmount, shareAmount);
+    vm.prank(bot);
+    adapter.finishEarnPoolWithdraw(assetAmount);
+    assertEq(xaut.balanceOf(address(staking)), assetAmount, "XAUT forwarded to staking");
+  }
+
+  function test_reject_does_not_block_paths_until_acknowledge() public {
+    _deposit(alice, 100e6);
+    (uint256 reqId, uint256 shareAmount, uint256 assetAmount) = _initiateRedemption(30e6);
+
+    // XAUE rejects → shares come back to adapter, expectedShareBalance unchanged
+    fundToken.rejectRedemption(reqId, address(adapter), assetAmount, shareAmount);
+    assertGt(fundToken.balanceOf(address(adapter)), adapter.expectedShareBalance(), "share balance drifted");
+
+    // updateVaultAssets keeps working during the reject window (>= check tolerates extras)
+    adapter.updateVaultAssets();
+
+    // User paths also stay open
+    vm.startPrank(bob);
+    xaut.approve(address(staking), 10e6);
+    staking.deposit(10e6, 0, bob);
+    vm.stopPrank();
+
+    // MANAGER acknowledges — extras absorbed into accounting at current NAV
+    vm.prank(bot);
+    adapter.acknowledgeReject(reqId);
+    assertEq(adapter.expectedShareBalance(), fundToken.balanceOf(address(adapter)));
+
+    // Continues to pass
+    adapter.updateVaultAssets();
+  }
+
+  function test_acknowledgeReject_pending_reqId_reverts() public {
+    // Pending status (not yet approved or rejected) → status check fires first.
+    _deposit(alice, 100e6);
+    (uint256 reqId, , ) = _initiateRedemption(30e6);
+
+    vm.prank(bot);
+    vm.expectRevert(bytes("not rejected"));
+    adapter.acknowledgeReject(reqId);
+  }
+
+  function test_acknowledgeReject_already_executed_reverts() public {
+    // Executed status → status check fires.
+    _deposit(alice, 100e6);
+    (uint256 reqId, uint256 shareAmount, uint256 assetAmount) = _initiateRedemption(30e6);
+    fundToken.approveRedemption(reqId, address(adapter), assetAmount, shareAmount);
+
+    vm.prank(bot);
+    vm.expectRevert(bytes("not rejected"));
+    adapter.acknowledgeReject(reqId);
+  }
+
+  function test_acknowledgeReject_multiple_rejects_any_order() public {
+    // Two pending redemptions, both rejected. MANAGER can ack them in any order; with the
+    // relaxed >= balance check, updateVaultAssets keeps working throughout.
+    _deposit(alice, 200e6);
+    (uint256 reqId1, uint256 shareAmount1, uint256 assetAmount1) = _initiateRedemption(30e6);
+    (uint256 reqId2, uint256 shareAmount2, uint256 assetAmount2) = _initiateRedemption(20e6);
+
+    fundToken.rejectRedemption(reqId1, address(adapter), assetAmount1, shareAmount1);
+    fundToken.rejectRedemption(reqId2, address(adapter), assetAmount2, shareAmount2);
+
+    // Ack in reverse order: reqId2 first
+    vm.prank(bot);
+    adapter.acknowledgeReject(reqId2);
+    // reqId1 still un-ack'd but updateVaultAssets still passes (extras tolerated)
+    adapter.updateVaultAssets();
+
+    // Ack reqId1 — full reconciliation
+    vm.prank(bot);
+    adapter.acknowledgeReject(reqId1);
+    assertEq(adapter.expectedShareBalance(), fundToken.balanceOf(address(adapter)));
+    adapter.updateVaultAssets();
+
+    // Re-ack reqId1 fails via explicit dedup map.
+    vm.prank(bot);
+    vm.expectRevert(bytes("reqId already acknowledged"));
+    adapter.acknowledgeReject(reqId1);
+  }
+
+  function test_acknowledgeReject_with_dust_tolerated() public {
+    // ack tolerates dust on top of the reject, and residual dust no longer bricks
+    // _updateVaultAssets (>= check). MANAGER can still sweep it via emergencyWithdraw if desired.
+    _deposit(alice, 100e6);
+    (uint256 reqId, uint256 shareAmount, uint256 assetAmount) = _initiateRedemption(30e6);
+    fundToken.rejectRedemption(reqId, address(adapter), assetAmount, shareAmount);
+
+    address attacker = makeAddr("attacker");
+    deal(address(fundToken), attacker, 1);
+    vm.prank(attacker);
+    fundToken.transfer(address(adapter), 1);
+
+    vm.prank(bot);
+    adapter.acknowledgeReject(reqId);
+
+    // Dust extras don't block
+    adapter.updateVaultAssets();
+
+    // MANAGER can still sweep
+    vm.prank(manager);
+    adapter.emergencyWithdraw(address(fundToken), 1);
+    adapter.updateVaultAssets();
+  }
+
+  function test_acknowledgeReject_defers_combined_interest_to_next_sync() public {
+    // NAV +5% during reject window. ack itself pushes NOTHING — it just bumps share count and
+    // adds lockedAssetAmount to lastVault. Combined active + in-flight delta surfaces on next
+    // _updateVaultAssets via the standard fee + cap path.
+
+    _deposit(alice, 100e6);
+    vm.prank(bot);
+    adapter.depositToVault(100e6);
+
+    (uint256 reqId, uint256 burntShareAmount, uint256 assetAmount) = _initiateRedemption(30e6);
+    fundToken.rejectRedemption(reqId, address(adapter), assetAmount, burntShareAmount);
+
+    uint256 navAtAck = (INITIAL_NAV * 105) / 100;
+    oracle.setPrice(navAtAck);
+
+    uint256 stakingBefore = staking.userTotalAssetsScaled();
+    uint256 feeBefore = adapter.fee();
+
+    vm.prank(bot);
+    adapter.acknowledgeReject(reqId);
+
+    // ack itself: NO fee / staking change
+    assertEq(adapter.fee(), feeBefore, "ack pushes no fee");
+    assertEq(staking.userTotalAssetsScaled(), stakingBefore, "ack pushes no staking interest");
+
+    // Next sync: combined 5% gain on all 100 XAUT = 5 XAUT gross
+    adapter.updateVaultAssets();
+    uint256 totalGain = ((70e6 + 30e6) * 5) / 100; // 5e6
+    uint256 totalFee = (totalGain * adapter.feeRate()) / 1e18; // 1e6
+    uint256 totalNet = totalGain - totalFee; // 4e6
+    assertEq(adapter.fee() - feeBefore, totalFee, "combined fee on next sync");
+    assertEq(staking.userTotalAssetsScaled() - stakingBefore, totalNet * 1e12, "combined net interest on next sync");
+
+    // lastVault = expected × navAtAck (clean)
+    uint256 expectedLast = (adapter.expectedShareBalance() * navAtAck) / 1e30;
+    assertEq(adapter.lastVaultTotalAssets(), expectedLast, "last reflects all 100 shares at navAtAck");
+  }
+
+  function test_acknowledgeReject_defers_combined_loss_to_next_sync() public {
+    _deposit(alice, 100e6);
+    vm.prank(bot);
+    adapter.depositToVault(100e6);
+
+    (uint256 reqId, uint256 burntShareAmount, uint256 assetAmount) = _initiateRedemption(30e6);
+    fundToken.rejectRedemption(reqId, address(adapter), assetAmount, burntShareAmount);
+
+    uint256 navAtAck = (INITIAL_NAV * 95) / 100;
+    oracle.setPrice(navAtAck);
+
+    uint256 stakingBefore = staking.userTotalAssetsScaled();
+    vm.prank(bot);
+    adapter.acknowledgeReject(reqId);
+    assertEq(staking.userTotalAssetsScaled(), stakingBefore, "ack pushes no loss");
+
+    adapter.updateVaultAssets();
+    uint256 totalLoss = ((70e6 + 30e6) * 5) / 100; // 5e6
+    assertEq(stakingBefore - staking.userTotalAssetsScaled(), totalLoss * 1e12, "combined loss on next sync");
+
+    uint256 expectedLast = (adapter.expectedShareBalance() * navAtAck) / 1e30;
+    assertEq(adapter.lastVaultTotalAssets(), expectedLast);
+  }
+
+  function test_acknowledgeReject_only_bot() public {
+    _deposit(alice, 100e6);
+    (uint256 reqId, uint256 shareAmount, uint256 assetAmount) = _initiateRedemption(30e6);
+    fundToken.rejectRedemption(reqId, address(adapter), assetAmount, shareAmount);
+
+    // MANAGER cannot call — BOT-only
+    vm.prank(manager);
+    vm.expectRevert();
+    adapter.acknowledgeReject(reqId);
+
+    // BOT succeeds
+    vm.prank(bot);
+    adapter.acknowledgeReject(reqId);
+  }
+
+  function test_finishEarnPoolWithdraw_zero_amount_ticks_batch_state() public {
+    vm.prank(bot);
+    adapter.finishEarnPoolWithdraw(0);
+  }
+
+  function test_acknowledgeReject_when_no_slisXAUE_holders_routes_inflight_gain_to_fee() public {
+    // Full-exit + reject + NAV change scenario: in-flight interest has nobody to absorb
+    // (totalSupply == 0 at ack time). acknowledgeReject itself only bumps accounting and
+    // never pushes to staking; the in-flight gain surfaces on the next _updateVaultAssets
+    // and `_pushInterest` routes the FULL amount to `fee` when totalSupply == 0. No orphan
+    // is created and the next deposit is still priced 1:1.
+
+    _deposit(alice, 100e6);
+    vm.prank(bot);
+    adapter.depositToVault(100e6);
+
+    vm.prank(alice);
+    staking.requestWithdraw(100e6, 0, alice);
+    assertEq(slisXAUE.totalSupply(), 0);
+
+    uint256 reqId = fundToken.redemptionsLength();
+    vm.prank(bot);
+    adapter.requestWithdrawFromVault(100e6);
+    (, , uint256 assetAmount, uint256 shareAmount, , ) = fundToken.redemptions(reqId);
+
+    fundToken.rejectRedemption(reqId, address(adapter), assetAmount, shareAmount);
+    oracle.setPrice((INITIAL_NAV * 105) / 100);
+
+    uint256 feeBefore = adapter.fee();
+    vm.prank(bot);
+    adapter.acknowledgeReject(reqId);
+    // ack itself doesn't push -- fee is still untouched
+    assertEq(adapter.fee(), feeBefore, "ack does not push");
+
+    // Next sync routes the in-flight gain entirely to fee
+    adapter.updateVaultAssets();
+    assertGt(adapter.fee(), feeBefore, "in-flight gain captured as fee");
+
+    // Subsequent deposit still prices 1:1 — no orphan
+    address newUser = makeAddr("newUser");
+    xaut.mint(newUser, 100e6);
+    vm.startPrank(newUser);
+    xaut.approve(address(staking), 100e6);
+    staking.deposit(100e6, 0, newUser);
+    vm.stopPrank();
+    assertEq(slisXAUE.balanceOf(newUser), 100e18, "next user gets 100 slisXAUE 1:1");
+  }
+
+  function test_limbo_gain_routes_full_amount_to_fee() public {
+    // Limbo: A fully exited (totalSupply == 0) but BOT hasn't redeemed yet.
+    // NAV grows on adapter's still-held shares → _pushInterest should route the entire
+    // gain to fee (not just feeRate × gain), since there are no holders entitled to the rest.
+
+    _deposit(alice, 100e6);
+    vm.prank(bot);
+    adapter.depositToVault(100e6);
+
+    vm.prank(alice);
+    staking.requestWithdraw(100e6, 0, alice);
+    assertEq(slisXAUE.totalSupply(), 0);
+    uint256 feeBefore = adapter.fee();
+
+    // NAV +5% while limbo
+    oracle.setPrice((INITIAL_NAV * 105) / 100);
+    uint256 expectedGain = (100e6 * 5) / 100; // 5 XAUT on 100 XAUT base
+
+    adapter.updateVaultAssets();
+
+    // 100% of gain → fee (not feeRate × gain)
+    assertEq(adapter.fee() - feeBefore, expectedGain, "full gain routed to fee");
+    // uta still 0 (no orphan)
+    assertEq(staking.userTotalAssetsScaled(), 0, "no orphan uta during limbo");
+
+    // Next deposit still 1:1
+    address newUser = makeAddr("newUser");
+    xaut.mint(newUser, 100e6);
+    vm.startPrank(newUser);
+    xaut.approve(address(staking), 100e6);
+    staking.deposit(100e6, 0, newUser);
+    vm.stopPrank();
+    assertEq(slisXAUE.balanceOf(newUser), 100e18, "next user gets 100 slisXAUE 1:1");
+  }
+
+  function test_limbo_loss_absorbed_by_fee_up_to_balance() public {
+    _deposit(alice, 100e6);
+    vm.prank(bot);
+    adapter.depositToVault(100e6);
+
+    // Alice exits at the original NAV (clean rounding) → limbo state
+    vm.prank(alice);
+    staking.requestWithdraw(100e6, 0, alice);
+    assertEq(slisXAUE.totalSupply(), 0);
+    assertEq(adapter.fee(), 0);
+
+    // NAV +5% during limbo → entire gain routed to fee
+    oracle.setPrice((INITIAL_NAV * 105) / 100);
+    adapter.updateVaultAssets();
+    uint256 feeAfterGain = adapter.fee();
+    assertGt(feeAfterGain, 0, "fee accumulated during limbo gain");
+
+    // NAV -2% (still in limbo) → loss absorbed from fee
+    uint256 navAtLoss = (oracle.getLatestPrice() * 98) / 100;
+    oracle.setPrice(navAtLoss);
+    uint256 utaBefore = staking.userTotalAssetsScaled();
+    adapter.updateVaultAssets();
+
+    assertLt(adapter.fee(), feeAfterGain, "fee absorbed limbo loss");
+    assertEq(staking.userTotalAssetsScaled(), utaBefore, "uta unchanged during limbo loss");
+  }
+
+  function test_dust_attack_tolerated_and_sweepable() public {
+    // Dust attacks no longer brick the adapter (>= check). Math is unaffected because
+    // getVaultTotalAssets uses expectedShareBalance, not raw balance. MANAGER can sweep.
+    _deposit(alice, 100e6);
+    vm.prank(bot);
+    adapter.depositToVault(100e6);
+    uint256 expectedBefore = adapter.expectedShareBalance();
+
+    address attacker = makeAddr("attacker");
+    deal(address(fundToken), attacker, 1);
+    vm.prank(attacker);
+    fundToken.transfer(address(adapter), 1);
+
+    // No brick
+    adapter.updateVaultAssets();
+
+    // MANAGER sweeps dust
+    vm.prank(manager);
+    adapter.emergencyWithdraw(address(fundToken), 1);
+    assertEq(fundToken.balanceOf(address(adapter)), expectedBefore);
+
+    adapter.updateVaultAssets();
+  }
+
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
   function _deposit(address user, uint256 amount) internal {
@@ -597,5 +934,36 @@ contract SlisXAUETest is Test {
     xaut.approve(address(staking), amount);
     staking.deposit(amount, 0, user);
     vm.stopPrank();
+  }
+
+  /// @dev Full XAUE redemption: adapter pushes any idle XAUT into XAUE, requests a redemption for
+  ///      `xautToFinish` XAUT-equivalent shares, XAUE approves, BOT forwards to staking.
+  function _runRedemption(uint256 xautToFinish) internal returns (uint256 reqId) {
+    uint256 idle = xaut.balanceOf(address(adapter));
+    vm.startPrank(bot);
+    if (idle > 0) adapter.depositToVault(idle);
+    reqId = fundToken.redemptionsLength();
+    adapter.requestWithdrawFromVault(xautToFinish);
+    vm.stopPrank();
+
+    (, address reqUser, uint256 assetAmount, uint256 shareAmount, , ) = fundToken.redemptions(reqId);
+    fundToken.approveRedemption(reqId, reqUser, assetAmount, shareAmount);
+
+    vm.prank(bot);
+    adapter.finishEarnPoolWithdraw(assetAmount);
+  }
+
+  /// @dev Initiate but DO NOT approve a redemption. Returns reqId + the locked (shareAmount, assetAmount).
+  ///      Caller decides whether to approve or reject.
+  function _initiateRedemption(
+    uint256 xautToFinish
+  ) internal returns (uint256 reqId, uint256 shareAmount, uint256 assetAmount) {
+    uint256 idle = xaut.balanceOf(address(adapter));
+    vm.startPrank(bot);
+    if (idle > 0) adapter.depositToVault(idle);
+    reqId = fundToken.redemptionsLength();
+    adapter.requestWithdrawFromVault(xautToFinish);
+    vm.stopPrank();
+    (, , assetAmount, shareAmount, , ) = fundToken.redemptions(reqId);
   }
 }

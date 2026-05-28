@@ -23,16 +23,19 @@ contract MockXAUEFundToken is ERC20 {
   bool public paused;
   mapping(address => bool) public whitelist;
 
+  // Match CoboFundToken layout.
   enum Status {
     Pending,
-    Executed,
-    Rejected
+    Rejected,
+    Executed
   }
 
   struct Request {
+    uint256 id;
     address user;
-    uint256 shareAmount;
     uint256 assetAmount;
+    uint256 shareAmount;
+    uint256 requestedAt;
     Status status;
   }
 
@@ -85,7 +88,14 @@ contract MockXAUEFundToken is ERC20 {
     _burn(msg.sender, shareAmount);
     reqId = redemptions.length;
     redemptions.push(
-      Request({ user: msg.sender, shareAmount: shareAmount, assetAmount: assetAmount, status: Status.Pending })
+      Request({
+        id: reqId,
+        user: msg.sender,
+        assetAmount: assetAmount,
+        shareAmount: shareAmount,
+        requestedAt: block.timestamp,
+        status: Status.Pending
+      })
     );
   }
 
@@ -96,5 +106,18 @@ contract MockXAUEFundToken is ERC20 {
     require(req.user == user && req.assetAmount == assetAmount && req.shareAmount == shareAmount, "mismatch");
     req.status = Status.Executed;
     xaut.safeTransfer(user, assetAmount);
+  }
+
+  /// @notice Reject a pending redemption — mints shares back to the requester (mimics _mintBypass).
+  function rejectRedemption(uint256 reqId, address user, uint256 assetAmount, uint256 shareAmount) external {
+    Request storage req = redemptions[reqId];
+    require(req.status == Status.Pending, "not pending");
+    require(req.user == user && req.assetAmount == assetAmount && req.shareAmount == shareAmount, "mismatch");
+    req.status = Status.Rejected;
+    _mint(user, shareAmount);
+  }
+
+  function redemptionsLength() external view returns (uint256) {
+    return redemptions.length;
   }
 }
