@@ -15,7 +15,6 @@ import "./libraries/FullMath.sol";
  * perform a staleness check.
  */
 contract AtlasOracleAdaptor is AggregatorV3Interface {
-
   /// @notice Source decimals of the Atlas Oracle push feed.
   uint256 private constant SOURCE_SCALE = 1e18;
   /// @notice Target decimals exposed to ResilientOracle (8).
@@ -26,10 +25,7 @@ contract AtlasOracleAdaptor is AggregatorV3Interface {
 
   constructor(address _atlasFeed) {
     require(_atlasFeed != address(0), "AtlasOracleAdaptor/zero-feed");
-    require(
-      AggregatorV3Interface(_atlasFeed).decimals() == 18,
-      "AtlasOracleAdaptor/feed-decimals-not-18"
-    );
+    require(AggregatorV3Interface(_atlasFeed).decimals() == 18, "AtlasOracleAdaptor/feed-decimals-not-18");
     atlasFeed = AggregatorV3Interface(_atlasFeed);
   }
 
@@ -50,30 +46,22 @@ contract AtlasOracleAdaptor is AggregatorV3Interface {
     return _scale(ans);
   }
 
-  function getRoundData(uint80 _roundId)
-  external
-  view
-  returns (
-    uint80 roundId,
-    int256 answer,
-    uint256 startedAt,
-    uint256 updatedAt,
-    uint80 answeredInRound
-  ) {
+  function getRoundData(
+    uint80 _roundId
+  )
+    external
+    view
+    returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
+  {
     (roundId, answer, startedAt, updatedAt, answeredInRound) = atlasFeed.getRoundData(_roundId);
     answer = _scale(answer);
   }
 
   function latestRoundData()
-  external
-  view
-  returns (
-    uint80 roundId,
-    int256 answer,
-    uint256 startedAt,
-    uint256 updatedAt,
-    uint80 answeredInRound
-  ) {
+    external
+    view
+    returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
+  {
     (roundId, answer, startedAt, updatedAt, answeredInRound) = atlasFeed.latestRoundData();
     answer = _scale(answer);
   }

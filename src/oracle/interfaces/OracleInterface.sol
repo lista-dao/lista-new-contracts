@@ -6,10 +6,7 @@ interface OracleInterface {
 }
 
 interface IAPI3Proxy {
-  function read()
-  external
-  view
-  returns (int224 value, uint32 timestamp);
+  function read() external view returns (int224 value, uint32 timestamp);
 }
 
 interface AggregatorV3Interface {
@@ -21,27 +18,14 @@ interface AggregatorV3Interface {
 
   function latestAnswer() external view returns (int256);
 
-  function getRoundData(uint80 _roundId)
-  external
-  view
-  returns (
-    uint80 roundId,
-    int256 answer,
-    uint256 startedAt,
-    uint256 updatedAt,
-    uint80 answeredInRound
-  );
+  function getRoundData(
+    uint80 _roundId
+  ) external view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
 
   function latestRoundData()
-  external
-  view
-  returns (
-    uint80 roundId,
-    int256 answer,
-    uint256 startedAt,
-    uint256 updatedAt,
-    uint80 answeredInRound
-  );
+    external
+    view
+    returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
 }
 
 interface BoundValidatorInterface {
@@ -51,4 +35,3 @@ interface BoundValidatorInterface {
     uint256 anchorPrice
   ) external view returns (bool);
 }
-
