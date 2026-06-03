@@ -65,7 +65,8 @@ contract XAUTStaking is
   uint256 public minDeposit;
   /// @notice Minimum withdraw request, in asset (XAUT, 6-dec) units
   uint256 public minWithdraw;
-  /// @notice Maximum total shares (18-dec). Risk control; users do not see this number.
+  /// @notice Maximum total slisXAUE shares (18-dec). Risk-control cap set by MANAGER; checked at deposit time.
+  ///         Publicly readable on-chain (auto getter + MintCapUpdated event).
   uint256 public mintCap;
 
   /* CONSTANTS */
@@ -169,6 +170,12 @@ contract XAUTStaking is
       shares = convertToShares(amount);
     } else {
       amount = convertToAssets(shares);
+      // Round the charged amount up so the depositor never pays less than the fair value of
+      // the minted shares (mirrors requestWithdraw's share round-up). The amount>0 guard keeps
+      // sub-wei share-input reverting at `require(amount > 0)` below, preserving audit finding C. (CertiK LDS-05)
+      if (amount > 0 && convertToShares(amount) < shares) {
+        amount += 1;
+      }
     }
 
     require(shares > 0, "shares is zero");
@@ -292,7 +299,9 @@ contract XAUTStaking is
       scaled = userTotalAssetsScaled; // cap
     }
     userTotalAssetsScaled -= scaled;
-    emit DecreaseTotalAssets(amount);
+    // Emit the executed (capped) amount so off-chain TVL/loss reconstruction does not over-subtract when the
+    // cap binds. `scaled` is always an exact multiple of SCALE_RATIO, so this division is loss-free. (CertiK LDS-11)
+    emit DecreaseTotalAssets(scaled / SCALE_RATIO);
   }
 
   /**
@@ -345,6 +354,38 @@ contract XAUTStaking is
   /// @notice Get the full withdrawal request list for `user`
   function getUserWithdrawalRequests(address user) external view returns (WithdrawalRequest[] memory) {
     return userWithdrawalRequests[user];
+  }
+
+  /// @notice Number of outstanding (unclaimed) withdrawal requests for `user`.
+  /// @dev Decreases as the user claims (swap-and-pop in claimWithdraw); not a lifetime counter.
+  function getUserWithdrawalRequestCount(address user) external view returns (uint256) {
+    return userWithdrawalRequests[user].length;
+  }
+
+  /// @notice Paginated slice of `user`'s withdrawal requests over the half-open range [start, end).
+  /// @dev `end` is clamped to the array length, so callers may pass a large `end` (e.g. type(uint256).max)
+  ///      to read to the end; returns an empty array when start >= length. Indices are unstable across
+  ///      claims (swap-and-pop moves the last element into the claimed slot), so clients should key on
+  ///      (batchId, amount) content rather than a stable index. (CertiK LDS-12)
+  /// @param start First index (inclusive)
+  /// @param end Exclusive upper bound; clamped to the current array length
+  function getUserWithdrawalRequests(
+    address user,
+    uint256 start,
+    uint256 end
+  ) external view returns (WithdrawalRequest[] memory page) {
+    WithdrawalRequest[] storage reqs = userWithdrawalRequests[user];
+    uint256 len = reqs.length;
+    if (end > len) {
+      end = len;
+    }
+    if (start >= end) {
+      return new WithdrawalRequest[](0);
+    }
+    page = new WithdrawalRequest[](end - start);
+    for (uint256 i = start; i < end; i++) {
+      page[i - start] = reqs[i];
+    }
   }
 
   /// @notice 18 decimals fixed (matches slisXAUE)
