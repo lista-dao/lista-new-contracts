@@ -38,6 +38,9 @@ contract SlisXAUETest is Test {
   uint256 constant FEE_RATE = 0.2e18; // 20%
   uint256 constant MIN_DEPOSIT = 1000;
 
+  // Redeclared for vm.expectEmit (mirrors XAUTStaking.DecreaseTotalAssets).
+  event DecreaseTotalAssets(uint256 amount);
+
   function setUp() public {
     // External XAUE Protocol mocks
     xaut = new MockXAUT();
@@ -104,6 +107,33 @@ contract SlisXAUETest is Test {
     vm.expectRevert(bytes("amount is zero"));
     staking.deposit(0, 1, alice); // amount=0, shares=1 → converted amount = 0 → revert
     vm.stopPrank();
+  }
+
+  function test_deposit_shares_input_rounds_charged_amount_up() public {
+    // LDS-05: when the user specifies `shares`, the charged XAUT must round UP so the depositor
+    // never pays less than the fair value of the minted shares (rounding favours the pool).
+    _deposit(alice, 100e6); // 100 XAUT -> 100e18 shares, userTotalAssetsScaled = 100e18
+
+    // Push 3 XAUT interest so the share price becomes inexact (uta=103e18, supply=100e18).
+    vm.prank(address(adapter));
+    staking.increaseTotalAssets(3e6);
+
+    uint256 wantShares = 1e18;
+    uint256 floored = staking.convertToAssets(wantShares); // what the un-rounded (floor) charge would be
+    // Precondition: at this rate the floored charge under-prices the shares, so the guard must fire.
+    assertLt(staking.convertToShares(floored), wantShares, "precondition: floored charge under-prices shares");
+
+    uint256 bobBefore = xaut.balanceOf(bob);
+    vm.startPrank(bob);
+    xaut.approve(address(staking), type(uint256).max);
+    staking.deposit(0, wantShares, bob);
+    vm.stopPrank();
+
+    uint256 charged = bobBefore - xaut.balanceOf(bob);
+    assertEq(charged, floored + 1, "charged amount must be rounded up by 1 wei");
+    assertEq(slisXAUE.balanceOf(bob), wantShares, "bob receives exactly the requested shares");
+    // Pool is protected: the rounded-up charge is now worth at least the minted shares.
+    assertGe(staking.convertToShares(charged), wantShares, "rounded-up charge covers the shares");
   }
 
   function test_requestWithdraw_zero_amount_via_shares_path_reverts() public {
@@ -538,6 +568,45 @@ contract SlisXAUETest is Test {
   function test_decreaseTotalAssets_only_adapter() public {
     vm.expectRevert(bytes("only adapter"));
     staking.decreaseTotalAssets(1e6);
+  }
+
+  function test_getUserWithdrawalRequests_pagination() public {
+    _deposit(alice, 100e6);
+    vm.startPrank(alice);
+    staking.requestWithdraw(10e6, 0, alice);
+    staking.requestWithdraw(20e6, 0, alice);
+    staking.requestWithdraw(30e6, 0, alice);
+    vm.stopPrank();
+
+    assertEq(staking.getUserWithdrawalRequestCount(alice), 3, "3 outstanding requests");
+    assertEq(staking.getUserWithdrawalRequests(alice).length, 3, "full getter returns all");
+
+    // Page [1, 3) -> indices 1 and 2.
+    XAUTStaking.WithdrawalRequest[] memory page = staking.getUserWithdrawalRequests(alice, 1, 3);
+    assertEq(page.length, 2, "page [1,3) has 2");
+    assertEq(page[0].amount, 20e6, "page[0] == request #1");
+    assertEq(page[1].amount, 30e6, "page[1] == request #2");
+
+    // end clamped beyond length.
+    XAUTStaking.WithdrawalRequest[] memory clamped = staking.getUserWithdrawalRequests(alice, 2, 999);
+    assertEq(clamped.length, 1, "clamped to length");
+    assertEq(clamped[0].amount, 30e6, "last entry");
+
+    // start >= end -> empty.
+    assertEq(staking.getUserWithdrawalRequests(alice, 3, 3).length, 0, "empty page");
+  }
+
+  function test_decreaseTotalAssets_emits_capped_amount() public {
+    _deposit(alice, 100e6); // userTotalAssetsScaled = 100e18
+
+    // Adapter pushes a loss larger than the tracked base: storage caps at userTotalAssetsScaled, and the
+    // event must report the executed (capped) amount, not the raw 200 XAUT input. (CertiK LDS-11)
+    vm.expectEmit(true, true, true, true, address(staking));
+    emit DecreaseTotalAssets(100e6);
+    vm.prank(address(adapter));
+    staking.decreaseTotalAssets(200e6);
+
+    assertEq(staking.totalAssets(), 0, "all tracked assets removed");
   }
 
   // ─── Pause behavior ───────────────────────────────────────────────────────
