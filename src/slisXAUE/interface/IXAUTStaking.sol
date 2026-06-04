@@ -5,9 +5,6 @@ interface IXAUTStaking {
   /// @notice Adapter pushes net interest to update share rate. Convert rate jumps immediately (no vesting).
   function increaseTotalAssets(uint256 amount) external;
 
-  /// @notice Adapter pushes a NAV-drop loss; reduces share rate pro-rata. Users bear the loss.
-  function decreaseTotalAssets(uint256 amount) external;
-
   /// @notice Adapter delivers XAUT back to staking to cover pending withdrawal batches (FIFO).
   function finishWithdraw(uint256 amount) external;
 

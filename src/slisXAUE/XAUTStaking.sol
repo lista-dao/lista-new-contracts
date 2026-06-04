@@ -86,11 +86,9 @@ contract XAUTStaking is
   event FinishWithdraw(uint256 indexed batchId, uint256 amount);
   event ClaimWithdrawal(address indexed user, uint256 idx, uint256 amount);
   event IncreaseTotalAssets(uint256 amount);
-  event DecreaseTotalAssets(uint256 amount);
-  /// @notice Emitted when adapter pushed interest/loss while no slisXAUE holders existed. Value stays
+  /// @notice Emitted when adapter pushed interest while no slisXAUE holders existed. Value stays
   ///         as adapter-side principal buffer; off-chain monitor should pick this up for reconciliation.
   event IncreaseTotalAssetsSkipped(uint256 amount);
-  event DecreaseTotalAssetsSkipped(uint256 amount);
   event MintCapUpdated(uint256 oldCap, uint256 newCap);
   event SetMinDeposit(uint256 minDeposit);
   event SetMinWithdraw(uint256 minWithdraw);
@@ -193,6 +191,10 @@ contract XAUTStaking is
   /**
    * @notice Burn slisXAUE immediately and queue a withdrawal request for XAUT. shares are burned at
    *         this call (Option A: "burn at request"). Cannot be cancelled.
+   * @dev    amount-input is exact: the most an amount-input request can ask for is convertToAssets(balance);
+   *         requesting more reverts ("insufficient shares"). For a guaranteed full exit use the shares-input
+   *         form requestWithdraw(0, balanceOf(user), receiver), which burns exactly the balance and is not
+   *         subject to that rounding boundary. (Bailsec 14)
    * @param amount XAUT amount (6-dec); pass 0 to specify shares instead
    * @param shares Share amount (18-dec); pass 0 to specify amount instead
    * @param receiver The address recorded as the request owner (target of future claim)
@@ -281,30 +283,6 @@ contract XAUTStaking is
   }
 
   /**
-   * @notice Push a NAV-drop loss from Adapter; reduces convertRate pro-rata (users bear the loss).
-   *         Caps at current `userTotalAssetsScaled` to avoid underflow; any leftover is silently
-   *         dropped — at that point adapter is over-reporting loss vs what users still own, which is
-   *         only possible if all active stake has been withdrawn.
-   * @dev    Also no-ops when `slisXAUE.totalSupply() == 0` (no holders to absorb the loss). Mirror
-   *         of the increaseTotalAssets guard.
-   */
-  function decreaseTotalAssets(uint256 amount) external {
-    require(msg.sender == adapter, "only adapter");
-    if (slisXAUE.totalSupply() == 0) {
-      emit DecreaseTotalAssetsSkipped(amount);
-      return;
-    }
-    uint256 scaled = amount * SCALE_RATIO;
-    if (scaled >= userTotalAssetsScaled) {
-      scaled = userTotalAssetsScaled; // cap
-    }
-    userTotalAssetsScaled -= scaled;
-    // Emit the executed (capped) amount so off-chain TVL/loss reconstruction does not over-subtract when the
-    // cap binds. `scaled` is always an exact multiple of SCALE_RATIO, so this division is loss-free. (CertiK LDS-11)
-    emit DecreaseTotalAssets(scaled / SCALE_RATIO);
-  }
-
-  /**
    * @notice Adapter delivers XAUT back to cover finalized withdrawal batches (FIFO). amount=0 is allowed
    *         (BOT can tick batch state without transferring new funds).
    */
@@ -347,6 +325,12 @@ contract XAUTStaking is
   }
 
   /// @notice 1 slisXAUE (1e18 wei) is worth pricePerShare() XAUT wei (6-dec). Convenience view.
+  /// @dev Last-synced snapshot: reads stored userTotalAssetsScaled WITHOUT syncing adapter NAV, so
+  ///      between BOT heartbeats it lags the true value by the unbooked NAV growth (bounded by the
+  ///      gold-backed oracle, ~0.0137%/day x time-since-sync). On-chain execution is unaffected --
+  ///      deposit/requestWithdraw sync via adapter.updateVaultAssets() before pricing. Off-chain
+  ///      consumers wanting the live value should eth_call adapter.updateVaultAssets() first, or
+  ///      derive it from adapter.getVaultTotalAssets() (live oracle NAV). (Bailsec 35)
   function pricePerShare() external view returns (uint256) {
     return convertToAssets(1e18);
   }
