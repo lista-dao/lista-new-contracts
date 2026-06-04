@@ -53,7 +53,7 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
   /// @notice XAUTStaking — receives interest & withdrawal funds
   address public staking;
   /// @notice slisXAUE share token. Cached at initialize to avoid an extra cross-contract hop on
-  ///         every NAV sync (`_pushInterest` / `_pushLoss` need `totalSupply` for the no-holders
+  ///         every NAV sync (`_pushInterest` needs `totalSupply` for the no-holders
   ///         protocol-surplus branch).
   address public slisXAUE;
   /// @notice Fee recipient (XAUT)
@@ -103,7 +103,6 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
   event RequestRedeemFromVault(uint256 indexed reqId, uint256 assetAmount, uint256 shareAmount);
   event ClaimFee(address feeReceiver, uint256 feeAmount);
   event UpdateVaultAssets(uint256 newTotal, uint256 totalInterest, uint256 interestFee, uint256 netInterest);
-  event VaultLoss(uint256 newTotal, uint256 totalLoss);
   event SetFeeReceiver(address feeReceiver);
   event SetFeeRate(uint256 feeRate);
   event SetStaking(address staking);
@@ -180,6 +179,9 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
    */
   function depositToVault(uint256 assetAmount) external onlyRole(BOT) nonReentrant {
     require(assetAmount > 0, "amount is zero");
+    // Surface XAUE's own deposit floor at the adapter boundary instead of reverting deep inside
+    // mint(), mirroring the min-redeem pre-check in requestWithdrawFromVault. (Bailsec 25)
+    require(assetAmount >= IXAUEFundToken(xaueFundToken).minDepositAmount(), "below xaue minDeposit");
 
     _updateVaultAssets();
 
@@ -282,6 +284,9 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
 
   function setFeeRate(uint256 _feeRate) external onlyRole(MANAGER) {
     require(_feeRate <= MAX_FEE_RATE, "fee rate too high");
+    // Settle accrued NAV at the OLD rate before switching, so the new rate only applies to gains that
+    // accrue afterward (no hindsight re-taxing of the pending delta). (Bailsec 15)
+    _updateVaultAssets();
     feeRate = _feeRate;
     emit SetFeeRate(_feeRate);
   }
@@ -289,9 +294,31 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
   function setMaxDeltaBps(uint256 _maxDeltaBps) external onlyRole(MANAGER) {
     require(_maxDeltaBps > 0, "maxDeltaBps is zero");
     require(_maxDeltaBps <= MAX_DELTA_BPS_CAP, "maxDeltaBps too high");
+    // When LOWERING the cap, settle the accrued delta under the current (higher) cap first, so a
+    // pending in-cap move books before the tighter cap takes effect and can't freeze the next
+    // sync-first flow. When RAISING, do NOT sync first: that path exists precisely to clear a backlog
+    // whose delta exceeds the current cap, and a pre-sync would revert and block the raise. (Bailsec 18)
+    if (_maxDeltaBps < maxDeltaBps) {
+      _updateVaultAssets();
+    }
     uint256 old = maxDeltaBps;
     maxDeltaBps = _maxDeltaBps;
     emit SetMaxDeltaBps(old, _maxDeltaBps);
+  }
+
+  /**
+   * @notice Repoint the XAUE oracle (e.g. when XAUE migrates the oracle its FundToken uses). Settles
+   *         accrued NAV under the OLD oracle, switches, then re-baselines `lastVaultTotalAssets`
+   *         against the NEW oracle so the change of pricing BASIS is not mis-booked as interest/loss.
+   *         A real cross-oracle discrepancy is an anomaly for MANAGER to reconcile, not yield. Has
+   *         broad side-effects; use only to mirror an XAUE oracle migration. (Bailsec 16)
+   */
+  function setXAUEOracle(address _xaueOracle) external onlyRole(MANAGER) {
+    require(_xaueOracle != address(0), "xaueOracle is zero");
+    _updateVaultAssets();
+    xaueOracle = _xaueOracle;
+    lastVaultTotalAssets = getVaultTotalAssets();
+    emit SetXAUEOracle(_xaueOracle);
   }
 
   /**
@@ -372,8 +399,10 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
   /**
    * @dev Reconcile XAUE NAV movement against staking-side accounting.
    *      - NAV up (profit): charge feeRate% to `fee`, push remainder to staking as interest.
-   *      - NAV down (loss): push the full loss to staking; users bear it pro-rata via convertRate.
-   *        Fee is NOT clawed back (already credited on past upside).
+   *      - NAV down: impossible by construction -- CoboFundOracle NAV is monotonically non-decreasing
+   *        (APR >= 0; every updateRate ratchets baseNetValue up via getLatestPrice). A decrease
+   *        signals an oracle anomaly, not a real loss, so the sync fails closed instead of
+   *        socialising a phantom loss onto holders. (Bailsec 03/04/06/28/29 -- loss path removed.)
    *
    *      Per-update absolute delta is capped at `maxDeltaBps` of `lastVaultTotalAssets` (default 10%,
    *      MANAGER-tunable up to MAX_DELTA_BPS_CAP). Defends against oracle anomalies; if exceeded,
@@ -388,21 +417,22 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
     require(IERC20(xaueFundToken).balanceOf(address(this)) >= expectedShareBalance, "share balance below expected");
 
     uint256 newVaultTotalAssets = getVaultTotalAssets();
+    // XAUE NAV cannot decrease (see @dev). A drop is an oracle anomaly -- fail closed rather than
+    // propagate a loss the product cannot incur.
+    require(newVaultTotalAssets >= lastVaultTotalAssets, "vault value decreased");
+
     if (newVaultTotalAssets > lastVaultTotalAssets) {
       uint256 totalInterest = newVaultTotalAssets - lastVaultTotalAssets;
       (uint256 interestFee, uint256 netInterest) = _pushInterest(totalInterest, lastVaultTotalAssets);
       emit UpdateVaultAssets(newVaultTotalAssets, totalInterest, interestFee, netInterest);
-    } else if (newVaultTotalAssets < lastVaultTotalAssets) {
-      uint256 totalLoss = lastVaultTotalAssets - newVaultTotalAssets;
-      _pushLoss(totalLoss, lastVaultTotalAssets);
-      emit VaultLoss(newVaultTotalAssets, totalLoss);
     }
     lastVaultTotalAssets = newVaultTotalAssets;
   }
 
   /**
    * @dev Charge feeRate% on `gain` to `fee`, push net to staking via increaseTotalAssets. Reverts
-   *      if `gain / baseValue > maxDeltaBps / 10000` (oracle anomaly guard).
+   *      if `gain / baseValue > maxDeltaBps / 10000` (oracle anomaly guard), except when
+   *      `baseValue == 0`, where the ratio cap is undefined and is skipped (see inline note).
    *
    *      Special-case when there are no slisXAUE holders (`totalSupply == 0`): the entire `gain` is
    *      attributed to `fee`. Protocol is the only stakeholder during such windows, so no user
@@ -413,7 +443,14 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
    *      the next sync rather than pushing here directly.
    */
   function _pushInterest(uint256 gain, uint256 baseValue) private returns (uint256 gainFee, uint256 netGain) {
-    require(gain * 10000 <= baseValue * maxDeltaBps, "delta exceeds max");
+    // baseValue == 0 means the prior tracked value floored to 0 while expectedShareBalance is still a
+    // sub-1-XAUT dust residual (after a full fee-redemption or a near-full staker exit). The per-update
+    // ratio cap is undefined against a zero base and would make the next 0 -> positive transition revert
+    // forever, bricking every sync-first entry point. Skip it in that degenerate case -- the gain is
+    // dust-bounded, not an oracle anomaly. (Bailsec 05/10)
+    if (baseValue > 0) {
+      require(gain * 10000 <= baseValue * maxDeltaBps, "delta exceeds max");
+    }
 
     if (IERC20(slisXAUE).totalSupply() == 0) {
       fee += gain;
@@ -426,29 +463,6 @@ contract XAUEAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable, Ree
     if (netGain > 0) {
       IXAUTStaking(staking).increaseTotalAssets(netGain);
     }
-  }
-
-  /**
-   * @dev Push the full `loss` to staking via decreaseTotalAssets. Reverts on cap breach. Fee is NOT
-   *      clawed back (already credited on past upside).
-   *
-   *      Special-case when there are no slisXAUE holders (`totalSupply == 0`): symmetric with the
-   *      gain path — `fee` absorbs the loss up to its current balance. Any residual is silently
-   *      absorbed by adapter's principal (the orphan share value lastVault drop already reflects).
-   *
-   *      Called only by `_updateVaultAssets`. `acknowledgeReject` defers any in-flight loss to
-   *      the next sync rather than pushing here directly.
-   */
-  function _pushLoss(uint256 loss, uint256 baseValue) private {
-    require(loss * 10000 <= baseValue * maxDeltaBps, "delta exceeds max");
-
-    if (IERC20(slisXAUE).totalSupply() == 0) {
-      uint256 absorbed = loss > fee ? fee : loss;
-      fee -= absorbed;
-      return;
-    }
-
-    IXAUTStaking(staking).decreaseTotalAssets(loss);
   }
 
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}

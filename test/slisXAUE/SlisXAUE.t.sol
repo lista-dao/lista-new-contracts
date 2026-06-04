@@ -38,9 +38,6 @@ contract SlisXAUETest is Test {
   uint256 constant FEE_RATE = 0.2e18; // 20%
   uint256 constant MIN_DEPOSIT = 1000;
 
-  // Redeclared for vm.expectEmit (mirrors XAUTStaking.DecreaseTotalAssets).
-  event DecreaseTotalAssets(uint256 amount);
-
   function setUp() public {
     // External XAUE Protocol mocks
     xaut = new MockXAUT();
@@ -354,6 +351,15 @@ contract SlisXAUETest is Test {
     adapter.requestWithdrawFromVault(0);
   }
 
+  function test_depositToVault_below_xaue_minDeposit_reverts() public {
+    // Mirror of the min-redeem pre-check: a sub-floor assetAmount must revert at the adapter
+    // boundary with a local message, not deep inside XAUE.mint(). (Bailsec 25)
+    uint256 floor = fundToken.minDepositAmount();
+    vm.prank(bot);
+    vm.expectRevert(bytes("below xaue minDeposit"));
+    adapter.depositToVault(floor - 1);
+  }
+
   function test_adapter_requestWithdrawFromVault_below_xaue_minRedeem_reverts() public {
     _deposit(alice, 100e6);
     vm.prank(bot);
@@ -462,67 +468,143 @@ contract SlisXAUETest is Test {
     assertGt(adapter.fee(), 0, "sync ran; fee accrued");
   }
 
-  // ─── NAV decline: users bear the loss pro-rata ────────────────────────────
+  // ─── NAV decline impossible: loss path removed (Bailsec 03/04/28) ────────────────────────────
 
-  function test_nav_decline_propagates_loss_to_users() public {
+  function test_nav_decline_reverts_fail_closed() public {
     _deposit(alice, 100e6);
     vm.prank(bot);
     adapter.depositToVault(100e6);
 
-    uint256 rateBefore = staking.pricePerShare();
-
-    // NAV drops 5% → adapter's XAUE worth ~95 XAUT instead of 100
+    // XAUE NAV cannot decrease in production (CoboFundOracle ratchets up). A drop is treated as an
+    // oracle anomaly: the sync fails closed instead of socialising a phantom loss. (Bailsec 03/04/28)
     oracle.setPrice((INITIAL_NAV * 95) / 100);
 
     vm.prank(bot);
+    vm.expectRevert(bytes("vault value decreased"));
     adapter.updateVaultAssets();
-
-    // No fee charged on loss (fee only on upside)
-    assertEq(adapter.fee(), 0, "no fee on loss");
-
-    // Rate dropped pro-rata
-    uint256 rateAfter = staking.pricePerShare();
-    assertLt(rateAfter, rateBefore, "rate decreased");
-
-    // Alice's stake is now worth ~95 XAUT
-    uint256 aliceValue = staking.convertToAssets(slisXAUE.balanceOf(alice));
-    assertApproxEqAbs(aliceValue, 95e6, 1, "alice's stake worth ~95 XAUT after 5% NAV drop");
   }
 
-  function test_nav_drop_then_recovery_users_bear_round_trip() public {
+  function test_nav_decline_reverts_even_after_gain() public {
     _deposit(alice, 100e6);
     vm.prank(bot);
     adapter.depositToVault(100e6);
 
-    // Up 10% → profit, fee charged
+    // Up 10% -> profit booked
     oracle.setPrice((INITIAL_NAV * 110) / 100);
     vm.prank(bot);
     adapter.updateVaultAssets();
-    uint256 feeAfterGain = adapter.fee();
-    assertEq(feeAfterGain, 2e6, "fee = 20% of 10 XAUT gain");
+    assertEq(adapter.fee(), 2e6, "fee = 20% of 10 XAUT gain");
 
-    // Back down 10% → loss propagated to users; fee NOT clawed back
+    // Any subsequent decline (even back toward the entry NAV) fails closed -- fee is never clawed
+    // back and no loss is propagated, because the product cannot incur a NAV loss.
     oracle.setPrice(INITIAL_NAV);
     vm.prank(bot);
+    vm.expectRevert(bytes("vault value decreased"));
     adapter.updateVaultAssets();
-    assertEq(adapter.fee(), feeAfterGain, "fee unchanged on loss");
-
-    // Net effect: alice deposited 100, gained 8 (80% of 10), then lost 10 → 98 XAUT
-    uint256 aliceValue = staking.convertToAssets(slisXAUE.balanceOf(alice));
-    assertApproxEqAbs(aliceValue, 98e6, 1, "alice ends at ~98 XAUT (gain kept fee, loss fully borne)");
   }
 
-  function test_nav_decline_above_max_delta_reverts() public {
+  function test_nav_decline_blocks_deposit_sync_fail_closed() public {
     _deposit(alice, 100e6);
     vm.prank(bot);
     adapter.depositToVault(100e6);
 
-    // 11% NAV drop exceeds the 10% delta cap → revert (defends against oracle anomaly)
-    oracle.setPrice((INITIAL_NAV * 89) / 100);
+    // A decline freezes user flows too, since deposit/requestWithdraw sync NAV first.
+    oracle.setPrice((INITIAL_NAV * 95) / 100);
 
+    address bob = makeAddr("bobDecline");
+    xaut.mint(bob, 10e6);
+    vm.startPrank(bob);
+    xaut.approve(address(staking), 10e6);
+    vm.expectRevert(bytes("vault value decreased"));
+    staking.deposit(10e6, 0, bob);
+    vm.stopPrank();
+  }
+
+  function test_setFeeRate_settles_pending_gain_at_old_rate() public {
+    // Bailsec 15: changing feeRate must not retroactively tax the un-synced gain. setFeeRate syncs
+    // at the OLD rate first, so the pending gain books at 20% and only future gain uses the new rate.
+    _deposit(alice, 100e6);
     vm.prank(bot);
+    adapter.depositToVault(100e6);
+
+    oracle.setPrice((INITIAL_NAV * 105) / 100); // +5% NAV, left UN-synced
+    assertEq(adapter.fee(), 0, "no fee booked yet");
+
+    vm.prank(manager);
+    adapter.setFeeRate(0.3e18); // 20% -> 30%
+
+    assertEq(adapter.fee(), 1e6, "pending 5 XAUT gain taxed at OLD 20% (no hindsight)");
+    assertEq(adapter.feeRate(), 0.3e18, "new rate set");
+    assertEq(adapter.lastVaultTotalAssets(), 105e6, "synced before switch");
+  }
+
+  function test_setMaxDeltaBps_lowering_settles_first_no_freeze() public {
+    // Bailsec 18: lowering the cap below an un-synced in-cap delta must not freeze the next sync.
+    _deposit(alice, 100e6);
+    vm.prank(bot);
+    adapter.depositToVault(100e6);
+
+    oracle.setPrice((INITIAL_NAV * 105) / 100); // +5% (within old 10% cap), un-synced
+
+    vm.prank(manager);
+    adapter.setMaxDeltaBps(100); // 10% -> 1%; settles the 5% under the old cap first
+    assertEq(adapter.maxDeltaBps(), 100, "cap lowered");
+    assertEq(adapter.lastVaultTotalAssets(), 105e6, "pending delta settled under old cap");
+
+    adapter.updateVaultAssets(); // NAV unchanged -> no delta -> must NOT revert
+    assertEq(adapter.lastVaultTotalAssets(), 105e6, "no freeze");
+  }
+
+  function test_setMaxDeltaBps_raising_does_not_settle_first_clears_backlog() public {
+    // Bailsec 18 / decision A: RAISING must NOT sync first, so MANAGER can raise the cap to clear a
+    // backlog whose delta exceeds the current cap (the 08/12 operational lever).
+    _deposit(alice, 100e6);
+    vm.prank(bot);
+    adapter.depositToVault(100e6);
+
+    vm.prank(manager);
+    adapter.setMaxDeltaBps(100); // tighten to 1% (NAV unchanged: settle is a no-op)
+
+    oracle.setPrice((INITIAL_NAV * 102) / 100); // +2% > 1% cap -> backlog
     vm.expectRevert(bytes("delta exceeds max"));
     adapter.updateVaultAssets();
+
+    vm.prank(manager);
+    adapter.setMaxDeltaBps(1000); // raise to 10% WITHOUT a pre-sync (else it would deadlock)
+    assertEq(adapter.maxDeltaBps(), 1000, "cap raised despite pending backlog");
+
+    adapter.updateVaultAssets(); // now clears under the new cap
+    assertEq(adapter.lastVaultTotalAssets(), 102e6, "backlog cleared");
+  }
+
+  function test_setXAUEOracle_rebaselines_no_misbooked_interest() public {
+    // Bailsec 16: MANAGER can repoint the adapter's oracle (e.g. XAUE migrates its oracle). The swap
+    // settles under the old oracle, then re-baselines against the new one, so a different pricing
+    // basis is absorbed (not mis-booked as interest/loss); real post-swap gains still book normally.
+    _deposit(alice, 100e6);
+    vm.prank(bot);
+    adapter.depositToVault(100e6);
+    uint256 feeBefore = adapter.fee();
+
+    // New oracle reads a different NAV basis for the SAME shares.
+    MockXAUEOracle newOracle = new MockXAUEOracle((INITIAL_NAV * 150) / 100);
+    vm.prank(manager);
+    adapter.setXAUEOracle(address(newOracle));
+
+    assertEq(adapter.xaueOracle(), address(newOracle), "oracle repointed");
+    assertEq(adapter.fee(), feeBefore, "cross-oracle basis NOT booked as interest/fee");
+    assertEq(adapter.lastVaultTotalAssets(), adapter.getVaultTotalAssets(), "re-baselined to new oracle");
+    assertEq(adapter.lastVaultTotalAssets(), 150e6, "= expectedShareBalance * newNav");
+
+    // A real gain under the NEW oracle books normally.
+    newOracle.setPrice((INITIAL_NAV * 153) / 100); // 150 -> 153 (+2% on the new basis)
+    adapter.updateVaultAssets();
+    assertGt(adapter.fee(), feeBefore, "real gain under new oracle books as interest");
+
+    // Only MANAGER can repoint.
+    vm.prank(bot);
+    vm.expectRevert();
+    adapter.setXAUEOracle(address(oracle));
   }
 
   function test_nav_growth_above_max_delta_reverts() public {
@@ -551,23 +633,17 @@ contract SlisXAUETest is Test {
     assertGt(adapter.fee(), 0, "fee accrued at exactly 10% growth");
   }
 
-  function test_nav_decline_exactly_at_cap_succeeds() public {
+  function test_nav_growth_exactly_at_cap_decline_path_removed() public {
+    // The matching "decline exactly at cap succeeds" case is gone: declines now always revert
+    // (loss path removed). The only at-cap behaviour that remains is the upside, covered above.
     _deposit(alice, 100e6);
     vm.prank(bot);
     adapter.depositToVault(100e6);
 
-    // 10% drop — exactly at cap, should pass
-    oracle.setPrice((INITIAL_NAV * 90) / 100);
+    oracle.setPrice((INITIAL_NAV * 90) / 100); // -10%, in cap, but loss path is gone
     vm.prank(bot);
+    vm.expectRevert(bytes("vault value decreased"));
     adapter.updateVaultAssets();
-
-    uint256 aliceValue = staking.convertToAssets(slisXAUE.balanceOf(alice));
-    assertApproxEqAbs(aliceValue, 90e6, 1, "alice loses ~10% at exactly cap drop");
-  }
-
-  function test_decreaseTotalAssets_only_adapter() public {
-    vm.expectRevert(bytes("only adapter"));
-    staking.decreaseTotalAssets(1e6);
   }
 
   function test_getUserWithdrawalRequests_pagination() public {
@@ -594,19 +670,6 @@ contract SlisXAUETest is Test {
 
     // start >= end -> empty.
     assertEq(staking.getUserWithdrawalRequests(alice, 3, 3).length, 0, "empty page");
-  }
-
-  function test_decreaseTotalAssets_emits_capped_amount() public {
-    _deposit(alice, 100e6); // userTotalAssetsScaled = 100e18
-
-    // Adapter pushes a loss larger than the tracked base: storage caps at userTotalAssetsScaled, and the
-    // event must report the executed (capped) amount, not the raw 200 XAUT input. (CertiK LDS-11)
-    vm.expectEmit(true, true, true, true, address(staking));
-    emit DecreaseTotalAssets(100e6);
-    vm.prank(address(adapter));
-    staking.decreaseTotalAssets(200e6);
-
-    assertEq(staking.totalAssets(), 0, "all tracked assets removed");
   }
 
   // ─── Pause behavior ───────────────────────────────────────────────────────
@@ -823,7 +886,7 @@ contract SlisXAUETest is Test {
     assertEq(adapter.lastVaultTotalAssets(), expectedLast, "last reflects all 100 shares at navAtAck");
   }
 
-  function test_acknowledgeReject_defers_combined_loss_to_next_sync() public {
+  function test_acknowledgeReject_then_decline_sync_reverts() public {
     _deposit(alice, 100e6);
     vm.prank(bot);
     adapter.depositToVault(100e6);
@@ -831,20 +894,18 @@ contract SlisXAUETest is Test {
     (uint256 reqId, uint256 burntShareAmount, uint256 assetAmount) = _initiateRedemption(30e6);
     fundToken.rejectRedemption(reqId, address(adapter), assetAmount, burntShareAmount);
 
+    // NAV ends below the request-time value the ack re-credits -> the next sync sees a net decline.
+    // ack itself still pushes nothing; the sync then fails closed (loss path removed).
     uint256 navAtAck = (INITIAL_NAV * 95) / 100;
     oracle.setPrice(navAtAck);
 
     uint256 stakingBefore = staking.userTotalAssetsScaled();
     vm.prank(bot);
     adapter.acknowledgeReject(reqId);
-    assertEq(staking.userTotalAssetsScaled(), stakingBefore, "ack pushes no loss");
+    assertEq(staking.userTotalAssetsScaled(), stakingBefore, "ack pushes nothing");
 
+    vm.expectRevert(bytes("vault value decreased"));
     adapter.updateVaultAssets();
-    uint256 totalLoss = ((70e6 + 30e6) * 5) / 100; // 5e6
-    assertEq(stakingBefore - staking.userTotalAssetsScaled(), totalLoss * 1e12, "combined loss on next sync");
-
-    uint256 expectedLast = (adapter.expectedShareBalance() * navAtAck) / 1e30;
-    assertEq(adapter.lastVaultTotalAssets(), expectedLast);
   }
 
   function test_acknowledgeReject_only_bot() public {
@@ -945,31 +1006,69 @@ contract SlisXAUETest is Test {
     assertEq(slisXAUE.balanceOf(newUser), 100e18, "next user gets 100 slisXAUE 1:1");
   }
 
-  function test_limbo_loss_absorbed_by_fee_up_to_balance() public {
+  function test_limbo_decline_reverts_fail_closed() public {
     _deposit(alice, 100e6);
     vm.prank(bot);
     adapter.depositToVault(100e6);
 
-    // Alice exits at the original NAV (clean rounding) → limbo state
+    // Alice exits at the original NAV (clean rounding) -> limbo state (totalSupply == 0)
     vm.prank(alice);
     staking.requestWithdraw(100e6, 0, alice);
     assertEq(slisXAUE.totalSupply(), 0);
     assertEq(adapter.fee(), 0);
 
-    // NAV +5% during limbo → entire gain routed to fee
+    // NAV +5% during limbo -> entire gain routed to fee (gain path still works)
     oracle.setPrice((INITIAL_NAV * 105) / 100);
     adapter.updateVaultAssets();
-    uint256 feeAfterGain = adapter.fee();
-    assertGt(feeAfterGain, 0, "fee accumulated during limbo gain");
+    assertGt(adapter.fee(), 0, "fee accumulated during limbo gain");
 
-    // NAV -2% (still in limbo) → loss absorbed from fee
+    // A subsequent decline (even in limbo) fails closed -- with the loss path removed `fee` no
+    // longer acts as a loss buffer. (Bailsec 06 -- claimFee-bypass precondition eliminated.)
     uint256 navAtLoss = (oracle.getLatestPrice() * 98) / 100;
     oracle.setPrice(navAtLoss);
-    uint256 utaBefore = staking.userTotalAssetsScaled();
+    vm.expectRevert(bytes("vault value decreased"));
     adapter.updateVaultAssets();
+  }
 
-    assertLt(adapter.fee(), feeAfterGain, "fee absorbed limbo loss");
-    assertEq(staking.userTotalAssetsScaled(), utaBefore, "uta unchanged during limbo loss");
+  function test_zero_base_gain_does_not_brick_after_dust_residual() public {
+    // Bailsec 05/10: reach the broken state expectedShareBalance > 0 with lastVaultTotalAssets == 0
+    // (a sub-1-XAUT dust residual left after a full redemption), then prove the next NAV increase
+    // syncs instead of reverting "delta exceeds max". Loss-path removal does NOT fix this; the
+    // baseValue == 0 guard in _pushInterest does. Before the fix updateVaultAssets() reverted here.
+
+    // Non-round NAV so the getVaultTotalAssets floor vs requestWithdrawFromVault ceil leave a residual.
+    uint256 nav0 = 1e15 + 7;
+    oracle.setPrice(nav0);
+
+    _deposit(alice, 100e6);
+    vm.prank(bot);
+    adapter.depositToVault(100e6);
+
+    // Alice fully exits -> totalSupply == 0 (the fee-only regime in the finding).
+    vm.prank(alice);
+    staking.requestWithdraw(100e6, 0, alice);
+    assertEq(slisXAUE.totalSupply(), 0);
+
+    // BOT redeems the full rounded vault value; ceil-vs-floor leaves a dust residual whose XAUT
+    // value floors to 0 -> lastVaultTotalAssets becomes 0 while expectedShareBalance is still > 0.
+    uint256 fullValue = adapter.getVaultTotalAssets();
+    vm.prank(bot);
+    adapter.requestWithdrawFromVault(fullValue);
+
+    uint256 residual = adapter.expectedShareBalance();
+    assertGt(residual, 0, "precondition: dust residual remains");
+    assertEq(adapter.lastVaultTotalAssets(), 0, "precondition: lastVault floored to 0");
+
+    // NAV rises enough that the residual is worth >= 1 XAUT raw unit again (0 -> positive base).
+    uint256 navUp = (1e30 / residual) + 1;
+    oracle.setPrice(navUp);
+    assertGt(adapter.getVaultTotalAssets(), 0, "residual now worth >= 1");
+
+    // Must NOT revert (cap skipped against the zero base); the dust gain is routed to fee.
+    uint256 feeBefore = adapter.fee();
+    adapter.updateVaultAssets();
+    assertGt(adapter.lastVaultTotalAssets(), 0, "base re-established after sync");
+    assertGt(adapter.fee(), feeBefore, "dust gain routed to fee (totalSupply == 0)");
   }
 
   function test_dust_attack_tolerated_and_sweepable() public {
