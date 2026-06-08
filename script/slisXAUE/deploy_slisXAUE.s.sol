@@ -48,54 +48,41 @@ contract DeploySlisXAUE is Script {
     address bot = deployer;
     address feeReceiver = deployer;
 
-    // Predict proxy addresses ahead of time so we can pass cross-references into atomic init data.
-    // Sequence we are about to broadcast: 3 impls then 3 proxies (6 sequential txs from deployer).
-    uint64 nonce = vm.getNonce(deployer);
-    address slisXaueProxy = vm.computeCreateAddress(deployer, nonce + 3);
-    address stakingProxy = vm.computeCreateAddress(deployer, nonce + 4);
-    address adapterProxy = vm.computeCreateAddress(deployer, nonce + 5);
-
     vm.startBroadcast(deployerPrivateKey);
 
-    // 1) Deploy implementations (nonces +0, +1, +2)
+    // 1) Implementations
     SlisXAUE slisImpl = new SlisXAUE();
     XAUTStaking stakingImpl = new XAUTStaking();
     XAUEAdapter adapterImpl = new XAUEAdapter(XAUT);
 
-    // 2) Deploy proxies WITH atomic init data (nonces +3, +4, +5). Each proxy delegatecalls
-    //    `initialize` in its constructor, so there is no separate init tx that can be front-run
-    //    (audit M-01). Cross-references use the addresses predicted above.
-    new ERC1967Proxy(
-      address(slisImpl),
-      abi.encodeCall(SlisXAUE.initialize, (admin, stakingProxy, "Lista Staked XAUE", "slisXAUE"))
+    // 2) Proxies in dependency order, each atomically initialized in its constructor (no separate
+    //    front-runnable init tx; audit M-01). Addresses captured directly -- no nonce prediction.
+    address slisXaueProxy = address(
+      new ERC1967Proxy(address(slisImpl), abi.encodeCall(SlisXAUE.initialize, (admin, "Lista Staked XAUE", "slisXAUE")))
     );
-    new ERC1967Proxy(
-      address(stakingImpl),
-      abi.encodeCall(XAUTStaking.initialize, (admin, manager, pauser, XAUT, slisXaueProxy, adapterProxy, MINT_CAP))
-    );
-    new ERC1967Proxy(
-      address(adapterImpl),
-      abi.encodeCall(
-        XAUEAdapter.initialize,
-        (admin, manager, bot, slisXaueProxy, XAUE_FUND_TOKEN, XAUE_ORACLE, feeReceiver, FEE_RATE)
+    address adapterProxy = address(
+      new ERC1967Proxy(
+        address(adapterImpl),
+        abi.encodeCall(
+          XAUEAdapter.initialize,
+          (admin, manager, bot, slisXaueProxy, XAUE_FUND_TOKEN, XAUE_ORACLE, feeReceiver, FEE_RATE)
+        )
       )
     );
-
-    // Sanity-check that the proxies actually landed at the predicted addresses (catches nonce
-    // drift if anything else broadcasts in between).
-    require(slisXaueProxy.code.length > 0, "slisXAUE proxy not deployed at predicted address");
-    require(stakingProxy.code.length > 0, "staking proxy not deployed at predicted address");
-    require(adapterProxy.code.length > 0, "adapter proxy not deployed at predicted address");
+    address stakingProxy = address(
+      new ERC1967Proxy(
+        address(stakingImpl),
+        abi.encodeCall(XAUTStaking.initialize, (admin, manager, pauser, XAUT, slisXaueProxy, adapterProxy, MINT_CAP))
+      )
+    );
 
     XAUEAdapter adapter = XAUEAdapter(adapterProxy);
     XAUTStaking staking = XAUTStaking(stakingProxy);
     SlisXAUE slisXAUE = SlisXAUE(slisXaueProxy);
 
-    // 3) Wire adapter -> staking (intentionally excluded from adapter.initialize to break the
-    //    circular construction-time dep). feeReceiver / feeRate are set at init time.
+    // 3) Wire cross-refs: adapter -> staking, grant MINTER to staking, set min thresholds.
     adapter.setStaking(stakingProxy);
-
-    // 4) Staking parameters (mintCap already set at init)
+    slisXAUE.grantRole(slisXAUE.MINTER(), stakingProxy);
     staking.setMinDeposit(MIN_DEPOSIT);
     staking.setMinWithdraw(MIN_WITHDRAW);
 

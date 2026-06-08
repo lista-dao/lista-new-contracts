@@ -53,7 +53,10 @@ contract SlisXAUETest is Test {
     staking = XAUTStaking(address(new ERC1967Proxy(address(stakingImpl), "")));
     adapter = XAUEAdapter(address(new ERC1967Proxy(address(adapterImpl), "")));
 
-    slisXAUE.initialize(admin, address(staking), "Lista Staked XAUE", "slisXAUE");
+    slisXAUE.initialize(admin, "Lista Staked XAUE", "slisXAUE");
+    vm.startPrank(admin);
+    slisXAUE.grantRole(slisXAUE.MINTER(), address(staking));
+    vm.stopPrank();
     staking.initialize(admin, manager, pauser, address(xaut), address(slisXAUE), address(adapter), MINT_CAP);
     adapter.initialize(
       admin,

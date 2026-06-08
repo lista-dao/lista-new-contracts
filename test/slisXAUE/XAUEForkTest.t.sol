@@ -84,7 +84,10 @@ contract XAUEForkTest is Test {
     staking = XAUTStaking(address(new ERC1967Proxy(address(stakingImpl), "")));
     adapter = XAUEAdapter(address(new ERC1967Proxy(address(adapterImpl), "")));
 
-    slisXAUE.initialize(admin, address(staking), "Lista Staked XAUE", "slisXAUE");
+    slisXAUE.initialize(admin, "Lista Staked XAUE", "slisXAUE");
+    vm.startPrank(admin);
+    slisXAUE.grantRole(slisXAUE.MINTER(), address(staking));
+    vm.stopPrank();
     staking.initialize(admin, manager, pauser, XAUT, address(slisXAUE), address(adapter), 15_000 * 1e18);
     adapter.initialize(admin, manager, bot, address(slisXAUE), XAUE_FUND_TOKEN, XAUE_ORACLE, feeReceiver, 0.2e18);
     vm.prank(manager);

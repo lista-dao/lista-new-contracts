@@ -22,12 +22,14 @@ contract SlisXAUE is ERC20Upgradeable, AccessControlEnumerableUpgradeable, UUPSU
 
   /* INITIALIZER */
   /// @param admin DEFAULT_ADMIN_ROLE: upgrades + grant/revoke MINTER
-  /// @param minter Initial MINTER holder (XAUTStaking)
-  /// @param name_ ERC20 name (e.g. "Lista Staked XAUE")
+  /// @param name_ ERC20 name (e.g. "Staked Lista XAUE")
   /// @param symbol_ ERC20 symbol (e.g. "slisXAUE")
-  function initialize(address admin, address minter, string memory name_, string memory symbol_) external initializer {
+  /// @dev MINTER (XAUTStaking) is NOT granted here — the admin grants it post-deploy via
+  ///      grantRole(MINTER, staking). Kept out of initialize to avoid the slisXAUE <-> XAUTStaking
+  ///      circular construction dependency (mirrors XAUEAdapter.setStaking); each proxy's init stays
+  ///      atomic and front-run-safe.
+  function initialize(address admin, string memory name_, string memory symbol_) external initializer {
     require(admin != address(0), "admin is zero");
-    require(minter != address(0), "minter is zero");
     require(bytes(name_).length > 0, "name is empty");
     require(bytes(symbol_).length > 0, "symbol is empty");
 
@@ -35,7 +37,6 @@ contract SlisXAUE is ERC20Upgradeable, AccessControlEnumerableUpgradeable, UUPSU
     __AccessControl_init();
 
     _grantRole(DEFAULT_ADMIN_ROLE, admin);
-    _grantRole(MINTER, minter);
   }
 
   /// @notice 18 decimals fixed.
