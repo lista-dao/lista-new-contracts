@@ -94,6 +94,27 @@ contract AsterRewardsTest is LisAsterBase {
     rewards.setDistributor(address(0xDEAD));
   }
 
+  /* ---------------- setLisAsterManager ---------------- */
+
+  function test_setLisAsterManager_byManager() public {
+    vm.prank(manager);
+    rewards.setLisAsterManager(other);
+    assertEq(rewards.lisAsterManager(), other);
+  }
+
+  function test_setLisAsterManager_revertsZero() public {
+    vm.prank(manager);
+    vm.expectRevert(bytes("lisAsterManager is zero"));
+    rewards.setLisAsterManager(address(0));
+  }
+
+  function test_setLisAsterManager_onlyManager() public {
+    bytes32 role = rewards.MANAGER();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, admin, role));
+    vm.prank(admin);
+    rewards.setLisAsterManager(other);
+  }
+
   /* ---------------- fee setters ---------------- */
 
   function test_setFeeReceiver_byManager() public {

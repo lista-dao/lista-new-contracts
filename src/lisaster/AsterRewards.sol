@@ -43,6 +43,12 @@ contract AsterRewards is
   address public feeReceiver;
   uint256 public feeRate; // 18 decimals (1e18 = 100%); MANAGER capped by MAX_FEE_RATE
 
+  /* REWARD SOURCE (MANAGER tunable; notifyRewards transferFrom source) */
+  /// @notice Lista-operated EOA on Astherus / Aster Chain; the ASTER reward source pulled by
+  ///         `notifyRewards`. Same entity/address as `AsterVault.lisAsterManager`. It must
+  ///         `approve` ASTER to this contract before BOT calls `notifyRewards`.
+  address public lisAsterManager;
+
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
   constructor() {
@@ -95,6 +101,14 @@ contract AsterRewards is
     require(r <= MAX_FEE_RATE, "feeRate too high");
     feeRate = r;
     emit SetFeeRate(r);
+  }
+
+  /* REWARD-SOURCE SETTER */
+  function setLisAsterManager(address newManager) external onlyRole(MANAGER) {
+    require(newManager != address(0), "lisAsterManager is zero");
+    address oldManager = lisAsterManager;
+    lisAsterManager = newManager;
+    emit SetLisAsterManager(oldManager, newManager);
   }
 
   /* EXTERNAL */
