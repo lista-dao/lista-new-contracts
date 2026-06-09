@@ -12,10 +12,11 @@ import { ILisAsterDistributor } from "./interface/ILisAsterDistributor.sol";
 import { IAsterRewards } from "./interface/IAsterRewards.sol";
 
 /// @title AsterRewards
-/// @notice ASTER reward pool + dispatcher. MANAGER calls `notifyRewards` to ingest ASTER
-///         returned via AstherusVault.withdraw; an optional fee is forwarded to `feeReceiver`
-///         and the net stays here as ASTER. BOT calls `distributeRewards` to push accumulated
-///         ASTER to the Distributor, which pulls via `transferFrom` and bumps `totalNotified`.
+/// @notice ASTER reward pool + dispatcher. BOT calls `notifyRewards` to ingest ASTER from
+///         `lisAsterManager` (returned via AstherusVault.withdraw); an optional fee is forwarded
+///         to `feeReceiver` and the net stays here as ASTER. BOT calls `distributeRewards` to push
+///         accumulated ASTER to the Distributor, which pulls via `transferFrom` and bumps
+///         `totalNotified`.
 contract AsterRewards is
   IAsterRewards,
   AccessControlEnumerableUpgradeable,
@@ -112,10 +113,12 @@ contract AsterRewards is
   }
 
   /* EXTERNAL */
-  function notifyRewards(uint256 amount) external override onlyRole(MANAGER) whenNotPaused nonReentrant {
+  function notifyRewards(uint256 amount) external override onlyRole(BOT) whenNotPaused nonReentrant {
     require(amount > 0, "zero amount");
+    address src = lisAsterManager;
+    require(src != address(0), "lisAsterManager not set");
 
-    IERC20(asterToken).safeTransferFrom(msg.sender, address(this), amount);
+    IERC20(asterToken).safeTransferFrom(src, address(this), amount);
 
     // Take fee only when both knobs are configured. Either feeRate=0 or feeReceiver=0 means
     // no fee for this round -- MANAGER can stage the two settings in any order without

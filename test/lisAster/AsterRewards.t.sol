@@ -3,40 +3,66 @@ pragma solidity ^0.8.24;
 
 import { LisAsterBase } from "./LisAsterBase.t.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
+import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import { AsterRewards } from "../../src/lisaster/AsterRewards.sol";
 
 contract AsterRewardsTest is LisAsterBase {
   /* ---------------- notifyRewards ---------------- */
 
   function test_notifyRewards_holdsAster() public {
-    asterToken.mint(manager, 5 ether);
-    vm.startPrank(manager);
-    asterToken.approve(address(rewards), 5 ether);
-    rewards.notifyRewards(5 ether);
-    vm.stopPrank();
+    _managerNotify(5 ether);
 
     // ASTER lands in Rewards. No Vault round-trip; no lisAster minted.
-    assertEq(asterToken.balanceOf(manager), 0);
+    assertEq(asterToken.balanceOf(lisAsterManager), 0);
     assertEq(asterToken.balanceOf(address(rewards)), 5 ether);
     assertEq(asterToken.balanceOf(address(astherusVault)), 0);
     assertEq(rewards.pendingAster(), 5 ether);
     assertEq(lisAster.totalSupply(), 0);
   }
 
-  function test_notifyRewards_onlyManager() public {
-    asterToken.mint(other, 1 ether);
-    vm.startPrank(other);
+  function test_notifyRewards_onlyBot() public {
+    asterToken.mint(lisAsterManager, 1 ether);
+    vm.prank(lisAsterManager);
     asterToken.approve(address(rewards), 1 ether);
-    vm.expectRevert(
-      abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, rewards.MANAGER())
-    );
+
+    bytes32 botRole = rewards.BOT();
+    // MANAGER can no longer notify.
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, manager, botRole));
+    vm.prank(manager);
     rewards.notifyRewards(1 ether);
-    vm.stopPrank();
+    // Random caller cannot notify.
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, botRole));
+    vm.prank(other);
+    rewards.notifyRewards(1 ether);
+
+    // BOT can.
+    vm.prank(bot);
+    rewards.notifyRewards(1 ether);
+    assertEq(asterToken.balanceOf(address(rewards)), 1 ether);
   }
 
   function test_notifyRewards_revertsZero() public {
-    vm.prank(manager);
+    vm.prank(bot);
     vm.expectRevert(bytes("zero amount"));
     rewards.notifyRewards(0);
+  }
+
+  function test_notifyRewards_revertsWhenManagerUnset() public {
+    // Fresh Rewards proxy with no setLisAsterManager call.
+    AsterRewards fresh = AsterRewards(address(new ERC1967Proxy(address(new AsterRewards()), "")));
+    fresh.initialize(admin, pauser, manager, bot, address(asterToken));
+
+    vm.prank(bot);
+    vm.expectRevert(bytes("lisAsterManager not set"));
+    fresh.notifyRewards(1 ether);
+  }
+
+  function test_notifyRewards_revertsWithoutAllowance() public {
+    // lisAsterManager funded but did NOT approve Rewards.
+    asterToken.mint(lisAsterManager, 1 ether);
+    vm.prank(bot);
+    vm.expectRevert(); // ERC20InsufficientAllowance
+    rewards.notifyRewards(1 ether);
   }
 
   /* ---------------- distributeRewards ---------------- */
@@ -168,11 +194,7 @@ contract AsterRewardsTest is LisAsterBase {
   function test_notifyRewards_zeroFeeRate_noFeeTaken() public {
     // Default state: feeRate = 0, feeReceiver = 0. No fee path.
     address recipient = makeAddr("feeRecipient");
-    asterToken.mint(manager, 10 ether);
-    vm.startPrank(manager);
-    asterToken.approve(address(rewards), 10 ether);
-    rewards.notifyRewards(10 ether);
-    vm.stopPrank();
+    _managerNotify(10 ether);
 
     assertEq(asterToken.balanceOf(recipient), 0, "no fee taken");
     assertEq(asterToken.balanceOf(address(rewards)), 10 ether, "all retained");
@@ -185,11 +207,7 @@ contract AsterRewardsTest is LisAsterBase {
     rewards.setFeeRate(1e17); // 10%
     vm.stopPrank();
 
-    asterToken.mint(manager, 10 ether);
-    vm.startPrank(manager);
-    asterToken.approve(address(rewards), 10 ether);
-    rewards.notifyRewards(10 ether);
-    vm.stopPrank();
+    _managerNotify(10 ether);
 
     // 10% fee = 1 ASTER to recipient, 9 ASTER stays in Rewards as ASTER.
     assertEq(asterToken.balanceOf(recipient), 1 ether, "fee transferred");
@@ -200,11 +218,7 @@ contract AsterRewardsTest is LisAsterBase {
     vm.prank(manager);
     rewards.setFeeRate(1e17); // 10%
 
-    asterToken.mint(manager, 10 ether);
-    vm.startPrank(manager);
-    asterToken.approve(address(rewards), 10 ether);
-    rewards.notifyRewards(10 ether);
-    vm.stopPrank();
+    _managerNotify(10 ether);
 
     // No fee transferred anywhere; full 10 ether retained.
     assertEq(asterToken.balanceOf(address(rewards)), 10 ether);
@@ -215,11 +229,7 @@ contract AsterRewardsTest is LisAsterBase {
     vm.prank(manager);
     rewards.setFeeReceiver(recipient);
 
-    asterToken.mint(manager, 10 ether);
-    vm.startPrank(manager);
-    asterToken.approve(address(rewards), 10 ether);
-    rewards.notifyRewards(10 ether);
-    vm.stopPrank();
+    _managerNotify(10 ether);
 
     assertEq(asterToken.balanceOf(recipient), 0);
     assertEq(asterToken.balanceOf(address(rewards)), 10 ether);
@@ -232,11 +242,7 @@ contract AsterRewardsTest is LisAsterBase {
     rewards.setFeeRate(rewards.MAX_FEE_RATE()); // 30%
     vm.stopPrank();
 
-    asterToken.mint(manager, 10 ether);
-    vm.startPrank(manager);
-    asterToken.approve(address(rewards), 10 ether);
-    rewards.notifyRewards(10 ether);
-    vm.stopPrank();
+    _managerNotify(10 ether);
 
     assertEq(asterToken.balanceOf(recipient), 3 ether);
     assertEq(asterToken.balanceOf(address(rewards)), 7 ether);
