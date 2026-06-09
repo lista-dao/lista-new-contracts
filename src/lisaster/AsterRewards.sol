@@ -163,6 +163,16 @@ contract AsterRewards is
     _unpause();
   }
 
+  /// @notice MANAGER escape hatch for stuck / over-pulled ASTER or mis-sent tokens. Funds are
+  ///         sent to the MANAGER caller. Does not adjust accounting (this contract holds no
+  ///         cumulative state). BOT deliberately has no access.
+  function emergencyWithdraw(address token, uint256 amount) external onlyRole(MANAGER) {
+    require(token != address(0), "zero token");
+    require(amount > 0, "zero amount");
+    IERC20(token).safeTransfer(msg.sender, amount);
+    emit EmergencyWithdrawn(token, msg.sender, amount);
+  }
+
   /* UUPS */
   function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 }

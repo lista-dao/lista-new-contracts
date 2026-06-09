@@ -8,6 +8,7 @@ interface IAsterRewards {
   event SetFeeReceiver(address indexed feeReceiver);
   event SetFeeRate(uint256 feeRate);
   event SetLisAsterManager(address oldManager, address newManager);
+  event EmergencyWithdrawn(address indexed token, address indexed to, uint256 amount);
 
   /// @notice MANAGER transfers ASTER in; `feeRate` of it is forwarded to `feeReceiver` and the
   ///         net stays in this contract as ASTER, awaiting `distributeRewards`.
@@ -27,6 +28,10 @@ interface IAsterRewards {
   ///         Required (non-zero) before BOT can call `notifyRewards`. Same entity/address as
   ///         AsterVault.lisAsterManager.
   function setLisAsterManager(address newManager) external;
+
+  /// @notice MANAGER escape hatch: evacuate stuck/over-pulled ASTER or mis-sent tokens to the
+  ///         caller. Does not adjust accounting.
+  function emergencyWithdraw(address token, uint256 amount) external;
 
   /// @notice ASTER currently held by this contract, ready to be forwarded to the Distributor.
   function pendingAster() external view returns (uint256);

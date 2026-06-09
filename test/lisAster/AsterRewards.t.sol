@@ -248,6 +248,38 @@ contract AsterRewardsTest is LisAsterBase {
     assertEq(asterToken.balanceOf(address(rewards)), 7 ether);
   }
 
+  /* ---------------- emergencyWithdraw ---------------- */
+
+  function test_emergencyWithdraw_byManager() public {
+    _managerNotify(5 ether);
+    uint256 balBefore = asterToken.balanceOf(address(rewards));
+
+    vm.prank(manager);
+    rewards.emergencyWithdraw(address(asterToken), 2 ether);
+
+    // Funds go to the MANAGER caller.
+    assertEq(asterToken.balanceOf(manager), 2 ether);
+    assertEq(asterToken.balanceOf(address(rewards)), balBefore - 2 ether);
+  }
+
+  function test_emergencyWithdraw_onlyManager() public {
+    _managerNotify(1 ether);
+    // BOT explicitly cannot evacuate funds.
+    bytes32 role = rewards.MANAGER();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, bot, role));
+    vm.prank(bot);
+    rewards.emergencyWithdraw(address(asterToken), 1 ether);
+  }
+
+  function test_emergencyWithdraw_zeroChecks() public {
+    vm.startPrank(manager);
+    vm.expectRevert(bytes("zero token"));
+    rewards.emergencyWithdraw(address(0), 1 ether);
+    vm.expectRevert(bytes("zero amount"));
+    rewards.emergencyWithdraw(address(asterToken), 0);
+    vm.stopPrank();
+  }
+
   /* ---------------- pause / unpause ---------------- */
 
   function test_pause_byPauser() public {
