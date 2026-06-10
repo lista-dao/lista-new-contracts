@@ -14,16 +14,16 @@ import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.so
  * @dev Run AFTER whitelist + seed deposit, signed by the current deployer/admin (DEPLOYER_PRIVATE_KEY).
  *      DEFAULT_ADMIN is renounced LAST per contract (the grants above need it). IRREVERSIBLE.
  *
- *      WARNING: ADMIN (0x07D274..) is the designated 24h TimeLock for DEFAULT_ADMIN_ROLE (upgrade
- *      authority on all three proxies), but currently has NO code on-chain. Confirm the TimeLock
- *      contract is deployed at this address BEFORE running — otherwise admin lands on an empty address.
+ *      NOTE: ADMIN (0xa18ae7..) is the 24h TimelockController (getMinDelay()==86400, verified on-chain)
+ *      that receives DEFAULT_ADMIN_ROLE — i.e. upgrade authority on all three proxies, gated by a 24h
+ *      delay. This grant plus the deployer renounce are IRREVERSIBLE.
  */
 contract TransferRoleSlisXAUEMainnet is Script {
   bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
   bytes32 public constant MANAGER = keccak256("MANAGER");
 
   // Production custody
-  address public constant ADMIN = 0x07D274a68393E8b8a2CCf19A2ce4Ba3518735253; // -> DEFAULT_ADMIN_ROLE (24h TimeLock; confirm deployed first)
+  address public constant ADMIN = 0xa18ae79AEDA3e711E0CD64cfe1Cd06402d400D61; // -> DEFAULT_ADMIN_ROLE (24h TimelockController, verified on-chain)
   address public constant MANAGER_MULTISIG = 0x8d388136d578dCD791D081c6042284CED6d9B0c6; // -> MANAGER (Safe)
 
   // Deployed proxies (Ethereum mainnet)
