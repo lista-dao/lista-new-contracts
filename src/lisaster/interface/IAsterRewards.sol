@@ -10,8 +10,8 @@ interface IAsterRewards {
   event SetLisAsterManager(address oldManager, address newManager);
   event EmergencyWithdrawn(address indexed token, address indexed to, uint256 amount);
 
-  /// @notice MANAGER transfers ASTER in; `feeRate` of it is forwarded to `feeReceiver` and the
-  ///         net stays in this contract as ASTER, awaiting `distributeRewards`.
+  /// @notice BOT ingests ASTER pulled from `lisAsterManager`; `feeRate` of it is forwarded to
+  ///         `feeReceiver` and the net stays in this contract as ASTER, awaiting `distributeRewards`.
   function notifyRewards(uint256 amount) external;
 
   /// @notice BOT forwards accumulated ASTER to the Distributor and notifies it to update
