@@ -21,4 +21,5 @@ out/
 
 lib/
 
-.claude
+# Claude Code per-developer state — may contain tokens / personal allowlist
+.claude/
