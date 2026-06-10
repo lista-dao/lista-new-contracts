@@ -16,9 +16,13 @@ import "../../src/slisXAUE/XAUEAdapter.sol";
  *         SlisXAUE is NOT touched (no contract changes in this round).
  */
 contract UpgradeSlisXAUE is Script {
-  // Sepolia proxies (deployed 2026-05-27)
-  address public constant STAKING_PROXY = 0x1d69D767fa95b416882Db63A2524c4931A0362Ce;
-  address public constant ADAPTER_PROXY = 0x54B6a7Ca133d032701F72797F1D92c1E603D1b0f;
+  // Sepolia proxies (re-deployed 2026-06-05). The previous set (staking 0x1d69…0362Ce,
+  // adapter 0x54B6…3D1b0f) was abandoned: those proxies were initialize()d with Phase-1 code, and a
+  // later upgrade inserted `slisXAUE` mid-struct on the adapter, shifting storage by one slot with no
+  // reinitializer (adapter.slisXAUE -> deployer EOA, feeReceiver/feeRate/maxDeltaBps wrong). Fixed by a
+  // fresh atomic-init deploy (deploy_slisXAUE.s.sol). Re-whitelist the new adapter on the XAUE FundToken.
+  address public constant STAKING_PROXY = 0x834DFCf86f2c232A385CD97397C9D231B5db3172;
+  address public constant ADAPTER_PROXY = 0x473276Da63CBf753E24084fAb5852d8A6Fb97f2e;
 
   // XAUEAdapter immutable constructor arg
   address public constant XAUT = 0x1467CF3bda74b1811B93cf66CdE24F81a241FCe2;
