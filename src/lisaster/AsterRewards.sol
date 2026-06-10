@@ -12,10 +12,11 @@ import { ILisAsterDistributor } from "./interface/ILisAsterDistributor.sol";
 import { IAsterRewards } from "./interface/IAsterRewards.sol";
 
 /// @title AsterRewards
-/// @notice ASTER reward pool + dispatcher. MANAGER calls `notifyRewards` to ingest ASTER
-///         returned via AstherusVault.withdraw; an optional fee is forwarded to `feeReceiver`
-///         and the net stays here as ASTER. BOT calls `distributeRewards` to push accumulated
-///         ASTER to the Distributor, which pulls via `transferFrom` and bumps `totalNotified`.
+/// @notice ASTER reward pool + dispatcher. BOT calls `notifyRewards` to ingest ASTER from
+///         `operator` (returned via AstherusVault.withdraw); an optional fee is forwarded
+///         to `feeReceiver` and the net stays here as ASTER. BOT calls `distributeRewards` to push
+///         accumulated ASTER to the Distributor, which pulls via `transferFrom` and bumps
+///         `totalNotified`.
 contract AsterRewards is
   IAsterRewards,
   AccessControlEnumerableUpgradeable,
@@ -42,6 +43,12 @@ contract AsterRewards is
   /* FEE (MANAGER tunable; default 0 = no fee) */
   address public feeReceiver;
   uint256 public feeRate; // 18 decimals (1e18 = 100%); MANAGER capped by MAX_FEE_RATE
+
+  /* REWARD SOURCE (MANAGER tunable; notifyRewards transferFrom source) */
+  /// @notice Lista-operated EOA on Astherus / Aster Chain; the ASTER reward source pulled by
+  ///         `notifyRewards`. Same entity/address as `AsterVault.lisAsterManager`. It must
+  ///         `approve` ASTER to this contract before BOT calls `notifyRewards`.
+  address public operator;
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -97,11 +104,20 @@ contract AsterRewards is
     emit SetFeeRate(r);
   }
 
-  /* EXTERNAL */
-  function notifyRewards(uint256 amount) external override onlyRole(MANAGER) whenNotPaused nonReentrant {
-    require(amount > 0, "zero amount");
+  /* REWARD-SOURCE SETTER */
+  function setOperator(address newOperator) external onlyRole(MANAGER) {
+    require(newOperator != address(0), "operator is zero");
+    address oldOperator = operator;
+    operator = newOperator;
+    emit SetOperator(oldOperator, newOperator);
+  }
 
-    IERC20(asterToken).safeTransferFrom(msg.sender, address(this), amount);
+  /* EXTERNAL */
+  function notifyRewards(uint256 amount) external override onlyRole(BOT) whenNotPaused nonReentrant {
+    require(amount > 0, "zero amount");
+    require(operator != address(0), "operator not set");
+
+    IERC20(asterToken).safeTransferFrom(operator, address(this), amount);
 
     // Take fee only when both knobs are configured. Either feeRate=0 or feeReceiver=0 means
     // no fee for this round -- MANAGER can stage the two settings in any order without
@@ -144,6 +160,16 @@ contract AsterRewards is
 
   function unpause() external onlyRole(MANAGER) {
     _unpause();
+  }
+
+  /// @notice MANAGER escape hatch for stuck / over-pulled ASTER or mis-sent tokens. Funds are
+  ///         sent to the MANAGER caller. Does not adjust accounting (this contract holds no
+  ///         cumulative state). BOT deliberately has no access.
+  function emergencyWithdraw(address token, uint256 amount) external onlyRole(MANAGER) {
+    require(token != address(0), "zero token");
+    require(amount > 0, "zero amount");
+    IERC20(token).safeTransfer(msg.sender, amount);
+    emit EmergencyWithdrawn(token, msg.sender, amount);
   }
 
   /* UUPS */
