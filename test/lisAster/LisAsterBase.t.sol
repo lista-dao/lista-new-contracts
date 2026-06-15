@@ -20,6 +20,7 @@ abstract contract LisAsterBase is Test {
   address bot = makeAddr("bot");
   address manager = makeAddr("manager");
   address lisAsterManager = makeAddr("lisAsterManager");
+  address operator = makeAddr("operator");
   address user = makeAddr("user");
   address other = makeAddr("other");
 
@@ -78,6 +79,10 @@ abstract contract LisAsterBase is Test {
     // 3. Rewards one-shot setDistributor (MANAGER-gated; only Rewards still wires distributor on-chain).
     vm.prank(manager);
     rewards.setDistributor(address(distributor));
+
+    // 4. Configure the operator (ASTER reward source) so BOT can notifyRewards.
+    vm.prank(manager);
+    rewards.setOperator(operator);
   }
 
   /* ----------------- helpers ----------------- */
@@ -94,14 +99,14 @@ abstract contract LisAsterBase is Test {
     vm.stopPrank();
   }
 
-  /// @dev Rewards.MANAGER receives ASTER returned via Astherus and stages it in Rewards as
-  ///      ASTER (no more Vault round-trip).
+  /// @dev Inject `amount` ASTER into Rewards under the bot-automated flow: operator funds and
+  ///      approves, BOT calls notifyRewards. (Name kept for call-site stability.)
   function _managerNotify(uint256 amount) internal {
-    asterToken.mint(manager, amount);
-    vm.startPrank(manager);
+    asterToken.mint(operator, amount);
+    vm.prank(operator);
     asterToken.approve(address(rewards), amount);
+    vm.prank(bot);
     rewards.notifyRewards(amount);
-    vm.stopPrank();
   }
 
   /// @dev BOT pushes ASTER from Rewards to Distributor and triggers notify.
