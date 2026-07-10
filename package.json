@@ -6,7 +6,8 @@
     "test": "forge test",
     "prepare": "husky",
     "check": "prettier --check **.sol",
-    "fix": "prettier --write **.sol"
+    "fix": "prettier --write **.sol",
+    "postinstall": "node scripts/collect-context.js"
   },
   "author": "Lista",
   "license": "MIT",
