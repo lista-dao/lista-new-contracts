@@ -23,7 +23,7 @@ contract DeployAtlasOracleAdaptors is Script {
     address deployer = vm.addr(deployerPrivateKey);
     console.log("Deployer:", deployer);
 
-    Feed[10] memory feeds = [
+    Feed[1] memory feeds = [
       // ----- Atlas tokenized-equity / RWA push feeds (already deployed) -----
       // Feed("TSLAB/USD", 0xC64bF44C23586aE5eab37775662Dc1E0c56469fe),
       // Feed("NVDAB/USD", 0x67d168bF5d7851a7b361bFFcf794696858F9697A),
@@ -41,17 +41,19 @@ contract DeployAtlasOracleAdaptors is Script {
       // Feed("PLTRB/USD", 0x485568bd19d587fF67F465EEff135C1F0745751C),
       // Feed("LITEB/USD", 0x617EC012e45B864d140d3F3B3912DDa210979ea5),
       // Feed("QQQB/USD", 0x7D2f703D2A188f32310dC9707E86acE503207027)
-      // ----- Batch 4 tokenized-equity push feeds -----
-      Feed("CBRSB/USD", 0xB3FC5F9187EBE4640985E6607DDe7DE1C7067B04),
-      Feed("COINB/USD", 0x758aB25F2Db37AAE2CC09D5542B2C69b5fC70E61),
-      Feed("DRAMB/USD", 0x6eaed198cA7d86C7982C30CAC4dc1c28BE915744),
-      Feed("GLWB/USD", 0x60014fD4FcdB9778C771f510BC6F1abBa824c8f6),
-      Feed("GOOGLB/USD", 0x2FcEafD81a4dBDa2409B6fe5ce2afFe3cD46eDbC),
-      Feed("NBISB/USD", 0x50f67D3CE440A98fFeC832726260ae03667fbE5E),
-      Feed("QCOMB/USD", 0x22772c763Fc2B44eD59Da2BD309Fa8E4D00261f5),
-      Feed("SOXLB/USD", 0xbFC8C863B14f08e07e789328A424137E2B5933F4),
-      Feed("SPYB/USD", 0xCda6d5cE036AC0D6A387A377062EBd18Dd531177),
-      Feed("WDCB/USD", 0x583e282D4C914E1Faf47235769431899D7A5fB99)
+      // ----- Batch 4 tokenized-equity push feeds (already deployed) -----
+      // Feed("CBRSB/USD", 0xB3FC5F9187EBE4640985E6607DDe7DE1C7067B04),
+      // Feed("COINB/USD", 0x758aB25F2Db37AAE2CC09D5542B2C69b5fC70E61),
+      // Feed("DRAMB/USD", 0x6eaed198cA7d86C7982C30CAC4dc1c28BE915744),
+      // Feed("GLWB/USD", 0x60014fD4FcdB9778C771f510BC6F1abBa824c8f6),
+      // Feed("GOOGLB/USD", 0x2FcEafD81a4dBDa2409B6fe5ce2afFe3cD46eDbC),
+      // Feed("NBISB/USD", 0x50f67D3CE440A98fFeC832726260ae03667fbE5E),
+      // Feed("QCOMB/USD", 0x22772c763Fc2B44eD59Da2BD309Fa8E4D00261f5),
+      // Feed("SOXLB/USD", 0xbFC8C863B14f08e07e789328A424137E2B5933F4),
+      // Feed("SPYB/USD", 0xCda6d5cE036AC0D6A387A377062EBd18Dd531177),
+      // Feed("WDCB/USD", 0x583e282D4C914E1Faf47235769431899D7A5fB99)
+      // ----- Batch 5 tokenized-equity push feeds -----
+      Feed("SKHYB/USD", 0xAF61b3f158284F4208E75b14B1A0e362e2c79738)
     ];
 
     vm.startBroadcast(deployerPrivateKey);
