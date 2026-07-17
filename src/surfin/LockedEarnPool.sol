@@ -10,31 +10,38 @@ import { CreditFundBase } from "./CreditFundBase.sol";
  * @title LockedEarnPool
  * @notice Locked (term) product of the Surfin Credit Fund (e.g. 3M+, 6M+).
  *
- * Each deposit creates an independent position with its own maturity and a base
- * rate snapshot (`baseQuote`) taken at deposit time. Early redemption forfeits
- * accrued interest and, if that is not enough, a minimum penalty equal to 30 days
- * of base interest is taken from principal. Interest (base + loyalty) is
- * distributed off-pool via the cumulative Merkle InterestDistributor; renewal
- * rolls the principal only into a fresh position (interest is distributed separately).
+ * Each deposit joins a cohort (issuance batch). The cohort carries the
+ * settlement-aligned interest-start (起息日) and maturity (到期日) dates, injected
+ * off-chain by the manager and bounded on-chain, so every position in a batch
+ * shares the same schedule and one update covers them all. A position snapshots
+ * its base rate (`baseQuote`) at deposit for rate certainty. Early redemption
+ * (partial allowed) forfeits accrued interest and, if that is not enough, takes a
+ * minimum penalty equal to 30 days of base interest from the redeemed principal.
+ * Interest (base + loyalty) is distributed off-pool via the cumulative Merkle
+ * InterestDistributor; renewal rolls the principal only into a fresh cohort.
  */
 contract LockedEarnPool is CreditFundBase {
   using SafeERC20 for IERC20;
 
   /* STRUCTS */
-  // a single locked position
+  // a single locked position (dates live on the referenced cohort)
   struct Position {
     uint256 principal; // principal amount
-    uint256 startTime; // interest-accrual start (used for penalty math)
-    uint256 maturityTime; // maturity timestamp
+    uint256 cohortId; // issuance batch this position belongs to
     uint256 baseQuote; // base APR snapshot at deposit, 1e18 (e.g. 0.114e18)
     bool autoRenew; // roll principal into a new term on maturity
     bool closed; // position terminated (redeemed / matured-out / renewed)
   }
 
-  // a configurable locked product
-  struct LockedProduct {
-    uint256 durationDays; // lock duration in days
+  // an issuance batch (cohort). Dates are settlement-aligned and injected
+  // off-chain by the manager; all positions in a cohort share them, so one
+  // update covers the whole batch ("same batch, same maturity").
+  struct Cohort {
+    uint256 termDays; // nominal lock term in days (bounds the maturity)
     uint256 baseQuote; // base APR, 1e18
+    uint256 depositDeadline; // deposits accepted until this time
+    uint256 interestStartTime; // 起息日 / interest-accrual start (penalty anchor)
+    uint256 maturityTime; // 到期日 (settlement-aligned)
     bool enabled; // open for deposit
   }
 
@@ -43,22 +50,34 @@ contract LockedEarnPool is CreditFundBase {
   uint256 public constant MIN_PENALTY_DAYS = 30;
   // day count basis (actual/365, matching the Surfin facility)
   uint256 public constant DAY_COUNT = 365;
+  // guardrail: interest start can be at most this far after deposits close
+  uint256 public constant MAX_START_DELAY = 7 days;
+  // guardrail: maturity can be at most this far past the nominal term end
+  uint256 public constant MAX_ALIGN_WINDOW = 31 days;
 
   /* VARIABLES */
   // user => positions
   mapping(address => Position[]) internal userPositions;
   // total principal across all open positions
   uint256 public totalPrincipalAmount;
-  // product id => product config
-  mapping(uint256 => LockedProduct) public products;
+  // cohort id => issuance batch config
+  mapping(uint256 => Cohort) public cohorts;
 
   /* EVENTS */
-  event LockedDeposit(address indexed user, uint256 posId, uint256 productId, uint256 amount, uint256 maturityTime);
-  event RequestEarlyRedeem(address indexed user, uint256 posId, uint256 payout, uint256 batchId);
+  event LockedDeposit(address indexed user, uint256 posId, uint256 cohortId, uint256 amount, uint256 maturityTime);
+  event RequestEarlyRedeem(address indexed user, uint256 posId, uint256 amount, uint256 payout, uint256 batchId);
   event RequestMaturityWithdraw(address indexed user, uint256 posId, uint256 principal, uint256 batchId);
   event RenewPosition(address indexed user, uint256 oldPosId, uint256 newPosId, uint256 principal);
   event ToggleAutoRenew(address indexed user, uint256 posId, bool autoRenew);
-  event SetProduct(uint256 productId, uint256 durationDays, uint256 baseQuote, bool enabled);
+  event SetCohort(
+    uint256 cohortId,
+    uint256 termDays,
+    uint256 baseQuote,
+    uint256 depositDeadline,
+    uint256 interestStartTime,
+    uint256 maturityTime,
+    bool enabled
+  );
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -82,57 +101,59 @@ contract LockedEarnPool is CreditFundBase {
 
   /* EXTERNAL FUNCTIONS */
   /**
-   * @dev deposit into a locked product; funds go straight to the adapter.
-   * @param productId the locked product id
+   * @dev deposit into a cohort; funds go straight to the adapter.
+   * @param cohortId the issuance batch id
    * @param amount the amount of asset to deposit
    * @param receiver the owner of the new position
    */
-  function deposit(uint256 productId, uint256 amount, address receiver) external whenNotPaused nonReentrant {
-    LockedProduct memory p = products[productId];
-    require(p.enabled, "product not enabled");
+  function deposit(uint256 cohortId, uint256 amount, address receiver) external whenNotPaused nonReentrant {
+    Cohort memory c = cohorts[cohortId];
+    require(c.enabled, "cohort not enabled");
+    require(block.timestamp <= c.depositDeadline, "deposit window closed");
     require(amount > 0, "amount is zero");
     require(receiver != address(0), "receiver is zero address");
     require(isInWhitelist(receiver), "receiver not in whitelist");
     require(amount >= minDeposit, "deposit below minimum");
 
-    uint256 maturityTime = block.timestamp + p.durationDays * 1 days;
     userPositions[receiver].push(
-      Position({
-        principal: amount,
-        startTime: block.timestamp,
-        maturityTime: maturityTime,
-        baseQuote: p.baseQuote,
-        autoRenew: false,
-        closed: false
-      })
+      Position({ principal: amount, cohortId: cohortId, baseQuote: c.baseQuote, autoRenew: false, closed: false })
     );
     totalPrincipalAmount += amount;
 
     IERC20(asset).safeTransferFrom(msg.sender, adapter, amount);
 
-    emit LockedDeposit(receiver, userPositions[receiver].length - 1, productId, amount, maturityTime);
+    emit LockedDeposit(receiver, userPositions[receiver].length - 1, cohortId, amount, c.maturityTime);
   }
 
   /**
-   * @dev request early redemption of a position (whole position only).
-   *      Accrued interest is forfeited; a shortfall to the 30-day minimum
-   *      penalty is taken from principal. The payout enters the batch queue.
+   * @dev request early redemption of `amount` principal from a position (partial
+   *      allowed). Accrued interest is forfeited; a shortfall to the 30-day
+   *      minimum penalty is taken from the redeemed principal. The payout enters
+   *      the batch queue. The position stays open with reduced principal, or is
+   *      closed once fully redeemed.
    * @param posId the caller's position id
+   * @param amount the principal amount to early-redeem
    */
-  function requestEarlyRedeem(uint256 posId) external whenNotPaused nonReentrant {
+  function requestEarlyRedeem(uint256 posId, uint256 amount) external whenNotPaused nonReentrant {
     Position storage pos = userPositions[msg.sender][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
-    require(block.timestamp < pos.maturityTime, "already matured");
+    require(amount > 0 && amount <= pos.principal, "invalid amount");
 
-    uint256 payout = _earlyRedeemPayout(pos);
+    Cohort memory c = cohorts[pos.cohortId];
+    require(block.timestamp < c.maturityTime, "already matured");
 
-    pos.closed = true;
-    totalPrincipalAmount -= pos.principal;
+    uint256 payout = _earlyRedeemPayout(pos.baseQuote, c.interestStartTime, amount);
+
+    pos.principal -= amount;
+    if (pos.principal == 0) {
+      pos.closed = true;
+    }
+    totalPrincipalAmount -= amount;
 
     _consumeDailyLimit(msg.sender, payout);
     uint256 batchId = _enqueueWithdraw(msg.sender, payout);
 
-    emit RequestEarlyRedeem(msg.sender, posId, payout, batchId);
+    emit RequestEarlyRedeem(msg.sender, posId, amount, payout, batchId);
   }
 
   /**
@@ -144,7 +165,7 @@ contract LockedEarnPool is CreditFundBase {
   function requestMaturityWithdraw(uint256 posId) external whenNotPaused nonReentrant {
     Position storage pos = userPositions[msg.sender][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
-    require(block.timestamp >= pos.maturityTime, "not matured");
+    require(block.timestamp >= cohorts[pos.cohortId].maturityTime, "not matured");
     require(!pos.autoRenew, "auto renew on");
 
     uint256 principal = pos.principal;
@@ -164,43 +185,35 @@ contract LockedEarnPool is CreditFundBase {
   function toggleAutoRenew(uint256 posId) external whenNotPaused {
     Position storage pos = userPositions[msg.sender][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
-    require(block.timestamp < pos.maturityTime, "already matured");
+    require(block.timestamp < cohorts[pos.cohortId].maturityTime, "already matured");
 
     pos.autoRenew = !pos.autoRenew;
     emit ToggleAutoRenew(msg.sender, posId, pos.autoRenew);
   }
 
   /**
-   * @dev roll a matured auto-renew position's principal into a fresh term.
-   *      Only principal is rolled (interest is claimed separately). Renewal is
-   *      limited to one term: the new position has auto-renew forced off.
+   * @dev roll a matured auto-renew position's principal into a fresh cohort.
+   *      Only principal is rolled (interest is distributed separately). Renewal
+   *      is limited to one term: the new position has auto-renew forced off.
    *      Driven by the settlement-day job (BOT).
    * @param user the position owner
    * @param posId the matured position id
-   * @param productId the product to renew into
+   * @param newCohortId the cohort to renew into
    */
-  function renewPosition(address user, uint256 posId, uint256 productId) external onlyRole(BOT) nonReentrant {
+  function renewPosition(address user, uint256 posId, uint256 newCohortId) external onlyRole(BOT) nonReentrant {
     Position storage pos = userPositions[user][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
     require(pos.autoRenew, "auto renew off");
-    require(block.timestamp >= pos.maturityTime, "not matured");
+    require(block.timestamp >= cohorts[pos.cohortId].maturityTime, "not matured");
 
-    LockedProduct memory p = products[productId];
-    require(p.enabled, "product not enabled");
+    Cohort memory c = cohorts[newCohortId];
+    require(c.enabled, "cohort not enabled");
 
     uint256 principal = pos.principal;
     pos.closed = true;
 
-    uint256 maturityTime = block.timestamp + p.durationDays * 1 days;
     userPositions[user].push(
-      Position({
-        principal: principal,
-        startTime: block.timestamp,
-        maturityTime: maturityTime,
-        baseQuote: p.baseQuote,
-        autoRenew: false,
-        closed: false
-      })
+      Position({ principal: principal, cohortId: newCohortId, baseQuote: c.baseQuote, autoRenew: false, closed: false })
     );
     // totalPrincipalAmount unchanged: principal moves from old to new position
 
@@ -218,48 +231,77 @@ contract LockedEarnPool is CreditFundBase {
   }
 
   /**
-   * @dev preview the early-redeem payout for a position.
+   * @dev preview the early-redeem payout for `amount` principal of a position.
    */
-  function previewEarlyRedeem(address user, uint256 posId) external view returns (uint256) {
-    return _earlyRedeemPayout(userPositions[user][posId]);
+  function previewEarlyRedeem(address user, uint256 posId, uint256 amount) external view returns (uint256) {
+    Position memory pos = userPositions[user][posId];
+    return _earlyRedeemPayout(pos.baseQuote, cohorts[pos.cohortId].interestStartTime, amount);
   }
 
   /* MANAGER FUNCTIONS */
   /**
-   * @dev configure a locked product.
-   * @param productId the product id
-   * @param durationDays lock duration in days
+   * @dev create or adjust a cohort (issuance batch). Dates are injected off-chain
+   *      but bounded on-chain: the interest start must fall within MAX_START_DELAY
+   *      of the deposit deadline, and the maturity must land between the nominal
+   *      term end and MAX_ALIGN_WINDOW past it. These guardrails keep the manager
+   *      from arbitrarily extending or shortening outstanding positions.
+   * @param cohortId the cohort id
+   * @param termDays nominal lock term in days
    * @param baseQuote base APR, 1e18
-   * @param enabled whether the product is open for deposit
+   * @param depositDeadline last time deposits are accepted into this cohort
+   * @param interestStartTime 起息日 (settlement-aligned)
+   * @param maturityTime 到期日 (settlement-aligned)
+   * @param enabled whether the cohort is open for deposit
    */
-  function setProduct(
-    uint256 productId,
-    uint256 durationDays,
+  function setCohort(
+    uint256 cohortId,
+    uint256 termDays,
     uint256 baseQuote,
+    uint256 depositDeadline,
+    uint256 interestStartTime,
+    uint256 maturityTime,
     bool enabled
   ) external onlyRole(MANAGER) {
-    require(durationDays > 0, "duration is zero");
+    require(termDays > 0, "term is zero");
     require(baseQuote > 0, "baseQuote is zero");
-    products[productId] = LockedProduct({ durationDays: durationDays, baseQuote: baseQuote, enabled: enabled });
-    emit SetProduct(productId, durationDays, baseQuote, enabled);
+    require(depositDeadline <= interestStartTime, "start before deposits close");
+    require(interestStartTime <= depositDeadline + MAX_START_DELAY, "start too late");
+    uint256 nominalEnd = interestStartTime + termDays * 1 days;
+    require(maturityTime >= nominalEnd, "maturity before term end");
+    require(maturityTime <= nominalEnd + MAX_ALIGN_WINDOW, "maturity too late");
+
+    cohorts[cohortId] = Cohort({
+      termDays: termDays,
+      baseQuote: baseQuote,
+      depositDeadline: depositDeadline,
+      interestStartTime: interestStartTime,
+      maturityTime: maturityTime,
+      enabled: enabled
+    });
+    emit SetCohort(cohortId, termDays, baseQuote, depositDeadline, interestStartTime, maturityTime, enabled);
   }
 
   /* INTERNAL FUNCTIONS */
   /**
-   * @dev payout = principal - max(0, minPenalty - accruedBase)
-   *      minPenalty  = principal * baseQuote * 30 / 365
-   *      accruedBase = principal * baseQuote * elapsedDays / 365
+   * @dev payout = amount - max(0, minPenalty - accruedBase)
+   *      minPenalty  = amount * baseQuote * 30 / 365
+   *      accruedBase = amount * baseQuote * elapsedDays / 365
+   *      elapsedDays counts from the cohort's 起息日 (0 before it starts).
    */
-  function _earlyRedeemPayout(Position memory pos) internal view returns (uint256) {
-    uint256 minPenalty = (pos.principal * pos.baseQuote * MIN_PENALTY_DAYS) / DAY_COUNT / PRECISION;
+  function _earlyRedeemPayout(
+    uint256 baseQuote,
+    uint256 interestStartTime,
+    uint256 amount
+  ) internal view returns (uint256) {
+    uint256 minPenalty = (amount * baseQuote * MIN_PENALTY_DAYS) / DAY_COUNT / PRECISION;
 
-    uint256 elapsedDays = (block.timestamp - pos.startTime) / 1 days;
-    uint256 accruedBase = (pos.principal * pos.baseQuote * elapsedDays) / DAY_COUNT / PRECISION;
+    uint256 elapsedDays = block.timestamp <= interestStartTime ? 0 : (block.timestamp - interestStartTime) / 1 days;
+    uint256 accruedBase = (amount * baseQuote * elapsedDays) / DAY_COUNT / PRECISION;
 
     if (accruedBase >= minPenalty) {
-      return pos.principal;
+      return amount;
     }
-    return pos.principal - (minPenalty - accruedBase);
+    return amount - (minPenalty - accruedBase);
   }
 
   // reserve storage for future upgrades
