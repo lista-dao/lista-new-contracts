@@ -11,7 +11,7 @@ import { CreditFundBase } from "./CreditFundBase.sol";
  * @notice Flexible (demand) product of the Surfin Credit Fund.
  *
  * Principal is tracked 1:1 as an LP balance (deposit mints, withdraw burns).
- * Interest is booked separately by the adapter and claimed via `claimInterest`.
+ * Interest is distributed off-pool via the cumulative Merkle InterestDistributor.
  * Withdrawals go through the shared daily batch queue; unconfirmed requests can
  * be cancelled in full, restoring the LP with no interest loss.
  */

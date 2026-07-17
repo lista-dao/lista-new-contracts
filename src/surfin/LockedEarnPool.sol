@@ -13,9 +13,9 @@ import { CreditFundBase } from "./CreditFundBase.sol";
  * Each deposit creates an independent position with its own maturity and a base
  * rate snapshot (`baseQuote`) taken at deposit time. Early redemption forfeits
  * accrued interest and, if that is not enough, a minimum penalty equal to 30 days
- * of base interest is taken from principal. Interest (base + loyalty) is booked
- * separately by the adapter and claimed via `claimInterest`; renewal rolls the
- * principal only into a fresh position (interest is claimed separately).
+ * of base interest is taken from principal. Interest (base + loyalty) is
+ * distributed off-pool via the cumulative Merkle InterestDistributor; renewal
+ * rolls the principal only into a fresh position (interest is distributed separately).
  */
 contract LockedEarnPool is CreditFundBase {
   using SafeERC20 for IERC20;

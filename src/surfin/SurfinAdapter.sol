@@ -10,6 +10,7 @@ import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 import { ICreditFundPool } from "./interface/ICreditFundPool.sol";
 import { IOTCManager } from "./interface/IOTCManager.sol";
 import { IAsyncVault } from "./interface/IAsyncVault.sol";
+import { IInterestDistributor } from "./interface/IInterestDistributor.sol";
 
 /**
  * @title SurfinAdapter
@@ -49,6 +50,8 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   address public lockedPool;
   // OTC manager (gateway to Surfin)
   address public otcManager;
+  // interest distributor (cumulative Merkle interest payouts)
+  address public interestDistributor;
 
   // matured locked principal earmark; never deployable/usable for buffer
   uint256 public settlementReserve;
@@ -97,8 +100,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   event ReleaseSettlement(uint256 amount);
   event FinishFlexWithdraw(uint256 amount);
   event FinishLockedWithdraw(uint256 amount);
-  event NotifyFlexInterest(uint256 total);
-  event NotifyLockedInterest(uint256 total);
+  event FundInterest(uint256 amount);
   event BookFee(uint256 amount);
   event ClaimFee(address receiver, uint256 amount);
   event RequestRecall(uint256 amount);
@@ -107,6 +109,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   event SetBufferRates(uint256 flexBuffer, uint256 flexFloor, uint256 lockedBuffer, uint256 lockedFloor);
   event SetMaxDeployPerWeek(uint256 maxDeployPerWeek);
   event SetOTCManager(address otcManager);
+  event SetInterestDistributor(address interestDistributor);
   event SetFeeReceiver(address feeReceiver);
   event SetFeeRate(uint256 feeRate);
   event SetVault(address vault, address shareToken);
@@ -259,29 +262,20 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     emit FinishLockedWithdraw(amount);
   }
 
-  /* BOOK INTEREST */
+  /* FUND INTEREST */
   /**
-   * @dev book claimable interest for flex users from idle funds.
+   * @dev fund the interest distributor from idle funds. Interest for both flex and
+   *      locked users is paid off-pool through the cumulative Merkle distributor,
+   *      so the adapter only tops it up; per-user amounts live in the merkle root.
+   * @param amount the interest amount to fund
    */
-  function notifyFlexInterest(address[] calldata users, uint256[] calldata amounts) external onlyRole(BOT) {
-    uint256 total = _sum(amounts);
-    if (total > 0) {
-      IERC20(asset).safeIncreaseAllowance(flexPool, total);
-    }
-    ICreditFundPool(flexPool).addClaimableInterest(users, amounts);
-    emit NotifyFlexInterest(total);
-  }
-
-  /**
-   * @dev book claimable interest for locked users from idle funds.
-   */
-  function notifyLockedInterest(address[] calldata users, uint256[] calldata amounts) external onlyRole(BOT) {
-    uint256 total = _sum(amounts);
-    if (total > 0) {
-      IERC20(asset).safeIncreaseAllowance(lockedPool, total);
-    }
-    ICreditFundPool(lockedPool).addClaimableInterest(users, amounts);
-    emit NotifyLockedInterest(total);
+  function fundInterest(uint256 amount) external onlyRole(BOT) {
+    require(interestDistributor != address(0), "interestDistributor not set");
+    require(amount > 0, "amount is zero");
+    require(_availableToEarmark() >= amount, "insufficient idle");
+    IERC20(asset).safeIncreaseAllowance(interestDistributor, amount);
+    IInterestDistributor(interestDistributor).notifyReward(asset, amount);
+    emit FundInterest(amount);
   }
 
   /* PROFIT FEE (Lista share) */
@@ -456,6 +450,12 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     emit SetOTCManager(_otcManager);
   }
 
+  function setInterestDistributor(address _interestDistributor) external onlyRole(MANAGER) {
+    require(_interestDistributor != address(0), "interestDistributor is zero address");
+    interestDistributor = _interestDistributor;
+    emit SetInterestDistributor(_interestDistributor);
+  }
+
   function setFeeReceiver(address _feeReceiver) external onlyRole(MANAGER) {
     require(_feeReceiver != address(0), "feeReceiver is zero");
     feeReceiver = _feeReceiver;
@@ -497,14 +497,8 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     return bal > locked ? bal - locked : 0;
   }
 
-  function _sum(uint256[] calldata amounts) internal pure returns (uint256 total) {
-    for (uint256 i = 0; i < amounts.length; i++) {
-      total += amounts[i];
-    }
-  }
-
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
   // reserve storage for future upgrades
-  uint256[44] private __gap;
+  uint256[43] private __gap;
 }

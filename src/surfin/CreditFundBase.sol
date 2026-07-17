@@ -17,8 +17,9 @@ import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
  *  - deposits transfer funds straight to the adapter (pool keeps only accounting);
  *  - withdrawals go through a daily batch queue that the adapter repays via
  *    `finishWithdraw`, then users `claimWithdraw`;
- *  - interest is booked separately from principal (principal is claimed as batch
- *    withdrawals, interest is claimed via `claimInterest`).
+ *  - interest is booked separately from principal: principal is claimed as batch
+ *    withdrawals here, while interest is distributed off-pool via the cumulative
+ *    Merkle `InterestDistributor`.
  *
  * Principal bookkeeping differs between products (1:1 LP for flex, positions for
  * locked) so `totalPrincipal` and the deposit/withdraw entrypoints are left to
@@ -67,11 +68,6 @@ abstract contract CreditFundBase is
   // total principal requested for withdraw but not yet claimed
   uint256 public totalPendingWithdraw;
 
-  // user => claimable interest booked by the adapter
-  mapping(address => uint256) public claimableInterest;
-  // total interest funds held for claims
-  uint256 public interestQuota;
-
   // per-address per-day submitted withdraw amount, 0 disables the limit
   uint256 public dailyLimit;
   // epoch day => user => submitted amount
@@ -95,8 +91,6 @@ abstract contract CreditFundBase is
   event FinishWithdraw(uint256 batchId, uint256 amount);
   event ClaimWithdrawal(address indexed user, uint256 idx, uint256 amount);
   event CancelWithdrawal(address indexed user, uint256 idx, uint256 amount);
-  event AddClaimableInterest(uint256 total);
-  event ClaimInterest(address indexed user, uint256 amount);
   event WhiteListChanged(address user, bool ok);
   event SetMinDeposit(uint256 minDeposit);
   event SetDailyLimit(uint256 dailyLimit);
@@ -167,31 +161,6 @@ abstract contract CreditFundBase is
     }
   }
 
-  /**
-   * @dev book claimable interest for a set of users. Only the adapter can call.
-   *      The adapter transfers the summed interest in first.
-   * @param users the users to credit
-   * @param amounts the interest amount for each user
-   */
-  function addClaimableInterest(address[] calldata users, uint256[] calldata amounts) external {
-    require(msg.sender == adapter, "only adapter can call");
-    require(users.length == amounts.length, "length mismatch");
-
-    uint256 total;
-    for (uint256 i = 0; i < users.length; i++) {
-      require(users[i] != address(0), "user is zero address");
-      claimableInterest[users[i]] += amounts[i];
-      total += amounts[i];
-    }
-
-    if (total > 0) {
-      IERC20(asset).safeTransferFrom(msg.sender, address(this), total);
-      interestQuota += total;
-    }
-
-    emit AddClaimableInterest(total);
-  }
-
   /* USER FUNCTIONS */
   /**
    * @dev claim principal of a confirmed withdrawal request.
@@ -213,20 +182,6 @@ abstract contract CreditFundBase is
     IERC20(asset).safeTransfer(user, req.amount);
 
     emit ClaimWithdrawal(user, idx, req.amount);
-  }
-
-  /**
-   * @dev claim all booked interest for the caller.
-   */
-  function claimInterest() external whenNotPaused nonReentrant {
-    uint256 amount = claimableInterest[msg.sender];
-    require(amount > 0, "no claimable interest");
-
-    claimableInterest[msg.sender] = 0;
-    interestQuota -= amount;
-    IERC20(asset).safeTransfer(msg.sender, amount);
-
-    emit ClaimInterest(msg.sender, amount);
   }
 
   /* VIEWS */
@@ -352,5 +307,5 @@ abstract contract CreditFundBase is
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
   // reserve storage for future upgrades
-  uint256[45] private __gap;
+  uint256[47] private __gap;
 }

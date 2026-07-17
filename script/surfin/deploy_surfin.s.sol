@@ -8,6 +8,7 @@ import "../../src/surfin/FlexEarnPool.sol";
 import "../../src/surfin/LockedEarnPool.sol";
 import "../../src/surfin/SurfinAdapter.sol";
 import "../../src/surfin/OTCManager.sol";
+import "../../src/surfin/InterestDistributor.sol";
 
 /**
  * @dev Deploy the Surfin Credit Fund stack: FlexEarnPool + LockedEarnPool sharing
@@ -42,21 +43,18 @@ contract DeploySurfin is Script {
 
     vm.startBroadcast(deployerPrivateKey);
 
-    // 1. implementations
-    FlexEarnPool flexImpl = new FlexEarnPool();
-    LockedEarnPool lockedImpl = new LockedEarnPool();
-    SurfinAdapter adapterImpl = new SurfinAdapter(USDT);
-    OTCManager otcImpl = new OTCManager(USDT);
+    // Implementations are inlined into the proxy constructors to keep run()'s local
+    // variable count under the EVM stack limit (avoids "stack too deep").
 
-    // 2. OTCManager proxy (adapter placeholder = deployer)
+    // 1. OTCManager proxy (adapter placeholder = deployer)
     ERC1967Proxy otcProxy = new ERC1967Proxy(
-      address(otcImpl),
+      address(new OTCManager(USDT)),
       abi.encodeWithSelector(OTCManager.initialize.selector, admin, manager, bot, deployer, otcWallet)
     );
 
-    // 3. FlexEarnPool proxy (adapter placeholder = deployer)
+    // 2. FlexEarnPool proxy (adapter placeholder = deployer)
     ERC1967Proxy flexProxy = new ERC1967Proxy(
-      address(flexImpl),
+      address(new FlexEarnPool()),
       abi.encodeWithSelector(
         FlexEarnPool.initialize.selector,
         admin,
@@ -70,9 +68,9 @@ contract DeploySurfin is Script {
       )
     );
 
-    // 4. LockedEarnPool proxy (adapter placeholder = deployer)
+    // 3. LockedEarnPool proxy (adapter placeholder = deployer)
     ERC1967Proxy lockedProxy = new ERC1967Proxy(
-      address(lockedImpl),
+      address(new LockedEarnPool()),
       abi.encodeWithSelector(
         LockedEarnPool.initialize.selector,
         admin,
@@ -86,9 +84,9 @@ contract DeploySurfin is Script {
       )
     );
 
-    // 5. SurfinAdapter proxy (real pool + otc addresses)
+    // 4. SurfinAdapter proxy (real pool + otc addresses)
     ERC1967Proxy adapterProxy = new ERC1967Proxy(
-      address(adapterImpl),
+      address(new SurfinAdapter(USDT)),
       abi.encodeWithSelector(
         SurfinAdapter.initialize.selector,
         admin,
@@ -100,10 +98,14 @@ contract DeploySurfin is Script {
       )
     );
 
-    // 6. rewire the real adapter into the pools and the OTC manager
+    // 5. rewire the real adapter into the pools and the OTC manager
     FlexEarnPool(address(flexProxy)).setAdapter(address(adapterProxy));
     LockedEarnPool(address(lockedProxy)).setAdapter(address(adapterProxy));
     OTCManager(address(otcProxy)).setAdapter(address(adapterProxy));
+
+    // 6. InterestDistributor proxy (funder = adapter; interest paid in USDT) + wiring
+    ERC1967Proxy interestProxy = _deployInterestDistributor(admin, manager, bot, pauser, address(adapterProxy));
+    SurfinAdapter(address(adapterProxy)).setInterestDistributor(address(interestProxy));
 
     vm.stopBroadcast();
 
@@ -111,5 +113,31 @@ contract DeploySurfin is Script {
     console.log("LockedEarnPool: %s", address(lockedProxy));
     console.log("SurfinAdapter:  %s", address(adapterProxy));
     console.log("OTCManager:     %s", address(otcProxy));
+    console.log("InterestDistributor: %s", address(interestProxy));
+  }
+
+  /// @dev deploy the InterestDistributor impl+proxy; split out of run() to keep the
+  ///      stack shallow. `funder` is the adapter, the only address allowed to fund interest.
+  function _deployInterestDistributor(
+    address admin,
+    address manager,
+    address bot,
+    address pauser,
+    address funder
+  ) internal returns (ERC1967Proxy interestProxy) {
+    address[] memory interestTokens = new address[](1);
+    interestTokens[0] = USDT;
+    interestProxy = new ERC1967Proxy(
+      address(new InterestDistributor()),
+      abi.encodeWithSelector(
+        InterestDistributor.initialize.selector,
+        admin,
+        manager,
+        bot,
+        pauser,
+        funder,
+        interestTokens
+      )
+    );
   }
 }
