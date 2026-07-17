@@ -50,7 +50,7 @@ contract FlexEarnPool is CreditFundBase {
    * @param amount the amount of asset to deposit
    * @param receiver the receiver of the LP
    */
-  function deposit(uint256 amount, address receiver) external whenNotPaused nonReentrant {
+  function deposit(uint256 amount, address receiver) external whenNotPaused whenDepositNotPaused nonReentrant {
     require(amount > 0, "amount is zero");
     require(receiver != address(0), "receiver is zero address");
     require(isInWhitelist(receiver), "receiver not in whitelist");

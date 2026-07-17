@@ -106,7 +106,11 @@ contract LockedEarnPool is CreditFundBase {
    * @param amount the amount of asset to deposit
    * @param receiver the owner of the new position
    */
-  function deposit(uint256 cohortId, uint256 amount, address receiver) external whenNotPaused nonReentrant {
+  function deposit(
+    uint256 cohortId,
+    uint256 amount,
+    address receiver
+  ) external whenNotPaused whenDepositNotPaused nonReentrant {
     Cohort memory c = cohorts[cohortId];
     require(c.enabled, "cohort not enabled");
     require(block.timestamp <= c.depositDeadline, "deposit window closed");
@@ -134,7 +138,7 @@ contract LockedEarnPool is CreditFundBase {
    * @param posId the caller's position id
    * @param amount the principal amount to early-redeem
    */
-  function requestEarlyRedeem(uint256 posId, uint256 amount) external whenNotPaused nonReentrant {
+  function requestEarlyRedeem(uint256 posId, uint256 amount) external whenNotPaused whenDepositNotPaused nonReentrant {
     Position storage pos = userPositions[msg.sender][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
     require(amount > 0 && amount <= pos.principal, "invalid amount");

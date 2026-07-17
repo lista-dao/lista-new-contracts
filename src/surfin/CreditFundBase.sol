@@ -77,6 +77,9 @@ abstract contract CreditFundBase is
   EnumerableSet.AddressSet internal whitelist;
   // minimum deposit amount, in asset units
   uint256 public minDeposit;
+  // when true, blocks new deposits and locked early redemptions (wind-down / stress
+  // mode); normal & matured withdrawals and claims stay open
+  bool public depositPaused;
 
   /* CONSTANTS */
   bytes32 public constant MANAGER = keccak256("MANAGER");
@@ -95,6 +98,7 @@ abstract contract CreditFundBase is
   event SetMinDeposit(uint256 minDeposit);
   event SetDailyLimit(uint256 dailyLimit);
   event SetAdapter(address adapter);
+  event SetDepositPaused(bool paused);
   event EmergencyWithdraw(address token, uint256 amount);
 
   /* INITIALIZER */
@@ -130,6 +134,13 @@ abstract contract CreditFundBase is
     adapter = _adapter;
     name = _name;
     symbol = _symbol;
+  }
+
+  /* MODIFIERS */
+  /// @dev gate for entry-side ops (deposits, locked early-redeem) during a wind-down
+  modifier whenDepositNotPaused() {
+    require(!depositPaused, "deposit paused");
+    _;
   }
 
   /* ABSTRACT */
@@ -225,6 +236,12 @@ abstract contract CreditFundBase is
     emit SetDailyLimit(_dailyLimit);
   }
 
+  function setDepositPaused(bool _paused) external onlyRole(MANAGER) {
+    require(depositPaused != _paused, "same status");
+    depositPaused = _paused;
+    emit SetDepositPaused(_paused);
+  }
+
   function setAdapter(address _adapter) external onlyRole(DEFAULT_ADMIN_ROLE) {
     require(_adapter != address(0), "adapter is zero address");
     require(_adapter != adapter, "same adapter");
@@ -307,5 +324,5 @@ abstract contract CreditFundBase is
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
   // reserve storage for future upgrades
-  uint256[47] private __gap;
+  uint256[46] private __gap;
 }

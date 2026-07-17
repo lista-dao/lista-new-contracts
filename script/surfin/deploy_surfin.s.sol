@@ -91,6 +91,7 @@ contract DeploySurfin is Script {
         SurfinAdapter.initialize.selector,
         admin,
         manager,
+        pauser,
         bot,
         address(flexProxy),
         address(lockedProxy),

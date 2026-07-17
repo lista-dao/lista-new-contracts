@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import { AccessControlEnumerableUpgradeable } from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
 import { UUPSUpgradeable } from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import { PausableUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -29,19 +30,9 @@ import { IInterestDistributor } from "./interface/IInterestDistributor.sol";
  *  - reserve the IAsyncVault channel for a future liquid yield source (PSM / Venus)
  *    so idle buffer can earn yield while staying instantly redeemable.
  */
-contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
+contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeable, UUPSUpgradeable {
   using SafeERC20 for IERC20;
   using Math for uint256;
-
-  /* ENUMS */
-  // NORMAL: business as usual
-  // RESTRICTED: deposits paused, new withdraws queue only (enforced at pools/off-chain)
-  // FROZEN: everything halted (enforced at pools/off-chain); deploy always blocked
-  enum Status {
-    NORMAL,
-    RESTRICTED,
-    FROZEN
-  }
 
   /* VARIABLES */
   // flex (demand) pool
@@ -73,9 +64,6 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   // last cycle (week) a recall/settlement happened; blocks deploy in the same cycle
   uint256 public recallCycle;
 
-  // fund status
-  Status public status;
-
   // profit fee receiver and rate (1e18); rate is informational for off-chain sizing
   address public feeReceiver;
   uint256 public feeRate;
@@ -87,6 +75,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   /* CONSTANTS */
   bytes32 public constant MANAGER = keccak256("MANAGER");
   bytes32 public constant BOT = keccak256("BOT");
+  bytes32 public constant PAUSER = keccak256("PAUSER");
   uint256 public constant PRECISION = 1e18;
   uint256 public constant MAX_FEE_RATE = 3 * 1e17; // 30%
 
@@ -105,7 +94,6 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   event ClaimFee(address receiver, uint256 amount);
   event RequestRecall(uint256 amount);
   event RepayFromSurfin(uint256 amount);
-  event SetStatus(Status status);
   event SetBufferRates(uint256 flexBuffer, uint256 flexFloor, uint256 lockedBuffer, uint256 lockedFloor);
   event SetMaxDeployPerWeek(uint256 maxDeployPerWeek);
   event SetOTCManager(address otcManager);
@@ -133,6 +121,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   function initialize(
     address _admin,
     address _manager,
+    address _pauser,
     address _bot,
     address _flexPool,
     address _lockedPool,
@@ -140,15 +129,18 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   ) external initializer {
     require(_admin != address(0), "admin is zero address");
     require(_manager != address(0), "manager is zero address");
+    require(_pauser != address(0), "pauser is zero address");
     require(_bot != address(0), "bot is zero address");
     require(_flexPool != address(0), "flexPool is zero address");
     require(_lockedPool != address(0), "lockedPool is zero address");
     require(_otcManager != address(0), "otcManager is zero address");
 
     __AccessControlEnumerable_init();
+    __Pausable_init();
 
     _grantRole(DEFAULT_ADMIN_ROLE, _admin);
     _grantRole(MANAGER, _manager);
+    _grantRole(PAUSER, _pauser);
     _grantRole(BOT, _bot);
 
     flexPool = _flexPool;
@@ -160,19 +152,16 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
     flexFloorRate = 3 * 1e16;
     lockedBufferRate = 5 * 1e16;
     lockedFloorRate = 15 * 1e15;
-
-    status = Status.NORMAL;
   }
 
   /* DEPLOY TO SURFIN */
   /**
    * @dev deploy idle funds to Surfin through the OTC manager. Not split by product.
-   *      Blocked unless NORMAL, capped by the deployable amount, the weekly cap, and
+   *      Blocked while paused, capped by the deployable amount, the weekly cap, and
    *      the net-flow rule (no deploy in a cycle that already recalled).
    * @param amount the amount of asset to deploy
    */
-  function deployToSurfin(uint256 amount) external onlyRole(BOT) {
-    require(status == Status.NORMAL, "not normal");
+  function deployToSurfin(uint256 amount) external onlyRole(BOT) whenNotPaused {
     require(amount > 0, "amount is zero");
     require(amount <= maxDeployToSurfin(), "exceeds deployable");
     require(maxDeployPerWeek == 0 || amount <= maxDeployPerWeek, "exceeds weekly cap");
@@ -377,7 +366,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   /**
    * @dev request deposit of idle funds into the liquid yield vault (PSM).
    */
-  function requestDepositToVault(uint256 amount) external onlyRole(BOT) {
+  function requestDepositToVault(uint256 amount) external onlyRole(BOT) whenNotPaused {
     require(vault != address(0), "vault not set");
     require(amount > 0, "amount is zero");
     IERC20(asset).safeIncreaseAllowance(vault, amount);
@@ -388,7 +377,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   /**
    * @dev finish a pending deposit and mint vault shares.
    */
-  function depositToVault() external onlyRole(BOT) {
+  function depositToVault() external onlyRole(BOT) whenNotPaused {
     require(vault != address(0), "vault not set");
     uint256 maxMint = IAsyncVault(vault).maxMint(address(this));
     require(maxMint > 0, "maxMint is zero");
@@ -419,9 +408,14 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   }
 
   /* MANAGER FUNCTIONS */
-  function setStatus(Status _status) external onlyRole(MANAGER) {
-    status = _status;
-    emit SetStatus(_status);
+  /// @dev emergency stop for outbound flows (deploy to Surfin, deposits to the PSM vault)
+  function pause() external onlyRole(PAUSER) {
+    _pause();
+  }
+
+  /// @dev lift the emergency stop
+  function unpause() external onlyRole(MANAGER) {
+    _unpause();
   }
 
   function setBufferRates(
@@ -500,5 +494,5 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, UUPSUpgradeable {
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
   // reserve storage for future upgrades
-  uint256[43] private __gap;
+  uint256[44] private __gap;
 }
