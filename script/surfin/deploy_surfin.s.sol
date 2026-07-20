@@ -7,16 +7,15 @@ import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import "../../src/surfin/FlexEarnPool.sol";
 import "../../src/surfin/LockedEarnPool.sol";
 import "../../src/surfin/SurfinAdapter.sol";
-import "../../src/surfin/OTCManager.sol";
 import "../../src/surfin/InterestDistributor.sol";
 
 /**
  * @dev Deploy the Surfin Credit Fund stack: FlexEarnPool + LockedEarnPool sharing
- *      one SurfinAdapter, plus the OTCManager gateway to Surfin.
+ *      one SurfinAdapter.
  *
- * The pool <-> adapter dependency is circular, so pools and the OTC manager are
- * initialized with the deployer as a placeholder adapter, then rewired to the real
- * adapter via setAdapter once the adapter proxy exists.
+ * The pool <-> adapter dependency is circular, so pools are initialized with the
+ * deployer as a placeholder adapter, then rewired to the real adapter via
+ * setAdapter once the adapter proxy exists.
  *
  * Usage:
  * DEPLOYER_PRIVATE_KEY=<key> BSCSCAN_API_KEY=<key> \
@@ -28,7 +27,7 @@ contract DeploySurfin is Script {
   address public constant USDT = 0x55d398326f99059fF775485246999027B3197955;
 
   // Surfin receiving multisig — REPLACE before mainnet deploy
-  address public otcWallet = 0x000000000000000000000000000000000000dEaD;
+  address public surfinWallet = 0x000000000000000000000000000000000000dEaD;
 
   function run() public {
     uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
@@ -46,13 +45,7 @@ contract DeploySurfin is Script {
     // Implementations are inlined into the proxy constructors to keep run()'s local
     // variable count under the EVM stack limit (avoids "stack too deep").
 
-    // 1. OTCManager proxy (adapter placeholder = deployer)
-    ERC1967Proxy otcProxy = new ERC1967Proxy(
-      address(new OTCManager(USDT)),
-      abi.encodeWithSelector(OTCManager.initialize.selector, admin, manager, bot, deployer, otcWallet)
-    );
-
-    // 2. FlexEarnPool proxy (adapter placeholder = deployer)
+    // 1. FlexEarnPool proxy (adapter placeholder = deployer)
     ERC1967Proxy flexProxy = new ERC1967Proxy(
       address(new FlexEarnPool()),
       abi.encodeWithSelector(
@@ -68,7 +61,7 @@ contract DeploySurfin is Script {
       )
     );
 
-    // 3. LockedEarnPool proxy (adapter placeholder = deployer)
+    // 2. LockedEarnPool proxy (adapter placeholder = deployer)
     ERC1967Proxy lockedProxy = new ERC1967Proxy(
       address(new LockedEarnPool()),
       abi.encodeWithSelector(
@@ -84,7 +77,7 @@ contract DeploySurfin is Script {
       )
     );
 
-    // 4. SurfinAdapter proxy (real pool + otc addresses)
+    // 3. SurfinAdapter proxy (real pool addresses + Surfin receiving wallet)
     ERC1967Proxy adapterProxy = new ERC1967Proxy(
       address(new SurfinAdapter(USDT)),
       abi.encodeWithSelector(
@@ -95,16 +88,15 @@ contract DeploySurfin is Script {
         bot,
         address(flexProxy),
         address(lockedProxy),
-        address(otcProxy)
+        surfinWallet
       )
     );
 
-    // 5. rewire the real adapter into the pools and the OTC manager
+    // 4. rewire the real adapter into the pools
     FlexEarnPool(address(flexProxy)).setAdapter(address(adapterProxy));
     LockedEarnPool(address(lockedProxy)).setAdapter(address(adapterProxy));
-    OTCManager(address(otcProxy)).setAdapter(address(adapterProxy));
 
-    // 6. InterestDistributor proxy (funder = adapter; interest paid in USDT) + wiring
+    // 5. InterestDistributor proxy (funder = adapter; interest paid in USDT) + wiring
     ERC1967Proxy interestProxy = _deployInterestDistributor(admin, manager, bot, pauser, address(adapterProxy));
     SurfinAdapter(address(adapterProxy)).setInterestDistributor(address(interestProxy));
 
@@ -113,7 +105,6 @@ contract DeploySurfin is Script {
     console.log("FlexEarnPool:   %s", address(flexProxy));
     console.log("LockedEarnPool: %s", address(lockedProxy));
     console.log("SurfinAdapter:  %s", address(adapterProxy));
-    console.log("OTCManager:     %s", address(otcProxy));
     console.log("InterestDistributor: %s", address(interestProxy));
   }
 

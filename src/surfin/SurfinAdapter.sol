@@ -9,7 +9,6 @@ import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import { ICreditFundPool } from "./interface/ICreditFundPool.sol";
-import { IOTCManager } from "./interface/IOTCManager.sol";
 import { IAsyncVault } from "./interface/IAsyncVault.sol";
 import { IInterestDistributor } from "./interface/IInterestDistributor.sol";
 
@@ -20,8 +19,8 @@ import { IInterestDistributor } from "./interface/IInterestDistributor.sol";
  *
  * Both the flex and locked pools forward user deposits straight to this adapter,
  * so all fund logic lives here:
- *  - deploy idle funds to Surfin (off-chain) through the OTCManager, not split by
- *    product — one combined transfer;
+ *  - deploy idle funds to Surfin (off-chain) by transferring straight to Surfin's
+ *    receiving wallet, not split by product — one combined transfer;
  *  - keep a per-product buffer (target / hard floor) computed on the fly from each
  *    pool's principal, no physical split;
  *  - earmark matured locked principal into a settlement reserve that can never be
@@ -39,8 +38,8 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   address public flexPool;
   // locked (term) pool
   address public lockedPool;
-  // OTC manager (gateway to Surfin)
-  address public otcManager;
+  // Surfin receiving wallet (off-chain custody/multisig that funds are deployed to)
+  address public surfinWallet;
   // interest distributor (cumulative Merkle interest payouts)
   address public interestDistributor;
 
@@ -96,7 +95,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   event RepayFromSurfin(uint256 amount);
   event SetBufferRates(uint256 flexBuffer, uint256 flexFloor, uint256 lockedBuffer, uint256 lockedFloor);
   event SetMaxDeployPerWeek(uint256 maxDeployPerWeek);
-  event SetOTCManager(address otcManager);
+  event SetSurfinWallet(address surfinWallet);
   event SetInterestDistributor(address interestDistributor);
   event SetFeeReceiver(address feeReceiver);
   event SetFeeRate(uint256 feeRate);
@@ -125,7 +124,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
     address _bot,
     address _flexPool,
     address _lockedPool,
-    address _otcManager
+    address _surfinWallet
   ) external initializer {
     require(_admin != address(0), "admin is zero address");
     require(_manager != address(0), "manager is zero address");
@@ -133,7 +132,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
     require(_bot != address(0), "bot is zero address");
     require(_flexPool != address(0), "flexPool is zero address");
     require(_lockedPool != address(0), "lockedPool is zero address");
-    require(_otcManager != address(0), "otcManager is zero address");
+    require(_surfinWallet != address(0), "surfinWallet is zero address");
 
     __AccessControlEnumerable_init();
     __Pausable_init();
@@ -145,7 +144,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
 
     flexPool = _flexPool;
     lockedPool = _lockedPool;
-    otcManager = _otcManager;
+    surfinWallet = _surfinWallet;
 
     // defaults: flex 15%/3%, locked 5%/1.5%
     flexBufferRate = 15 * 1e16;
@@ -156,12 +155,13 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
 
   /* DEPLOY TO SURFIN */
   /**
-   * @dev deploy idle funds to Surfin through the OTC manager. Not split by product.
-   *      Blocked while paused, capped by the deployable amount, the weekly cap, and
-   *      the net-flow rule (no deploy in a cycle that already recalled).
+   * @dev deploy idle funds to Surfin by transferring straight to Surfin's receiving
+   *      wallet. Not split by product. Sensitive outflow, so gated to MANAGER
+   *      (multisig). Blocked while paused, capped by the deployable amount, the
+   *      weekly cap, and the net-flow rule (no deploy in a cycle that already recalled).
    * @param amount the amount of asset to deploy
    */
-  function deployToSurfin(uint256 amount) external onlyRole(BOT) whenNotPaused {
+  function deployToSurfin(uint256 amount) external onlyRole(MANAGER) whenNotPaused {
     require(amount > 0, "amount is zero");
     require(amount <= maxDeployToSurfin(), "exceeds deployable");
     require(maxDeployPerWeek == 0 || amount <= maxDeployPerWeek, "exceeds weekly cap");
@@ -172,8 +172,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
 
     deployedToSurfin += amount;
 
-    IERC20(asset).safeIncreaseAllowance(otcManager, amount);
-    IOTCManager(otcManager).swapToken(asset, amount);
+    IERC20(asset).safeTransfer(surfinWallet, amount);
 
     emit DeployToSurfin(amount);
   }
@@ -189,9 +188,8 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   }
 
   /**
-   * @dev account for funds returned from Surfin. The BOT first pulls the funds back
-   *      to this adapter via OTCManager.transferToAdapter, then calls this to reduce
-   *      the deployed book value.
+   * @dev account for funds returned from Surfin. Surfin repays USDT straight to this
+   *      adapter off-chain; the BOT then calls this to reduce the deployed book value.
    * @param amount the principal amount returned
    */
   function repayFromSurfin(uint256 amount) external onlyRole(BOT) {
@@ -438,10 +436,10 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
     emit SetMaxDeployPerWeek(_maxDeployPerWeek);
   }
 
-  function setOTCManager(address _otcManager) external onlyRole(MANAGER) {
-    require(_otcManager != address(0), "otcManager is zero address");
-    otcManager = _otcManager;
-    emit SetOTCManager(_otcManager);
+  function setSurfinWallet(address _surfinWallet) external onlyRole(MANAGER) {
+    require(_surfinWallet != address(0), "surfinWallet is zero address");
+    surfinWallet = _surfinWallet;
+    emit SetSurfinWallet(_surfinWallet);
   }
 
   function setInterestDistributor(address _interestDistributor) external onlyRole(MANAGER) {
