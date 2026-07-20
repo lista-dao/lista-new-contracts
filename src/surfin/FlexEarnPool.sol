@@ -113,7 +113,4 @@ contract FlexEarnPool is CreditFundBase {
     totalSupply -= amount;
     emit Transfer(account, address(0), amount);
   }
-
-  // reserve storage for future upgrades
-  uint256[48] private __gap;
 }

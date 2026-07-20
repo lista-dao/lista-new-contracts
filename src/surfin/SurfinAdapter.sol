@@ -9,7 +9,6 @@ import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import { ICreditFundPool } from "./interface/ICreditFundPool.sol";
-import { IAsyncVault } from "./interface/IAsyncVault.sol";
 import { IInterestDistributor } from "./interface/IInterestDistributor.sol";
 
 /**
@@ -21,13 +20,10 @@ import { IInterestDistributor } from "./interface/IInterestDistributor.sol";
  * so all fund logic lives here:
  *  - deploy idle funds to Surfin (off-chain) by transferring straight to Surfin's
  *    receiving wallet, not split by product — one combined transfer;
- *  - keep a per-product buffer (target / hard floor) computed on the fly from each
- *    pool's principal, no physical split;
- *  - earmark matured locked principal into a settlement reserve that can never be
- *    deployed or used for buffer;
- *  - repay the pools' batch queues and book interest;
- *  - reserve the IAsyncVault channel for a future liquid yield source (PSM / Venus)
- *    so idle buffer can earn yield while staying instantly redeemable.
+ *  - enforce a single on-chain hard floor (3% of both pools' live book) that is
+ *    never paid out and doubles as the interest reserve; the 15% buffer target is
+ *    maintained off-chain;
+ *  - repay the pools' batch queues and book interest, bounded by that floor.
  */
 contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeable, UUPSUpgradeable {
   using SafeERC20 for IERC20;
@@ -43,21 +39,16 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   // interest distributor (cumulative Merkle interest payouts)
   address public interestDistributor;
 
-  // matured locked principal earmark; never deployable/usable for buffer
-  uint256 public settlementReserve;
   // accrued Lista profit fee earmark; withdrawable by manager only
   uint256 public accruedFee;
   // book value currently deployed to Surfin
   uint256 public deployedToSurfin;
 
-  // buffer target / hard floor rates, 1e18 (e.g. 0.15e18 = 15%)
-  uint256 public flexBufferRate;
-  uint256 public flexFloorRate;
-  uint256 public lockedBufferRate;
-  uint256 public lockedFloorRate;
+  // single hard-floor rate over both pools' live book, 1e18 (e.g. 0.03e18 = 3%).
+  // The 15% buffer target is maintained off-chain; only the hard floor is enforced
+  // on-chain (also doubles as the interest reserve).
+  uint256 public floorRate;
 
-  // max amount deployable to Surfin per weekly cycle
-  uint256 public maxDeployPerWeek;
   // last cycle (week) a deploy happened
   uint256 public deployCycle;
   // last cycle (week) a recall/settlement happened; blocks deploy in the same cycle
@@ -66,10 +57,6 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   // profit fee receiver and rate (1e18); rate is informational for off-chain sizing
   address public feeReceiver;
   uint256 public feeRate;
-
-  // PSM / Venus reservation (liquid yield source), 0 until enabled
-  address public vault;
-  address public shareToken;
 
   /* CONSTANTS */
   bytes32 public constant MANAGER = keccak256("MANAGER");
@@ -84,28 +71,17 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
 
   /* EVENTS */
   event DeployToSurfin(uint256 amount);
-  event AllocateToSettlement(uint256 amount);
-  event ReleaseSettlement(uint256 amount);
   event FinishFlexWithdraw(uint256 amount);
   event FinishLockedWithdraw(uint256 amount);
   event FundInterest(uint256 amount);
-  event BookFee(uint256 amount);
   event ClaimFee(address receiver, uint256 amount);
-  event RequestRecall(uint256 amount);
-  event RepayFromSurfin(uint256 amount);
-  event SetBufferRates(uint256 flexBuffer, uint256 flexFloor, uint256 lockedBuffer, uint256 lockedFloor);
-  event SetMaxDeployPerWeek(uint256 maxDeployPerWeek);
+  event SettleRecall(uint256 recalledAmount, uint256 lockedCoverAmount, uint256 feeAmount, uint256 deployedBookValue);
+  event SetFloorRate(uint256 floorRate);
   event SetSurfinWallet(address surfinWallet);
   event SetInterestDistributor(address interestDistributor);
   event SetFeeReceiver(address feeReceiver);
   event SetFeeRate(uint256 feeRate);
-  event SetVault(address vault, address shareToken);
   event EmergencyWithdraw(address token, uint256 amount);
-  // PSM channel (reserved)
-  event RequestDepositToVault(uint256 amount);
-  event DepositToVault(uint256 shares);
-  event RequestWithdrawFromVault(uint256 shares);
-  event WithdrawFromVault(uint256 shares);
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -146,25 +122,21 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
     lockedPool = _lockedPool;
     surfinWallet = _surfinWallet;
 
-    // defaults: flex 15%/3%, locked 5%/1.5%
-    flexBufferRate = 15 * 1e16;
-    flexFloorRate = 3 * 1e16;
-    lockedBufferRate = 5 * 1e16;
-    lockedFloorRate = 15 * 1e15;
+    // default hard floor: 3% of both pools' live book
+    floorRate = 3 * 1e16;
   }
 
   /* DEPLOY TO SURFIN */
   /**
    * @dev deploy idle funds to Surfin by transferring straight to Surfin's receiving
    *      wallet. Not split by product. Sensitive outflow, so gated to MANAGER
-   *      (multisig). Blocked while paused, capped by the deployable amount, the
-   *      weekly cap, and the net-flow rule (no deploy in a cycle that already recalled).
+   *      (multisig). Blocked while paused, capped by the deployable amount, and the
+   *      net-flow rule (no deploy in a cycle that already recalled).
    * @param amount the amount of asset to deploy
    */
   function deployToSurfin(uint256 amount) external onlyRole(MANAGER) whenNotPaused {
     require(amount > 0, "amount is zero");
     require(amount <= maxDeployToSurfin(), "exceeds deployable");
-    require(maxDeployPerWeek == 0 || amount <= maxDeployPerWeek, "exceeds weekly cap");
 
     uint256 cycle = block.timestamp / 1 weeks;
     require(recallCycle != cycle, "recalled this cycle");
@@ -178,50 +150,36 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   }
 
   /**
-   * @dev request a recall from Surfin (T-30 funding request). Off-chain settled;
-   *      marks the cycle so no deploy happens in the same cycle.
-   * @param amount the requested recall amount
+   * @dev weekly recall settlement (multisig). The manager transfers the recalled
+   *      USDT into the adapter and, in one call: resets the Surfin book value,
+   *      sets the platform fee earmark, covers the locked withdrawal queue, and
+   *      leaves the remainder as buffer. Replaces repayFromSurfin + bookFee.
+   *
+   *      recalledAmount must cover everything this call consumes (locked cover +
+   *      fee); the remainder (recalledAmount - lockedCoverAmount - feeAmount)
+   *      stays on the adapter as buffer. deployedBookValue is an absolute reset,
+   *      bidirectional: a recall lowers it, while 80% of Surfin interest rolling
+   *      into principal raises it.
+   * @param recalledAmount the recall USDT the manager transfers in (must approve first)
+   * @param lockedCoverAmount amount to push into the locked pool's batch queue
+   * @param feeAmount platform fee to earmark (Lista's share)
+   * @param deployedBookValue the new absolute Surfin deployed book value
    */
-  function requestRecall(uint256 amount) external onlyRole(BOT) {
-    recallCycle = block.timestamp / 1 weeks;
-    emit RequestRecall(amount);
-  }
-
-  /**
-   * @dev account for funds returned from Surfin. Surfin repays USDT straight to this
-   *      adapter off-chain; the BOT then calls this to reduce the deployed book value.
-   * @param amount the principal amount returned
-   */
-  function repayFromSurfin(uint256 amount) external onlyRole(BOT) {
-    require(amount > 0, "amount is zero");
-    recallCycle = block.timestamp / 1 weeks;
-    deployedToSurfin = deployedToSurfin > amount ? deployedToSurfin - amount : 0;
-    emit RepayFromSurfin(amount);
-  }
-
-  /* SETTLEMENT RESERVE (matured locked principal) */
-  /**
-   * @dev earmark matured locked principal into the settlement reserve (locked, not
-   *      deployable). Funds must already be on this adapter.
-   * @param amount the matured principal to reserve
-   */
-  function allocateToSettlement(uint256 amount) external onlyRole(BOT) {
-    require(amount > 0, "amount is zero");
-    require(_availableToEarmark() >= amount, "insufficient idle");
-    settlementReserve += amount;
-    emit AllocateToSettlement(amount);
-  }
-
-  /**
-   * @dev release settlement reserve to cover matured locked withdrawals.
-   * @param amount the amount to release into the locked pool's queue
-   */
-  function releaseSettlement(uint256 amount) external onlyRole(BOT) {
-    require(amount > 0 && amount <= settlementReserve, "invalid amount");
-    settlementReserve -= amount;
-    IERC20(asset).safeIncreaseAllowance(lockedPool, amount);
-    ICreditFundPool(lockedPool).finishWithdraw(amount);
-    emit ReleaseSettlement(amount);
+  function settleRecall(
+    uint256 recalledAmount,
+    uint256 lockedCoverAmount,
+    uint256 feeAmount,
+    uint256 deployedBookValue
+  ) external onlyRole(MANAGER) whenNotPaused {
+    require(recalledAmount >= lockedCoverAmount + feeAmount, "recall insufficient");
+    IERC20(asset).safeTransferFrom(msg.sender, address(this), recalledAmount);
+    recallCycle = block.timestamp / 1 weeks; // block deploy in the same cycle
+    deployedToSurfin = deployedBookValue; // absolute reset (bidirectional)
+    accruedFee += feeAmount; // fee earmark set by multisig
+    if (lockedCoverAmount > 0) {
+      _finishLockedWithdraw(lockedCoverAmount);
+    }
+    emit SettleRecall(recalledAmount, lockedCoverAmount, feeAmount, deployedBookValue);
   }
 
   /* REPAY POOL QUEUES */
@@ -230,6 +188,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
    *      only advance batches.
    */
   function finishFlexWithdraw(uint256 amount) external onlyRole(BOT) {
+    require(amount <= _availableForWithdraw(), "exceeds available");
     if (amount > 0) {
       IERC20(asset).safeIncreaseAllowance(flexPool, amount);
     }
@@ -238,15 +197,14 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   }
 
   /**
-   * @dev repay the locked pool's batch queue (early-redeem pending) from idle funds.
-   *      Matured principal should instead be covered via releaseSettlement.
+   * @dev repay the locked pool's batch queue (early-redeem + matured) from idle
+   *      funds. BOT-callable so, if the weekly recall has not landed on time, the
+   *      bot can still cover locked withdrawals out of the buffer pool. Bounded by
+   *      the reserve guard (fee + hard floor) in _finishLockedWithdraw, which
+   *      settleRecall also reuses.
    */
   function finishLockedWithdraw(uint256 amount) external onlyRole(BOT) {
-    if (amount > 0) {
-      IERC20(asset).safeIncreaseAllowance(lockedPool, amount);
-    }
-    ICreditFundPool(lockedPool).finishWithdraw(amount);
-    emit FinishLockedWithdraw(amount);
+    _finishLockedWithdraw(amount);
   }
 
   /* FUND INTEREST */
@@ -259,23 +217,17 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   function fundInterest(uint256 amount) external onlyRole(BOT) {
     require(interestDistributor != address(0), "interestDistributor not set");
     require(amount > 0, "amount is zero");
-    require(_availableToEarmark() >= amount, "insufficient idle");
+    // interest may consume the hard floor (floor doubles as the interest reserve);
+    // only the fee earmark is protected. A drained floor blocks flex withdrawals
+    // via _availableForWithdraw until the next weekly recall tops it back up.
+    uint256 bal = IERC20(asset).balanceOf(address(this));
+    require(amount <= (bal > accruedFee ? bal - accruedFee : 0), "insufficient idle");
     IERC20(asset).safeIncreaseAllowance(interestDistributor, amount);
     IInterestDistributor(interestDistributor).notifyReward(asset, amount);
     emit FundInterest(amount);
   }
 
   /* PROFIT FEE (Lista share) */
-  /**
-   * @dev earmark accrued profit fee (Lista's share). Funds must already be idle.
-   */
-  function bookFee(uint256 amount) external onlyRole(BOT) {
-    require(amount > 0, "amount is zero");
-    require(_availableToEarmark() >= amount, "insufficient idle");
-    accruedFee += amount;
-    emit BookFee(amount);
-  }
-
   /**
    * @dev claim accrued fee to the fee receiver.
    */
@@ -289,124 +241,62 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
 
   /* VIEWS */
   /**
-   * @dev total instantly-available liquidity held by the adapter, including any
-   *      liquid yield source (PSM) when enabled.
+   * @dev instantly-available liquidity held by the adapter (raw asset balance).
    */
   function idleBalance() public view returns (uint256) {
-    uint256 bal = IERC20(asset).balanceOf(address(this));
-    bal += getVaultTotalAssets(); // 0 until PSM is enabled
-    return bal;
+    return IERC20(asset).balanceOf(address(this));
   }
 
   /**
-   * @dev freely usable idle funds after excluding the settlement reserve and fee.
+   * @dev freely usable idle funds after excluding the fee earmark.
    */
   function freeIdle() public view returns (uint256) {
     uint256 bal = idleBalance();
-    uint256 locked = settlementReserve + accruedFee;
-    return bal > locked ? bal - locked : 0;
-  }
-
-  function flexBufferTarget() public view returns (uint256) {
-    return (ICreditFundPool(flexPool).totalPrincipal() * flexBufferRate) / PRECISION;
-  }
-
-  function lockedBufferTarget() public view returns (uint256) {
-    return (ICreditFundPool(lockedPool).totalPrincipal() * lockedBufferRate) / PRECISION;
-  }
-
-  function flexFloor() public view returns (uint256) {
-    return (ICreditFundPool(flexPool).totalPrincipal() * flexFloorRate) / PRECISION;
-  }
-
-  function lockedFloor() public view returns (uint256) {
-    return (ICreditFundPool(lockedPool).totalPrincipal() * lockedFloorRate) / PRECISION;
+    return bal > accruedFee ? bal - accruedFee : 0;
   }
 
   /**
-   * @dev max amount that can be deployed to Surfin: free idle minus both pools'
-   *      pending withdrawals and both buffer targets.
+   * @dev floor base: both pools' live principal book, restored to the pre-burn
+   *      level by adding totalPendingWithdraw (principal is decremented at request
+   *      time, but the cash only leaves the adapter at finishWithdraw).
+   */
+  function _floorBase() internal view returns (uint256) {
+    return ICreditFundPool(flexPool).totalPrincipal() +
+      ICreditFundPool(flexPool).totalPendingWithdraw() +
+      ICreditFundPool(lockedPool).totalPrincipal() +
+      ICreditFundPool(lockedPool).totalPendingWithdraw();
+  }
+
+  /**
+   * @dev on-chain hard floor (3% of the floor base). Never paid out for flex/locked
+   *      withdrawals; doubles as the interest reserve.
+   */
+  function hardFloor() public view returns (uint256) {
+    return (_floorBase() * floorRate) / PRECISION;
+  }
+
+  /**
+   * @dev max amount deployable to Surfin: everything above the hard floor (free idle
+   *      already excludes the fee earmark). The 15% buffer / pending-withdrawal
+   *      liquidity is maintained off-chain by the multisig when sizing the deploy;
+   *      on-chain only the hard floor is reserved.
    */
   function maxDeployToSurfin() public view returns (uint256) {
     uint256 free = freeIdle();
-    uint256 reserved = ICreditFundPool(flexPool).totalPendingWithdraw() +
-      ICreditFundPool(lockedPool).totalPendingWithdraw() +
-      flexBufferTarget() +
-      lockedBufferTarget();
-    return free > reserved ? free - reserved : 0;
+    uint256 floor = hardFloor();
+    return free > floor ? free - floor : 0;
   }
 
   /**
-   * @dev informational: instantly withdrawable amount that can be paid to users,
-   *      down to the hard floors (buffer can be consumed to the floor for payouts).
+   * @dev informational: instantly withdrawable amount payable to users, i.e. cash
+   *      above the protected reserve (fee + hard floor).
    */
   function instantWithdrawable() external view returns (uint256) {
-    uint256 free = freeIdle();
-    uint256 reserved = ICreditFundPool(flexPool).totalPendingWithdraw() +
-      ICreditFundPool(lockedPool).totalPendingWithdraw() +
-      flexFloor() +
-      lockedFloor();
-    return free > reserved ? free - reserved : 0;
-  }
-
-  /**
-   * @dev total assets managed by the liquid yield source (PSM). 0 until enabled.
-   */
-  function getVaultTotalAssets() public view returns (uint256) {
-    if (vault == address(0) || shareToken == address(0)) {
-      return 0;
-    }
-    uint256 shares = IERC20(shareToken).balanceOf(address(this));
-    return IAsyncVault(vault).convertToAssets(shares);
-  }
-
-  /* PSM / VENUS CHANNEL (reserved, mirrors RWAAdapter) */
-  /**
-   * @dev request deposit of idle funds into the liquid yield vault (PSM).
-   */
-  function requestDepositToVault(uint256 amount) external onlyRole(BOT) whenNotPaused {
-    require(vault != address(0), "vault not set");
-    require(amount > 0, "amount is zero");
-    IERC20(asset).safeIncreaseAllowance(vault, amount);
-    IAsyncVault(vault).requestDeposit(amount, address(this), address(this));
-    emit RequestDepositToVault(amount);
-  }
-
-  /**
-   * @dev finish a pending deposit and mint vault shares.
-   */
-  function depositToVault() external onlyRole(BOT) whenNotPaused {
-    require(vault != address(0), "vault not set");
-    uint256 maxMint = IAsyncVault(vault).maxMint(address(this));
-    require(maxMint > 0, "maxMint is zero");
-    IAsyncVault(vault).mint(maxMint, address(this));
-    emit DepositToVault(maxMint);
-  }
-
-  /**
-   * @dev request redeem of vault shares back to idle asset.
-   */
-  function requestWithdrawFromVault(uint256 shares) external onlyRole(BOT) {
-    require(vault != address(0), "vault not set");
-    require(shares > 0, "shares is zero");
-    IERC20(shareToken).safeIncreaseAllowance(vault, shares);
-    IAsyncVault(vault).requestRedeem(shares, address(this), address(this));
-    emit RequestWithdrawFromVault(shares);
-  }
-
-  /**
-   * @dev finish a pending redeem, pulling asset back to the adapter.
-   */
-  function withdrawFromVault() external onlyRole(BOT) {
-    require(vault != address(0), "vault not set");
-    uint256 maxRedeem = IAsyncVault(vault).maxRedeem(address(this));
-    require(maxRedeem > 0, "maxRedeem is zero");
-    IAsyncVault(vault).redeem(maxRedeem, address(this), address(this));
-    emit WithdrawFromVault(maxRedeem);
+    return _availableForWithdraw();
   }
 
   /* MANAGER FUNCTIONS */
-  /// @dev emergency stop for outbound flows (deploy to Surfin, deposits to the PSM vault)
+  /// @dev emergency stop for outbound flows (deploy to Surfin)
   function pause() external onlyRole(PAUSER) {
     _pause();
   }
@@ -416,24 +306,10 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
     _unpause();
   }
 
-  function setBufferRates(
-    uint256 _flexBuffer,
-    uint256 _flexFloor,
-    uint256 _lockedBuffer,
-    uint256 _lockedFloor
-  ) external onlyRole(MANAGER) {
-    require(_flexFloor <= _flexBuffer && _flexBuffer <= PRECISION, "invalid flex rates");
-    require(_lockedFloor <= _lockedBuffer && _lockedBuffer <= PRECISION, "invalid locked rates");
-    flexBufferRate = _flexBuffer;
-    flexFloorRate = _flexFloor;
-    lockedBufferRate = _lockedBuffer;
-    lockedFloorRate = _lockedFloor;
-    emit SetBufferRates(_flexBuffer, _flexFloor, _lockedBuffer, _lockedFloor);
-  }
-
-  function setMaxDeployPerWeek(uint256 _maxDeployPerWeek) external onlyRole(MANAGER) {
-    maxDeployPerWeek = _maxDeployPerWeek;
-    emit SetMaxDeployPerWeek(_maxDeployPerWeek);
+  function setFloorRate(uint256 _floorRate) external onlyRole(MANAGER) {
+    require(_floorRate <= PRECISION, "invalid floor rate");
+    floorRate = _floorRate;
+    emit SetFloorRate(_floorRate);
   }
 
   function setSurfinWallet(address _surfinWallet) external onlyRole(MANAGER) {
@@ -461,15 +337,6 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   }
 
   /**
-   * @dev set the liquid yield source (PSM / Venus). shareToken is the vault's share token.
-   */
-  function setVault(address _vault, address _shareToken) external onlyRole(DEFAULT_ADMIN_ROLE) {
-    vault = _vault;
-    shareToken = _shareToken;
-    emit SetVault(_vault, _shareToken);
-  }
-
-  /**
    * @dev emergency token rescue by admin.
    */
   function emergencyWithdraw(address token, uint256 amount, address receiver) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -481,16 +348,27 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
 
   /* INTERNAL FUNCTIONS */
   /**
-   * @dev on-adapter asset balance available to earmark (excludes existing earmarks).
+   * @dev cash payable for flex/locked withdrawals: on-adapter balance minus the
+   *      protected reserve (fee earmark + hard floor).
    */
-  function _availableToEarmark() internal view returns (uint256) {
-    uint256 bal = IERC20(asset).balanceOf(address(this));
-    uint256 locked = settlementReserve + accruedFee;
-    return bal > locked ? bal - locked : 0;
+  function _availableForWithdraw() internal view returns (uint256) {
+    uint256 cash = IERC20(asset).balanceOf(address(this));
+    uint256 protectedAmt = accruedFee + hardFloor();
+    return cash > protectedAmt ? cash - protectedAmt : 0;
+  }
+
+  /**
+   * @dev shared locked-queue repay path, bounded by the reserve guard. Reused by
+   *      finishLockedWithdraw (BOT) and settleRecall.
+   */
+  function _finishLockedWithdraw(uint256 amount) internal {
+    require(amount <= _availableForWithdraw(), "exceeds available");
+    if (amount > 0) {
+      IERC20(asset).safeIncreaseAllowance(lockedPool, amount);
+    }
+    ICreditFundPool(lockedPool).finishWithdraw(amount);
+    emit FinishLockedWithdraw(amount);
   }
 
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
-
-  // reserve storage for future upgrades
-  uint256[44] private __gap;
 }

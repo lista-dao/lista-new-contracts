@@ -11,7 +11,7 @@ import { CreditFundBase } from "./CreditFundBase.sol";
  * @notice Locked (term) product of the Surfin Credit Fund (e.g. 3M+, 6M+).
  *
  * Each deposit joins a cohort (issuance batch). The cohort carries the
- * settlement-aligned interest-start (起息日) and maturity (到期日) dates, injected
+ * settlement-aligned interest-start and maturity dates, injected
  * off-chain by the manager and bounded on-chain, so every position in a batch
  * shares the same schedule and one update covers them all. A position snapshots
  * its base rate (`baseQuote`) at deposit for rate certainty. Early redemption
@@ -40,8 +40,8 @@ contract LockedEarnPool is CreditFundBase {
     uint256 termDays; // nominal lock term in days (bounds the maturity)
     uint256 baseQuote; // base APR, 1e18
     uint256 depositDeadline; // deposits accepted until this time
-    uint256 interestStartTime; // 起息日 / interest-accrual start (penalty anchor)
-    uint256 maturityTime; // 到期日 (settlement-aligned)
+    uint256 interestStartTime; // interest-accrual start (penalty anchor)
+    uint256 maturityTime; // maturity date (settlement-aligned)
     bool enabled; // open for deposit
   }
 
@@ -256,8 +256,8 @@ contract LockedEarnPool is CreditFundBase {
    * @param termDays nominal lock term in days
    * @param baseQuote base APR, 1e18
    * @param depositDeadline last time deposits are accepted into this cohort
-   * @param interestStartTime 起息日 (settlement-aligned)
-   * @param maturityTime 到期日 (settlement-aligned)
+   * @param interestStartTime interest-accrual start (settlement-aligned)
+   * @param maturityTime maturity date (settlement-aligned)
    * @param enabled whether the cohort is open for deposit
    */
   function setCohort(
@@ -293,7 +293,7 @@ contract LockedEarnPool is CreditFundBase {
    * @dev payout = amount - max(0, minPenalty - accruedBase)
    *      minPenalty  = amount * baseQuote * 30 / 365
    *      accruedBase = amount * baseQuote * elapsedDays / 365
-   *      elapsedDays counts from the cohort's 起息日 (0 before it starts).
+   *      elapsedDays counts from the cohort's interest-accrual start (0 before it starts).
    */
   function _earlyRedeemPayout(
     uint256 baseQuote,
@@ -310,7 +310,4 @@ contract LockedEarnPool is CreditFundBase {
     }
     return amount - (minPenalty - accruedBase);
   }
-
-  // reserve storage for future upgrades
-  uint256[47] private __gap;
 }

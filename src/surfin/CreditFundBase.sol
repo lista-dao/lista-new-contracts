@@ -158,6 +158,11 @@ abstract contract CreditFundBase is
     if (amount > 0) {
       IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
       withdrawQuota += amount;
+      // cap the received cash at the pool's real pending obligation so the adapter
+      // cannot over-push funds (relocating its floor/buffer) into the pool. Checked
+      // only on funding pushes (amount > 0); a 0-amount tick can always advance
+      // batches, so cancellations can never wedge batch confirmation.
+      require(withdrawQuota <= totalPendingWithdraw, "quota exceeds pending");
     }
 
     // confirm as many batches as the quota can fully cover, in order
