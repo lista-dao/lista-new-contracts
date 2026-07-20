@@ -54,6 +54,8 @@ contract LockedEarnPool is CreditFundBase {
   uint256 public constant MAX_START_DELAY = 7 days;
   // guardrail: maturity can be at most this far past the nominal term end
   uint256 public constant MAX_ALIGN_WINDOW = 31 days;
+  // auto-renew is locked within this window before maturity (T-30 checkpoint)
+  uint256 public constant AUTO_RENEW_LOCK_WINDOW = 30 days;
 
   /* VARIABLES */
   // user => positions
@@ -182,14 +184,15 @@ contract LockedEarnPool is CreditFundBase {
   }
 
   /**
-   * @dev toggle auto-renew for a position (allowed before maturity; the backend
-   *      locks changes from the T-30 checkpoint off-chain).
+   * @dev toggle auto-renew for a position. Enforced on-chain to be locked from the
+   *      T-30 checkpoint: no changes are allowed within AUTO_RENEW_LOCK_WINDOW of
+   *      maturity, so the settlement-day job can rely on a stable auto-renew flag.
    * @param posId the caller's position id
    */
   function toggleAutoRenew(uint256 posId) external whenNotPaused {
     Position storage pos = userPositions[msg.sender][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
-    require(block.timestamp < cohorts[pos.cohortId].maturityTime, "already matured");
+    require(block.timestamp + AUTO_RENEW_LOCK_WINDOW < cohorts[pos.cohortId].maturityTime, "auto renew locked (T-30)");
 
     pos.autoRenew = !pos.autoRenew;
     emit ToggleAutoRenew(msg.sender, posId, pos.autoRenew);
