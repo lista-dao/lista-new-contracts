@@ -1,0 +1,349 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import { AccessControlEnumerableUpgradeable } from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlEnumerableUpgradeable.sol";
+import { UUPSUpgradeable } from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import { PausableUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import { ReentrancyGuardUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+
+/**
+ * @title CreditFundBase
+ * @notice Shared base for the Surfin flex/locked earn pools.
+ *
+ * Design follows lista-new-contracts/src/rwa/RWAEarnPool.sol:
+ *  - deposits transfer funds straight to the adapter (pool keeps only accounting);
+ *  - withdrawals go through a daily batch queue that the adapter repays via
+ *    `finishWithdraw`, then users `claimWithdraw`;
+ *  - interest is booked separately from principal: principal is claimed as batch
+ *    withdrawals here, while interest is distributed off-pool via the cumulative
+ *    Merkle `InterestDistributor`.
+ *
+ * Principal bookkeeping differs between products (1:1 LP for flex, positions for
+ * locked) so `totalPrincipal` and the deposit/withdraw entrypoints are left to
+ * the child contract; everything shared lives here.
+ */
+abstract contract CreditFundBase is
+  UUPSUpgradeable,
+  AccessControlEnumerableUpgradeable,
+  PausableUpgradeable,
+  ReentrancyGuardUpgradeable
+{
+  using SafeERC20 for IERC20;
+
+  /* STRUCTS */
+  // batchId: batch the request belongs to
+  // withdrawTime: timestamp of the request
+  // amount: principal payout to release
+  // cohortId: source cohort for locked withdrawals (0 for flex, which has no cohorts)
+  struct WithdrawalRequest {
+    uint256 batchId;
+    uint256 withdrawTime;
+    uint256 amount;
+    uint256 cohortId;
+  }
+
+  /* VARIABLES */
+  // asset token address (USDT)
+  address public asset;
+  // adapter address (holds the funds, drives the pool)
+  address public adapter;
+  // pool display name / symbol
+  string public name;
+  string public symbol;
+
+  // user => withdrawal requests
+  mapping(address => WithdrawalRequest[]) internal userWithdrawalRequests;
+  // batch id => total withdraw amount in the batch
+  mapping(uint256 => uint256) public totalWithdrawAmountInBatch;
+  // amount received from adapter but not yet assigned to a confirmed batch
+  uint256 public withdrawQuota;
+  // current (open) batch id
+  uint256 public currentBatchId;
+  // last confirmed batch id
+  uint256 public confirmedBatchId;
+  // last epoch day a batch was opened
+  uint256 public lastDay;
+  // total principal requested for withdraw but not yet claimed
+  uint256 public totalPendingWithdraw;
+
+  // per-address per-day submitted withdraw amount, 0 disables the limit
+  uint256 public dailyLimit;
+  // epoch day => user => submitted amount
+  mapping(uint256 => mapping(address => uint256)) public dailySubmitted;
+
+  // minimum deposit amount, in asset units
+  uint256 public minDeposit;
+  // minimum withdraw amount, in asset units; a below-minimum request is only allowed
+  // when it drains the caller's whole balance/position (dust exit). 0 disables it.
+  uint256 public minWithdraw;
+  // when true, blocks new deposits and locked early redemptions (wind-down / stress
+  // mode); normal & matured withdrawals and claims stay open
+  bool public depositPaused;
+
+  /* CONSTANTS */
+  bytes32 public constant MANAGER = keccak256("MANAGER");
+  bytes32 public constant PAUSER = keccak256("PAUSER");
+  bytes32 public constant BOT = keccak256("BOT");
+  uint256 public constant PRECISION = 1 ether;
+
+  /* EVENTS */
+  event Transfer(address indexed from, address indexed to, uint256 value);
+  event Deposit(address indexed user, uint256 amount);
+  event RequestWithdraw(address indexed owner, address indexed receiver, uint256 batchId, uint256 amount);
+  event FinishWithdraw(uint256 batchId, uint256 amount);
+  event ClaimWithdrawal(address indexed user, uint256 idx, uint256 amount);
+  event CancelWithdrawal(address indexed user, uint256 idx, uint256 amount);
+  event SetMinDeposit(uint256 minDeposit);
+  event SetMinWithdraw(uint256 minWithdraw);
+  event SetDailyLimit(uint256 dailyLimit);
+  event SetAdapter(address adapter);
+  event SetDepositPaused(bool paused);
+  event EmergencyWithdraw(address token, uint256 amount);
+
+  /* INITIALIZER */
+  function __CreditFundBase_init(
+    address _admin,
+    address _manager,
+    address _pauser,
+    address _bot,
+    address _asset,
+    address _adapter,
+    string memory _name,
+    string memory _symbol
+  ) internal onlyInitializing {
+    require(_admin != address(0), "admin is zero address");
+    require(_manager != address(0), "manager is zero address");
+    require(_pauser != address(0), "pauser is zero address");
+    require(_bot != address(0), "bot is zero address");
+    require(_asset != address(0), "asset is zero address");
+    require(_adapter != address(0), "adapter is zero address");
+    require(bytes(_name).length > 0, "name is empty");
+    require(bytes(_symbol).length > 0, "symbol is empty");
+
+    __AccessControlEnumerable_init();
+    __Pausable_init();
+    __ReentrancyGuard_init();
+
+    _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+    _grantRole(MANAGER, _manager);
+    _grantRole(PAUSER, _pauser);
+    _grantRole(BOT, _bot);
+
+    asset = _asset;
+    adapter = _adapter;
+    name = _name;
+    symbol = _symbol;
+  }
+
+  /* MODIFIERS */
+  /// @dev gate for entry-side ops (deposits, locked early-redeem) during a wind-down
+  modifier whenDepositNotPaused() {
+    require(!depositPaused, "deposit paused");
+    _;
+  }
+
+  /* ABSTRACT */
+  /// @dev total user principal booked in the pool
+  function totalPrincipal() external view virtual returns (uint256);
+
+  /* ADAPTER-DRIVEN FUNCTIONS */
+  /**
+   * @dev repay the batch withdraw queue. Only the adapter can call.
+   * @param amount asset amount transferred in to cover pending batches (0 allowed to just tick batches)
+   */
+  function finishWithdraw(uint256 amount) external {
+    require(msg.sender == adapter, "only adapter can call");
+
+    if (amount > 0) {
+      IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
+      withdrawQuota += amount;
+      // cap the received cash at the pool's real pending obligation so the adapter
+      // cannot over-push funds (relocating its floor/buffer) into the pool. Checked
+      // only on funding pushes (amount > 0); a 0-amount tick can always advance
+      // batches, so cancellations can never wedge batch confirmation.
+      require(withdrawQuota <= totalPendingWithdraw, "quota exceeds pending");
+    }
+
+    // confirm as many batches as the quota can fully cover, in order
+    for (uint256 i = confirmedBatchId + 1; i <= currentBatchId; i++) {
+      uint256 withdrawAmount = totalWithdrawAmountInBatch[i];
+      if (withdrawAmount > withdrawQuota) {
+        break;
+      }
+      confirmedBatchId = i;
+      withdrawQuota -= withdrawAmount;
+      emit FinishWithdraw(i, withdrawAmount);
+    }
+  }
+
+  /* USER FUNCTIONS */
+  /**
+   * @dev claim principal of a confirmed withdrawal request.
+   * @param user the owner of the request
+   * @param idx the index of the request
+   */
+  function claimWithdraw(address user, uint256 idx) external whenNotPaused nonReentrant {
+    uint256 amount = _consumeConfirmedWithdraw(user, idx);
+    IERC20(asset).safeTransfer(user, amount);
+
+    emit ClaimWithdrawal(user, idx, amount);
+  }
+
+  /* VIEWS */
+  function getUserWithdrawalRequests(address user) external view returns (WithdrawalRequest[] memory) {
+    return userWithdrawalRequests[user];
+  }
+
+  /// @dev mirror the underlying asset's decimals so the 1:1 LP renders correctly
+  ///      on each chain (BSC USDT 18, ETH USDT 6).
+  function decimals() external view returns (uint8) {
+    return IERC20Metadata(asset).decimals();
+  }
+
+  /* MANAGER FUNCTIONS */
+  function setMinDeposit(uint256 _minDeposit) external onlyRole(MANAGER) {
+    require(minDeposit != _minDeposit, "same minDeposit");
+    minDeposit = _minDeposit;
+    emit SetMinDeposit(_minDeposit);
+  }
+
+  function setMinWithdraw(uint256 _minWithdraw) external onlyRole(MANAGER) {
+    require(minWithdraw != _minWithdraw, "same minWithdraw");
+    minWithdraw = _minWithdraw;
+    emit SetMinWithdraw(_minWithdraw);
+  }
+
+  function setDailyLimit(uint256 _dailyLimit) external onlyRole(MANAGER) {
+    require(dailyLimit != _dailyLimit, "same dailyLimit");
+    dailyLimit = _dailyLimit;
+    emit SetDailyLimit(_dailyLimit);
+  }
+
+  function setDepositPaused(bool _paused) external onlyRole(MANAGER) {
+    require(depositPaused != _paused, "same status");
+    depositPaused = _paused;
+    emit SetDepositPaused(_paused);
+  }
+
+  function setAdapter(address _adapter) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    require(_adapter != address(0), "adapter is zero address");
+    require(_adapter != adapter, "same adapter");
+    adapter = _adapter;
+    emit SetAdapter(_adapter);
+  }
+
+  function pause() external onlyRole(PAUSER) {
+    _pause();
+  }
+
+  function unpause() external onlyRole(MANAGER) {
+    _unpause();
+  }
+
+  /**
+   * @dev emergency token rescue. Interest/withdraw funds live in the pool, so
+   *      restrict to admin.
+   */
+  function emergencyWithdraw(address token, uint256 amount, address receiver) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    require(amount > 0, "amount is zero");
+    require(receiver != address(0), "receiver is zero address");
+    IERC20(token).safeTransfer(receiver, amount);
+    emit EmergencyWithdraw(token, amount);
+  }
+
+  /* INTERNAL HELPERS */
+  /**
+   * @dev enqueue a withdrawal request into the current/open batch.
+   * @param receiver the receiver of the payout
+   * @param amount the principal payout to queue
+   * @param cohortId source cohort for locked withdrawals (0 for flex, which has no cohorts)
+   */
+  function _enqueueWithdraw(address receiver, uint256 amount, uint256 cohortId) internal returns (uint256 batchId) {
+    // open a new batch on a new day, or when the current batch is already confirmed
+    uint256 day = block.timestamp / 1 days;
+    if (day > lastDay) {
+      lastDay = day;
+      ++currentBatchId;
+    } else if (currentBatchId == confirmedBatchId) {
+      ++currentBatchId;
+    }
+    batchId = currentBatchId;
+
+    userWithdrawalRequests[receiver].push(
+      WithdrawalRequest({ batchId: batchId, amount: amount, withdrawTime: block.timestamp, cohortId: cohortId })
+    );
+    totalWithdrawAmountInBatch[batchId] += amount;
+    totalPendingWithdraw += amount;
+  }
+
+  /**
+   * @dev remove an unconfirmed withdrawal request (for cancellation). Returns its amount.
+   */
+  function _removeWithdrawRequest(address user, uint256 idx) internal returns (uint256 amount) {
+    WithdrawalRequest[] storage reqs = userWithdrawalRequests[user];
+    require(idx < reqs.length, "invalid index");
+
+    WithdrawalRequest memory req = reqs[idx];
+    require(req.batchId > confirmedBatchId, "already confirmed");
+
+    reqs[idx] = reqs[reqs.length - 1];
+    reqs.pop();
+
+    totalWithdrawAmountInBatch[req.batchId] -= req.amount;
+    totalPendingWithdraw -= req.amount;
+    amount = req.amount;
+  }
+
+  /**
+   * @dev consume a confirmed (already-funded) withdrawal request: remove it and
+   *      decrement the pending total, returning its amount. Shared by claimWithdraw
+   *      (pays the user) and the locked pool's reinvest (rolls the funded principal
+   *      into a new term). The caller moves the cash after this returns.
+   */
+  function _consumeConfirmedWithdraw(address user, uint256 idx) internal returns (uint256 amount) {
+    WithdrawalRequest[] storage reqs = userWithdrawalRequests[user];
+    require(idx < reqs.length, "invalid index");
+
+    WithdrawalRequest memory req = reqs[idx];
+    require(req.batchId <= confirmedBatchId, "not able to claim yet");
+
+    // swap-pop remove
+    reqs[idx] = reqs[reqs.length - 1];
+    reqs.pop();
+
+    totalPendingWithdraw -= req.amount;
+    amount = req.amount;
+  }
+
+  /**
+   * @dev check and consume the per-address daily submit limit.
+   */
+  function _consumeDailyLimit(address user, uint256 amount) internal {
+    if (dailyLimit > 0) {
+      uint256 day = block.timestamp / 1 days;
+      require(dailySubmitted[day][user] + amount <= dailyLimit, "exceeds daily limit");
+      dailySubmitted[day][user] += amount;
+    }
+  }
+
+  /**
+   * @dev enforce the minimum-withdraw floor with a dust exit: a sub-minimum request
+   *      is only allowed when it drains the caller's whole remaining balance/position,
+   *      so a below-minimum remainder can never get stranded.
+   * @param amount the requested withdraw/redeem principal
+   * @param remaining the caller's full withdrawable balance/position principal
+   */
+  function _checkMinWithdraw(uint256 amount, uint256 remaining) internal view {
+    if (minWithdraw > 0 && amount < minWithdraw) {
+      require(amount == remaining, "below min withdraw");
+    }
+  }
+
+  function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
+
+  // reserve storage for future upgrades
+  uint256[47] private __gap;
+}
