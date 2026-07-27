@@ -182,10 +182,13 @@ abstract contract CreditFundBase is
   /* USER FUNCTIONS */
   /**
    * @dev claim principal of a confirmed withdrawal request.
+   *      Restricted to the request owner (or a BOT) to prevent third-party
+   *      front-running that mutates array indices via swap-and-pop.
    * @param user the owner of the request
    * @param idx the index of the request
    */
   function claimWithdraw(address user, uint256 idx) external whenNotPaused nonReentrant {
+    require(msg.sender == user || hasRole(BOT, msg.sender), "not authorized");
     uint256 amount = _consumeConfirmedWithdraw(user, idx);
     IERC20(asset).safeTransfer(user, amount);
 
