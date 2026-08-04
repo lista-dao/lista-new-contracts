@@ -35,3 +35,7 @@ interface BoundValidatorInterface {
     uint256 anchorPrice
   ) external view returns (bool);
 }
+
+interface IWNLP {
+  function getNlpByWnlp(uint256 amount) external view returns (uint256);
+}
