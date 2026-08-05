@@ -195,6 +195,11 @@ contract LockedEarnPool is CreditFundBase {
   ) external whenNotPaused onlyRole(BOT) nonReentrant {
     require(users.length == posIds.length, "length mismatch");
     for (uint256 i = 0; i < users.length; i++) {
+      Position storage pos = userPositions[users[i]][posIds[i]];
+      // skip already-closed or not-yet-matured positions instead of reverting the whole batch
+      if (pos.principal == 0 || pos.closed) continue;
+      if (block.timestamp < cohorts[pos.cohortId].maturityTime) continue;
+      if (pos.autoRenew) continue;
       _requestMaturityWithdraw(users[i], posIds[i]);
     }
   }
@@ -245,7 +250,11 @@ contract LockedEarnPool is CreditFundBase {
    * @param posId the matured position id
    * @param newCohortId the cohort to renew into
    */
-  function renewPosition(address user, uint256 posId, uint256 newCohortId) external onlyRole(BOT) nonReentrant {
+  function renewPosition(
+    address user,
+    uint256 posId,
+    uint256 newCohortId
+  ) external onlyRole(BOT) whenNotPaused whenDepositNotPaused nonReentrant {
     Position storage pos = userPositions[user][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
     require(pos.autoRenew, "auto renew off");
@@ -353,7 +362,7 @@ contract LockedEarnPool is CreditFundBase {
     uint256 maturityTime,
     bool enabled
   ) external {
-    require(termDays > 0, "term is zero");
+    require(termDays > AUTO_RENEW_LOCK_WINDOW / 1 days, "term too short");
     require(termDays <= MAX_TERM_DAYS, "term too long");
     uint256 nominalEnd = depositDeadline + termDays * 1 days;
     require(maturityTime >= nominalEnd, "maturity before term end");
