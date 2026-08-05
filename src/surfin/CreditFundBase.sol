@@ -187,9 +187,9 @@ abstract contract CreditFundBase is
    * @param user the owner of the request
    * @param idx the index of the request
    */
-  function claimWithdraw(address user, uint256 idx) external whenNotPaused nonReentrant {
+  function claimWithdraw(address user, uint256 idx, uint256 expectedAmount) external whenNotPaused nonReentrant {
     require(msg.sender == user || hasRole(BOT, msg.sender), "not authorized");
-    uint256 amount = _consumeConfirmedWithdraw(user, idx);
+    uint256 amount = _consumeConfirmedWithdraw(user, idx, expectedAmount);
     IERC20(asset).safeTransfer(user, amount);
 
     emit ClaimWithdrawal(user, idx, amount);
@@ -257,6 +257,26 @@ abstract contract CreditFundBase is
     emit EmergencyWithdraw(token, amount);
   }
 
+  /**
+   * @dev M03 fix: admin injects funds to cover shortfall when the fund is impaired,
+   *      bypassing the withdrawQuota <= totalPendingWithdraw cap so all batches can confirm.
+   */
+  function adminTopUp(uint256 amount) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+    require(amount > 0, "amount is zero");
+    IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
+    withdrawQuota += amount;
+
+    for (uint256 i = confirmedBatchId + 1; i <= currentBatchId; i++) {
+      uint256 withdrawAmount = totalWithdrawAmountInBatch[i];
+      if (withdrawAmount > withdrawQuota) {
+        break;
+      }
+      confirmedBatchId = i;
+      withdrawQuota -= withdrawAmount;
+      emit FinishWithdraw(i, withdrawAmount);
+    }
+  }
+
   /* INTERNAL HELPERS */
   /**
    * @dev enqueue a withdrawal request into the current/open batch.
@@ -285,11 +305,12 @@ abstract contract CreditFundBase is
   /**
    * @dev remove an unconfirmed withdrawal request (for cancellation). Returns its amount.
    */
-  function _removeWithdrawRequest(address user, uint256 idx) internal returns (uint256 amount) {
+  function _removeWithdrawRequest(address user, uint256 idx, uint256 expectedAmount) internal returns (uint256 amount) {
     WithdrawalRequest[] storage reqs = userWithdrawalRequests[user];
     require(idx < reqs.length, "invalid index");
 
     WithdrawalRequest memory req = reqs[idx];
+    require(req.amount == expectedAmount, "amount mismatch");
     require(req.batchId > confirmedBatchId, "already confirmed");
 
     reqs[idx] = reqs[reqs.length - 1];
@@ -298,6 +319,13 @@ abstract contract CreditFundBase is
     totalWithdrawAmountInBatch[req.batchId] -= req.amount;
     totalPendingWithdraw -= req.amount;
     amount = req.amount;
+
+    // M02 fix: return orphaned quota to adapter to restore withdrawQuota <= totalPendingWithdraw
+    if (withdrawQuota > totalPendingWithdraw) {
+      uint256 excess = withdrawQuota - totalPendingWithdraw;
+      withdrawQuota -= excess;
+      IERC20(asset).safeTransfer(adapter, excess);
+    }
   }
 
   /**
@@ -306,11 +334,16 @@ abstract contract CreditFundBase is
    *      (pays the user) and the locked pool's reinvest (rolls the funded principal
    *      into a new term). The caller moves the cash after this returns.
    */
-  function _consumeConfirmedWithdraw(address user, uint256 idx) internal returns (uint256 amount) {
+  function _consumeConfirmedWithdraw(
+    address user,
+    uint256 idx,
+    uint256 expectedAmount
+  ) internal returns (uint256 amount) {
     WithdrawalRequest[] storage reqs = userWithdrawalRequests[user];
     require(idx < reqs.length, "invalid index");
 
     WithdrawalRequest memory req = reqs[idx];
+    require(req.amount == expectedAmount, "amount mismatch");
     require(req.batchId <= confirmedBatchId, "not able to claim yet");
 
     // swap-pop remove

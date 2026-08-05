@@ -52,6 +52,8 @@ contract LockedEarnPool is CreditFundBase {
   uint256 public constant MAX_ALIGN_WINDOW = 31 days;
   // auto-renew is locked within this window before maturity (T-32 checkpoint)
   uint256 public constant AUTO_RENEW_LOCK_WINDOW = 32 days;
+  // upper bound on termDays to prevent absurd lock durations
+  uint256 public constant MAX_TERM_DAYS = 366;
 
   /* VARIABLES */
   // user => positions
@@ -280,14 +282,18 @@ contract LockedEarnPool is CreditFundBase {
    * @param idx the caller's confirmed (funded) withdrawal request index
    * @param newCohortId the cohort to reinvest into
    */
-  function reinvest(uint256 idx, uint256 newCohortId) external whenNotPaused whenDepositNotPaused nonReentrant {
+  function reinvest(
+    uint256 idx,
+    uint256 newCohortId,
+    uint256 expectedAmount
+  ) external whenNotPaused whenDepositNotPaused nonReentrant {
     Cohort memory c = cohorts[newCohortId];
     require(c.enabled, "cohort not enabled");
     require(block.timestamp <= c.depositDeadline, "deposit window closed");
 
     // consume the funded payout (same gate as claimWithdraw); its cash was pushed
     // into the pool by finishWithdraw and is sitting here now
-    uint256 principal = _consumeConfirmedWithdraw(msg.sender, idx);
+    uint256 principal = _consumeConfirmedWithdraw(msg.sender, idx, expectedAmount);
     require(principal >= minDeposit, "deposit below minimum");
 
     // book the new position first (CEI: all state settled before the external transfer)
@@ -330,9 +336,10 @@ contract LockedEarnPool is CreditFundBase {
   /* MANAGER FUNCTIONS */
   /**
    * @dev create or adjust a cohort (issuance batch). Dates are injected off-chain
-   *      but bounded on-chain: the maturity must land between the nominal term end
-   *      (deposit deadline + term) and MAX_ALIGN_WINDOW past it. This guardrail
-   *      keeps the manager from arbitrarily extending or shortening positions.
+   *      but bounded on-chain. Access control is split per the audit recommendation:
+   *      - BOT may create new cohorts or toggle the enabled flag of existing ones.
+   *      - Only MANAGER may modify the dates of an existing cohort, and the new
+   *        maturityTime is anchored to the stored value (±MAX_ALIGN_WINDOW).
    * @param cohortId the cohort id
    * @param termDays nominal lock term in days
    * @param depositDeadline last time deposits are accepted into this cohort
@@ -345,11 +352,31 @@ contract LockedEarnPool is CreditFundBase {
     uint256 depositDeadline,
     uint256 maturityTime,
     bool enabled
-  ) external onlyRole(BOT) {
+  ) external {
     require(termDays > 0, "term is zero");
+    require(termDays <= MAX_TERM_DAYS, "term too long");
     uint256 nominalEnd = depositDeadline + termDays * 1 days;
     require(maturityTime >= nominalEnd, "maturity before term end");
     require(maturityTime <= nominalEnd + MAX_ALIGN_WINDOW, "maturity too late");
+
+    Cohort storage existing = cohorts[cohortId];
+
+    if (existing.termDays == 0) {
+      // new cohort: BOT can create
+      _checkRole(BOT);
+    } else if (
+      termDays == existing.termDays &&
+      depositDeadline == existing.depositDeadline &&
+      maturityTime == existing.maturityTime
+    ) {
+      // only toggling enabled flag: BOT can do this
+      _checkRole(BOT);
+    } else {
+      // modifying dates of existing cohort: MANAGER only, anchored to stored maturity
+      _checkRole(MANAGER);
+      require(maturityTime <= existing.maturityTime + MAX_ALIGN_WINDOW, "maturity drift too late");
+      require(maturityTime + MAX_ALIGN_WINDOW >= existing.maturityTime, "maturity drift too early");
+    }
 
     cohorts[cohortId] = Cohort({
       termDays: termDays,
