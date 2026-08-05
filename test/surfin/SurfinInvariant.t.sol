@@ -65,7 +65,7 @@ contract FlexInvariantHandler is Test {
     for (uint256 i = 0; i < reqs.length; i++) {
       if (reqs[i].batchId <= flex.confirmedBatchId()) {
         vm.prank(a);
-        flex.claimWithdraw(a, i);
+        flex.claimWithdraw(a, i, reqs[i].amount);
         return;
       }
     }
@@ -77,7 +77,7 @@ contract FlexInvariantHandler is Test {
     for (uint256 i = 0; i < reqs.length; i++) {
       if (reqs[i].batchId > flex.confirmedBatchId()) {
         vm.prank(a);
-        flex.cancelWithdraw(i);
+        flex.cancelWithdraw(i, reqs[i].amount);
         return;
       }
     }
@@ -169,7 +169,7 @@ contract SurfinInvariant is SurfinTestBase {
     _assertConservation();
 
     vm.prank(alice);
-    flex.claimWithdraw(alice, 0); // alice +50k, flex 0, pending 0
+    flex.claimWithdraw(alice, 0, 50_000 ether); // alice +50k, flex 0, pending 0
     _assertConservation();
 
     // remaining idle can be deployed down to the (now smaller) floor

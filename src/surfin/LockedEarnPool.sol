@@ -94,6 +94,7 @@ contract LockedEarnPool is CreditFundBase {
   ) external initializer {
     __CreditFundBase_init(_admin, _manager, _pauser, _bot, _asset, _adapter, _name, _symbol);
     penaltyRate = 0.008 ether; // 0.8% default early-redeem penalty
+    emit SetPenaltyRate(penaltyRate);
   }
 
   /* EXTERNAL FUNCTIONS */
@@ -339,6 +340,8 @@ contract LockedEarnPool is CreditFundBase {
    */
   function previewEarlyRedeem(address user, uint256 posId, uint256 amount) external view returns (uint256) {
     Position memory pos = userPositions[user][posId];
+    require(pos.principal > 0 && !pos.closed, "invalid position");
+    require(amount <= pos.principal, "amount exceeds principal");
     return _earlyRedeemPayout(pos.depositTime, amount);
   }
 
@@ -424,4 +427,6 @@ contract LockedEarnPool is CreditFundBase {
     }
     return amount;
   }
+
+  uint256[50] private __gap;
 }

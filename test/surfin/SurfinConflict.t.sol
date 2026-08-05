@@ -38,7 +38,7 @@ contract SurfinConflict is SurfinTestBase {
     // CURRENT behavior: whenNotPaused reverts the claim.
     vm.prank(alice);
     vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
-    flex.claimWithdraw(alice, 0);
+    flex.claimWithdraw(alice, 0, 50_000 ether);
   }
 
   /// @dev The same divergence for interest: a valid, funded Merkle claim is blocked
@@ -75,7 +75,7 @@ contract SurfinConflict is SurfinTestBase {
     flex.setDepositPaused(true); // wind-down: blocks deposits, not claims
 
     vm.prank(alice);
-    flex.claimWithdraw(alice, 0); // succeeds
+    flex.claimWithdraw(alice, 0, 50_000 ether); // succeeds
     assertEq(usdt.balanceOf(alice), 50_000 ether, "claim stays open during wind-down");
   }
 
@@ -111,7 +111,7 @@ contract SurfinConflict is SurfinTestBase {
     vm.prank(bot);
     adapter.finishLockedWithdraw(49_600 ether);
     vm.prank(alice);
-    locked.claimWithdraw(alice, 0);
+    locked.claimWithdraw(alice, 0, 49_600 ether);
 
     // CURRENT: alice receives the penalized 49,600 even though the wait ran past
     // maturity. PRD §4.4 expects 50,000 (penalty voided) + full-term base interest.

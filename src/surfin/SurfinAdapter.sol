@@ -6,7 +6,6 @@ import { UUPSUpgradeable } from "@openzeppelin/contracts/proxy/utils/UUPSUpgrade
 import { PausableUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import { ICreditFundPool } from "./interface/ICreditFundPool.sol";
 import { IInterestDistributor } from "./interface/IInterestDistributor.sol";
@@ -27,7 +26,6 @@ import { IInterestDistributor } from "./interface/IInterestDistributor.sol";
  */
 contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeable, UUPSUpgradeable {
   using SafeERC20 for IERC20;
-  using Math for uint256;
 
   /* VARIABLES */
   // flex (demand) pool
@@ -116,6 +114,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
 
     // default hard floor: 3% of both pools' live book
     floorRate = 3 * 1e16;
+    emit SetFloorRate(floorRate);
   }
 
   /* DEPLOY TO SURFIN */
@@ -352,4 +351,6 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   }
 
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
+
+  uint256[50] private __gap;
 }

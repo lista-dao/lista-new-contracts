@@ -58,6 +58,7 @@ contract DeploySurfinBsc is Script {
 
   function run() public {
     require(block.chainid == 56, "expect BSC mainnet (chainId 56)");
+    require(SURFIN_WALLET != 0x000000000000000000000000000000000000dEaD, "replace SURFIN_WALLET placeholder");
 
     uint256 deployerPk = vm.envUint("DEPLOYER_PRIVATE_KEY");
     address deployer = vm.addr(deployerPk);

@@ -63,7 +63,7 @@ contract FlexEarnPoolTest is SurfinTestBase {
 
     // step 3 — claim: cash reaches the user wallet
     vm.prank(alice);
-    flex.claimWithdraw(alice, 0);
+    flex.claimWithdraw(alice, 0, 40_000 ether);
     assertEq(usdt.balanceOf(alice), 40_000 ether, "claimed to wallet");
     assertEq(flex.totalPendingWithdraw(), 0, "pending cleared only on claim");
   }
@@ -109,7 +109,7 @@ contract FlexEarnPoolTest is SurfinTestBase {
     flex.requestWithdraw(100_000 ether); // 100k of today's cap consumed
 
     vm.prank(alice);
-    flex.cancelWithdraw(0); // restores LP, but the daily quota is NOT given back
+    flex.cancelWithdraw(0, 100_000 ether); // restores LP, but the daily quota is NOT given back
 
     // 100k already counted + 150k new = 250k > 200k cap -> revert
     vm.prank(alice);
@@ -126,7 +126,7 @@ contract FlexEarnPoolTest is SurfinTestBase {
 
     uint256 adapterBal = usdt.balanceOf(address(adapter));
     vm.prank(alice);
-    flex.cancelWithdraw(0);
+    flex.cancelWithdraw(0, 40_000 ether);
 
     assertEq(flex.balanceOf(alice), 100_000 ether, "LP fully restored");
     assertEq(flex.totalPendingWithdraw(), 0, "pending removed");
@@ -143,7 +143,7 @@ contract FlexEarnPoolTest is SurfinTestBase {
 
     vm.prank(alice);
     vm.expectRevert("already confirmed");
-    flex.cancelWithdraw(0);
+    flex.cancelWithdraw(0, 40_000 ether);
   }
 
   function test_A4_claimBeforeConfirmationReverts() public {
@@ -153,6 +153,6 @@ contract FlexEarnPoolTest is SurfinTestBase {
 
     vm.prank(alice);
     vm.expectRevert("not able to claim yet");
-    flex.claimWithdraw(alice, 0);
+    flex.claimWithdraw(alice, 0, 40_000 ether);
   }
 }

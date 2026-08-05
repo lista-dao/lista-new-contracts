@@ -268,7 +268,7 @@ contract LockedEarnPoolTest is SurfinTestBase {
 
     uint256 adapterBefore = usdt.balanceOf(address(adapter));
     vm.prank(alice);
-    locked.reinvest(0, 2);
+    locked.reinvest(0, 2, 50_000 ether);
 
     LockedEarnPool.Position[] memory pos = locked.getUserPositions(alice);
     assertEq(pos.length, 2, "new position appended");
@@ -299,10 +299,10 @@ contract LockedEarnPoolTest is SurfinTestBase {
 
     vm.prank(alice);
     vm.expectRevert("deposit paused");
-    locked.reinvest(0, 2);
+    locked.reinvest(0, 2, 50_000 ether);
 
     vm.prank(alice);
-    locked.claimWithdraw(alice, 0);
+    locked.claimWithdraw(alice, 0, 50_000 ether);
     assertEq(usdt.balanceOf(alice), 50_000 ether, "claim remains available during wind-down");
   }
 
@@ -324,7 +324,7 @@ contract LockedEarnPoolTest is SurfinTestBase {
     locked.setCohort(3, 90, dl, nominalEnd + 31 days + 1, true); // beyond MAX_ALIGN_WINDOW
 
     vm.prank(bot);
-    vm.expectRevert("term is zero");
+    vm.expectRevert("term too short");
     locked.setCohort(4, 0, dl, nominalEnd, true);
   }
 

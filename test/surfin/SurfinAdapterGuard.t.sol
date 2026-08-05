@@ -166,7 +166,7 @@ contract SurfinAdapterGuard is Test {
     assertEq(flex.confirmedBatchId(), 0, "not yet confirmed");
 
     vm.prank(userA);
-    flex.cancelWithdraw(1); // cancel the 60k request -> batch1 now 40k, quota still 70k
+    flex.cancelWithdraw(1, 60_000 ether); // cancel the 60k request -> batch1 now 40k, quota still 70k
 
     // a 0-amount tick confirms the 40k batch despite the 30k surplus quota (no revert)
     vm.prank(bot);

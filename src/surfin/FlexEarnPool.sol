@@ -103,17 +103,17 @@ contract FlexEarnPool is CreditFundBase {
 
   /* INTERNAL FUNCTIONS */
   function _mint(address account, uint256 amount) internal {
-    require(account != address(0), "mint to the zero address");
     balanceOf[account] += amount;
     totalSupply += amount;
     emit Transfer(address(0), account, amount);
   }
 
   function _burn(address account, uint256 amount) internal {
-    require(account != address(0), "burn from the zero address");
     require(balanceOf[account] >= amount, "burn amount exceeds balance");
     balanceOf[account] -= amount;
     totalSupply -= amount;
     emit Transfer(account, address(0), amount);
   }
+
+  uint256[50] private __gap;
 }

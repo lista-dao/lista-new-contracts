@@ -101,7 +101,7 @@ abstract contract CreditFundBase is
   event SetDailyLimit(uint256 dailyLimit);
   event SetAdapter(address adapter);
   event SetDepositPaused(bool paused);
-  event EmergencyWithdraw(address token, uint256 amount);
+  event EmergencyWithdraw(address indexed token, address indexed receiver, uint256 amount);
 
   /* INITIALIZER */
   function __CreditFundBase_init(
@@ -154,7 +154,7 @@ abstract contract CreditFundBase is
    * @dev repay the batch withdraw queue. Only the adapter can call.
    * @param amount asset amount transferred in to cover pending batches (0 allowed to just tick batches)
    */
-  function finishWithdraw(uint256 amount) external {
+  function finishWithdraw(uint256 amount) external nonReentrant {
     require(msg.sender == adapter, "only adapter can call");
 
     if (amount > 0) {
@@ -254,7 +254,7 @@ abstract contract CreditFundBase is
     require(amount > 0, "amount is zero");
     require(receiver != address(0), "receiver is zero address");
     IERC20(token).safeTransfer(receiver, amount);
-    emit EmergencyWithdraw(token, amount);
+    emit EmergencyWithdraw(token, receiver, amount);
   }
 
   /**

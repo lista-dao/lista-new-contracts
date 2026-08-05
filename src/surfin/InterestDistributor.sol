@@ -49,7 +49,7 @@ contract InterestDistributor is
   /// @dev last time pending merkle root was set
   uint256 public lastSetTime;
 
-  /// @dev the waiting period before accepting the pending merkle root; 1 day by default
+  /// @dev the waiting period before accepting the pending merkle root; 6 hours by default
   uint256 public waitingPeriod;
 
   bytes32 public constant MANAGER = keccak256("MANAGER");
@@ -93,7 +93,7 @@ contract InterestDistributor is
     require(_token != address(0), "Invalid token address");
 
     __Pausable_init();
-    __AccessControl_init();
+    __AccessControlEnumerable_init();
 
     lastSetTime = type(uint256).max;
     waitingPeriod = 6 hours;
@@ -153,7 +153,7 @@ contract InterestDistributor is
     claimed[_account] = _totalAmount;
 
     uint256 amount = _totalAmount - claimedAmount;
-    if (amount > 0) IERC20(token).safeTransfer(_account, amount);
+    IERC20(token).safeTransfer(_account, amount);
 
     emit Claimed(_account, amount, _totalAmount);
   }
@@ -200,7 +200,10 @@ contract InterestDistributor is
   /// @dev Change waiting period.
   /// @param _waitingPeriod Waiting period to be set
   function changeWaitingPeriod(uint256 _waitingPeriod) external onlyRole(MANAGER) whenNotPaused {
-    require(_waitingPeriod >= 6 hours && _waitingPeriod != waitingPeriod, "Invalid waiting period");
+    require(
+      _waitingPeriod >= 6 hours && _waitingPeriod <= 7 days && _waitingPeriod != waitingPeriod,
+      "Invalid waiting period"
+    );
     waitingPeriod = _waitingPeriod;
 
     emit WaitingPeriodUpdated(_waitingPeriod);
@@ -226,4 +229,6 @@ contract InterestDistributor is
   }
 
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
+
+  uint256[50] private __gap;
 }

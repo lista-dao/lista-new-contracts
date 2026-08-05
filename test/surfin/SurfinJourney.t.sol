@@ -41,7 +41,7 @@ contract SurfinJourneyTest is SurfinTestBase {
 
     // 5. claim principal to the wallet
     vm.prank(alice);
-    flex.claimWithdraw(alice, 0);
+    flex.claimWithdraw(alice, 0, 10_000 ether);
     assertEq(usdt.balanceOf(alice), 10_000 ether, "principal fully returned via the queue");
 
     // 6. interest is separate: funded to, and claimed from, the distributor
@@ -96,7 +96,7 @@ contract SurfinJourneyTest is SurfinTestBase {
     vm.prank(bot);
     adapter.finishLockedWithdraw(49_600 ether);
     vm.prank(charlie);
-    locked.claimWithdraw(charlie, 0);
+    locked.claimWithdraw(charlie, 0, 49_600 ether);
 
     assertEq(usdt.balanceOf(charlie), 49_600 ether, "principal minus the 0.8% early-redeem penalty");
   }
@@ -126,7 +126,7 @@ contract SurfinJourneyTest is SurfinTestBase {
     assertEq(locked.confirmedBatchId(), 1, "settlement funds confirmed the matured batch");
 
     vm.prank(eve);
-    locked.claimWithdraw(eve, 0);
+    locked.claimWithdraw(eve, 0, 300_000 ether);
     assertEq(usdt.balanceOf(eve), 300_000 ether, "full principal, no penalty, cap-exempt");
   }
 
