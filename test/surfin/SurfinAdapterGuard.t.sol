@@ -151,9 +151,9 @@ contract SurfinAdapterGuard is Test {
     assertEq(flex.withdrawQuota(), 0, "no surplus quota");
   }
 
-  // partial funding followed by a cancellation must NOT wedge batch confirmation:
-  // the surplus-quota check runs only on funding pushes (amount > 0), so a 0-amount
-  // tick still confirms the shrunk batch and the remaining user can claim.
+  // partial funding followed by a cancellation must NOT wedge batch confirmation: the
+  // cancellation hands the now-unbacked surplus straight back to the adapter, and the
+  // shrunk batch confirms on the next tick.
   function test_finishFlexWithdraw_cancel_after_partial_fund_does_not_wedge() public {
     _depositFlex(userA, 100_000 ether);
     vm.startPrank(userA);
@@ -166,12 +166,66 @@ contract SurfinAdapterGuard is Test {
     assertEq(flex.confirmedBatchId(), 0, "not yet confirmed");
 
     vm.prank(userA);
-    flex.cancelWithdraw(1, 60_000 ether); // cancel the 60k request -> batch1 now 40k, quota still 70k
+    flex.cancelWithdraw(1, 60_000 ether); // cancel the 60k -> batch1 now 40k
+    assertEq(flex.withdrawQuota(), 40_000 ether, "surplus 30k returned to adapter");
 
-    // a 0-amount tick confirms the 40k batch despite the 30k surplus quota (no revert)
+    // a 0-amount tick confirms the 40k batch (no revert)
     vm.prank(bot);
     adapter.finishFlexWithdraw(0);
     assertEq(flex.confirmedBatchId(), 1, "batch confirmed by tick, no DoS");
+  }
+
+  // M02, the orphan the first predicate could not see.
+  //
+  // Comparing withdrawQuota against totalPendingWithdraw also counts confirmed-but-
+  // unclaimed payouts whose cash is already in the pool. A confirmed batch sitting in the
+  // queue therefore MASKS a surplus: the predicate stays false, the orphan survives the
+  // cancellation, and it only surfaces once the final claim drops pending to 0 — by which
+  // point funding pushes revert with "quota exceeds pending" and no 0-amount tick can
+  // drain it (the cancelled batch total is 0, so the confirmation loop subtracts nothing).
+  //
+  // Measured against the UNCONFIRMED obligation instead, the surplus is returned at the
+  // cancellation — the moment it actually stops backing anything.
+  function test_cancel_orphanQuota_returned_even_when_masked_by_confirmed_batch() public {
+    _depositFlex(userA, 100_000 ether);
+
+    vm.prank(userA);
+    flex.requestWithdraw(600 ether); // batch1
+    vm.warp(block.timestamp + 1 days); // roll to a new day so the next request opens batch2
+    vm.prank(userA);
+    flex.requestWithdraw(300 ether); // batch2
+
+    // partial fund: covers batch1 (600) exactly, leaving 299 that batch2 (300) cannot use
+    uint256 adapterBefore = usdt.balanceOf(address(adapter));
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(899 ether);
+    assertEq(flex.confirmedBatchId(), 1, "batch1 confirmed");
+    assertEq(flex.withdrawQuota(), 299 ether, "299 parked for batch2");
+    assertEq(flex.totalConfirmedUnclaimed(), 600 ether, "batch1 payout awaiting claim");
+
+    // cancel batch2 -> nothing unconfirmed is left, so the 299 backs nothing. The wider
+    // predicate (299 > totalPendingWithdraw 600) was false here and stranded it.
+    vm.prank(userA);
+    flex.cancelWithdraw(1, 300 ether);
+    assertEq(flex.withdrawQuota(), 0, "orphan quota returned at cancellation");
+    assertEq(usdt.balanceOf(address(adapter)), adapterBefore - 600 ether, "only batch1's cash left the adapter");
+
+    // the claim then unwinds both counters to zero...
+    vm.prank(userA);
+    flex.claimWithdraw(userA, 0, 600 ether);
+    assertEq(flex.totalPendingWithdraw(), 0, "queue drained");
+    assertEq(flex.totalConfirmedUnclaimed(), 0, "confirmed-unclaimed drained");
+    assertEq(flex.withdrawQuota(), 0, "no residue");
+
+    // ...and the funding channel is still open. With the orphan stranded the pool held 299
+    // against pending 0, so every finishFlexWithdraw(amount > 0) reverted from here on. The
+    // new request reuses the emptied batch2 (same day, still unconfirmed).
+    vm.prank(userA);
+    flex.requestWithdraw(500 ether);
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(500 ether);
+    assertEq(flex.confirmedBatchId(), 2, "funding still works after the sequence");
+    assertEq(flex.withdrawQuota(), 0, "fully consumed by the new batch");
   }
 
   // ---- finishLockedWithdraw is BOT-gated (recall-late buffer cover) ----

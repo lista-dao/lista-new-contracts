@@ -83,6 +83,15 @@ abstract contract CreditFundBase is
   // mode); normal & matured withdrawals and claims stay open
   bool public depositPaused;
 
+  // principal belonging to batches already confirmed but not yet claimed. Splits
+  // `totalPendingWithdraw` into its two halves:
+  //     totalPendingWithdraw = unconfirmed obligation + totalConfirmedUnclaimed
+  // Only the unconfirmed half still needs cash from the adapter — the confirmed half is
+  // already sitting in this contract and must not license further quota. Declared last
+  // (rather than next to totalPendingWithdraw) so no existing storage slot shifts; one
+  // slot is taken from __gap below.
+  uint256 public totalConfirmedUnclaimed;
+
   /* CONSTANTS */
   bytes32 public constant MANAGER = keccak256("MANAGER");
   bytes32 public constant PAUSER = keccak256("PAUSER");
@@ -160,14 +169,40 @@ abstract contract CreditFundBase is
     if (amount > 0) {
       IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
       withdrawQuota += amount;
-      // cap the received cash at the pool's real pending obligation so the adapter
-      // cannot over-push funds (relocating its floor/buffer) into the pool. Checked
-      // only on funding pushes (amount > 0); a 0-amount tick can always advance
+      // Cap the received cash at the obligation the adapter still owes cash for, so it
+      // cannot over-push funds (relocating its floor/buffer) into the pool.
+      //
+      // The bound is the UNCONFIRMED obligation, not totalPendingWithdraw: a confirmed
+      // batch's cash already sits in this contract, so counting it here would license a
+      // second, unbacked helping of quota. Under the wider bound a partial push followed
+      // by a cancellation left quota stranded behind the confirmed-unclaimed balance,
+      // invisible until the last claim dropped totalPendingWithdraw to 0.
+      //
+      // Checked only on funding pushes (amount > 0); a 0-amount tick can always advance
       // batches, so cancellations can never wedge batch confirmation.
-      require(withdrawQuota <= totalPendingWithdraw, "quota exceeds pending");
+      require(withdrawQuota <= _unconfirmedObligation(), "quota exceeds pending");
     }
 
-    // confirm as many batches as the quota can fully cover, in order
+    _confirmBatches();
+  }
+
+  /**
+   * @dev principal the adapter still has to send cash for: every queued request minus the
+   *      ones whose batch is already confirmed (whose payout is funded and waiting here).
+   *      Non-negative by construction — totalConfirmedUnclaimed only ever moves in lockstep
+   *      with a subset of totalPendingWithdraw — so the subtraction reverting would itself
+   *      signal broken accounting.
+   */
+  function _unconfirmedObligation() internal view returns (uint256) {
+    return totalPendingWithdraw - totalConfirmedUnclaimed;
+  }
+
+  /**
+   * @dev confirm as many batches as the quota can fully cover, in order. Shared by
+   *      finishWithdraw and adminTopUp so the two can never drift apart on the
+   *      totalConfirmedUnclaimed bookkeeping.
+   */
+  function _confirmBatches() internal {
     for (uint256 i = confirmedBatchId + 1; i <= currentBatchId; i++) {
       uint256 withdrawAmount = totalWithdrawAmountInBatch[i];
       if (withdrawAmount > withdrawQuota) {
@@ -175,6 +210,10 @@ abstract contract CreditFundBase is
       }
       confirmedBatchId = i;
       withdrawQuota -= withdrawAmount;
+      // the batch's payout is now funded and parked here awaiting claims: it leaves the
+      // unconfirmed obligation (which shrinks by the same amount the quota just did, so
+      // `withdrawQuota <= _unconfirmedObligation()` is preserved) and becomes claimable.
+      totalConfirmedUnclaimed += withdrawAmount;
       emit FinishWithdraw(i, withdrawAmount);
     }
   }
@@ -266,15 +305,7 @@ abstract contract CreditFundBase is
     IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
     withdrawQuota += amount;
 
-    for (uint256 i = confirmedBatchId + 1; i <= currentBatchId; i++) {
-      uint256 withdrawAmount = totalWithdrawAmountInBatch[i];
-      if (withdrawAmount > withdrawQuota) {
-        break;
-      }
-      confirmedBatchId = i;
-      withdrawQuota -= withdrawAmount;
-      emit FinishWithdraw(i, withdrawAmount);
-    }
+    _confirmBatches();
   }
 
   /* INTERNAL HELPERS */
@@ -320,9 +351,21 @@ abstract contract CreditFundBase is
     totalPendingWithdraw -= req.amount;
     amount = req.amount;
 
-    // M02 fix: return orphaned quota to adapter to restore withdrawQuota <= totalPendingWithdraw
-    if (withdrawQuota > totalPendingWithdraw) {
-      uint256 excess = withdrawQuota - totalPendingWithdraw;
+    // M02 fix: a cancellation is the ONLY operation that shrinks the unconfirmed obligation
+    // without spending quota, so it is the only place quota can end up exceeding what the
+    // pool still owes cash for. Return the orphan to the adapter, where the floor is
+    // measured, restoring `withdrawQuota <= _unconfirmedObligation()`.
+    //
+    // Measured against the unconfirmed half, not totalPendingWithdraw: the wider predicate
+    // stays false while a confirmed-unclaimed balance masks the excess, so the orphan would
+    // survive here and only surface once the last claim drained the mask.
+    //
+    // Claims need no counterpart: _consumeConfirmedWithdraw shrinks totalPendingWithdraw
+    // and totalConfirmedUnclaimed together, leaving the unconfirmed half — and therefore
+    // this bound — untouched.
+    uint256 unconfirmed = _unconfirmedObligation();
+    if (withdrawQuota > unconfirmed) {
+      uint256 excess = withdrawQuota - unconfirmed;
       withdrawQuota -= excess;
       IERC20(asset).safeTransfer(adapter, excess);
     }
@@ -350,7 +393,11 @@ abstract contract CreditFundBase is
     reqs[idx] = reqs[reqs.length - 1];
     reqs.pop();
 
+    // Both halves shrink together: the payout was funded when its batch confirmed, so it
+    // leaves the queue and the confirmed-unclaimed book at once. The unconfirmed
+    // obligation is unchanged, so no quota can be orphaned here.
     totalPendingWithdraw -= req.amount;
+    totalConfirmedUnclaimed -= req.amount;
     amount = req.amount;
   }
 
@@ -381,5 +428,5 @@ abstract contract CreditFundBase is
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
   // reserve storage for future upgrades
-  uint256[47] private __gap;
+  uint256[46] private __gap;
 }

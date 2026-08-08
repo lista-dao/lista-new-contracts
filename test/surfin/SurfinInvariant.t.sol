@@ -133,14 +133,34 @@ contract SurfinInvariant is SurfinTestBase {
   }
 
   /* ---- INV-3: the adapter never over-pushes past the pool's real obligation ---- */
-  /// @dev NOTE: `withdrawQuota <= totalPendingWithdraw` is deliberately NOT a global
-  ///      invariant. It is enforced only on funding pushes (finishWithdraw with
-  ///      amount > 0). A partially-funded batch that is then cancelled can strand
-  ///      surplus quota (quota > pending) until a later batch or a 0-amount tick
-  ///      consumes it — see finishWithdraw's comment and the existing
-  ///      SurfinAdapterGuard cancel-after-partial-fund regression. The always-true
-  ///      safety property is pool solvency (invariant_flexPoolSolvent above); the
-  ///      per-push guard is pinned by test_inv3_finishRevertsWhenQuotaExceedsPending.
+  /// @dev A global invariant once the bound is the UNCONFIRMED obligation rather than
+  ///      totalPendingWithdraw. The wider bound counts confirmed-but-unclaimed payouts
+  ///      whose cash already sits in the pool, so a partial fund followed by a
+  ///      cancellation could strand surplus quota behind that mask until the last claim
+  ///      exposed it. Cancellation now returns the orphan on the spot, so the property
+  ///      survives every action the handler can take.
+  ///
+  ///      Caveat: adminTopUp (M03) deliberately bypasses the cap to cover a shortfall on
+  ///      an impaired fund, so it can leave quota above this bound by design. The handler
+  ///      does not drive it; if it is ever added, exclude it here.
+  function invariant_quotaNeverExceedsUnconfirmedObligation() public view {
+    assertLe(
+      flex.withdrawQuota(),
+      flex.totalPendingWithdraw() - flex.totalConfirmedUnclaimed(),
+      "quota exceeds the obligation still awaiting adapter cash"
+    );
+  }
+
+  /// @dev the on-chain counter must always equal the payouts actually sitting confirmed in
+  ///      the queue — pins the += in _confirmBatches against the -= in
+  ///      _consumeConfirmedWithdraw, the pair the guard above depends on.
+  function invariant_confirmedUnclaimedMatchesQueue() public view {
+    assertEq(
+      flex.totalConfirmedUnclaimed(),
+      handler.confirmedUnclaimed(),
+      "totalConfirmedUnclaimed drifted from the queue"
+    );
+  }
 
   /* ---- INV-2: the on-chain hard floor is never paid out by withdrawal flows ---- */
   function invariant_floorNeverBreached() public view {
