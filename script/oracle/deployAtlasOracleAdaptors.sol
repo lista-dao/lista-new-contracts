@@ -23,7 +23,7 @@ contract DeployAtlasOracleAdaptors is Script {
     address deployer = vm.addr(deployerPrivateKey);
     console.log("Deployer:", deployer);
 
-    Feed[10] memory feeds = [
+    Feed[1] memory feeds = [
       // ----- Atlas tokenized-equity / RWA push feeds (already deployed) -----
       // Feed("TSLAB/USD", 0xC64bF44C23586aE5eab37775662Dc1E0c56469fe),
       // Feed("NVDAB/USD", 0x67d168bF5d7851a7b361bFFcf794696858F9697A),
@@ -87,17 +87,19 @@ contract DeployAtlasOracleAdaptors is Script {
       // Feed("PYPLB/USD", 0xDa558B15df524d5B5Bd97476B39719d1c905fE94),
       // Feed("SMHB/USD", 0xe2B67597992B3C6cB9F8e3fB4d0D9f1701737666),
       // Feed("SOXSB/USD", 0x301A76B9a8b1850eca41C222EB13dD6aE0271EcB)
-      // ----- Batch 9 tokenized-equity push feeds -----
-      Feed("ALABB/USD", 0x8892C690498947614Cea8Df4c9D2C34f19E89683),
-      Feed("ASMLB/USD", 0xbbbA17748075a4b3fA52c2D206e160d31f13b51f),
-      Feed("ASTSB/USD", 0xfe8FCD88da9B46d732012b99fc07E0141887Be9a),
-      Feed("BMNRB/USD", 0xd1c377DCA738b42c890B972Bac3520580D5a935b),
-      Feed("COHRB/USD", 0xBf28D1594873C15E47990eA9BF745388e35D0402),
-      Feed("CRDOB/USD", 0xF0460864E89268bA8072d4e9968F6D84A7caa34e),
-      Feed("IRENB/USD", 0x60896F4340fC7B192EBa9F105FdBE7c52f8Cf33e),
-      Feed("NFLXB/USD", 0x6237Ed53A501273e385cFD2bCd12Ce1Af9E1ACD0),
-      Feed("SMCIB/USD", 0xF2Ddb1a538A7E28837df9B8Ea200C0943E3fAd24),
-      Feed("USARB/USD", 0x3DC1CFF29b48Eb5074FC2d551A5433C181B62b51)
+      // ----- Batch 9 tokenized-equity push feeds (already deployed) -----
+      // Feed("ALABB/USD", 0x8892C690498947614Cea8Df4c9D2C34f19E89683),
+      // Feed("ASMLB/USD", 0xbbbA17748075a4b3fA52c2D206e160d31f13b51f),
+      // Feed("ASTSB/USD", 0xfe8FCD88da9B46d732012b99fc07E0141887Be9a),
+      // Feed("BMNRB/USD", 0xd1c377DCA738b42c890B972Bac3520580D5a935b),
+      // Feed("COHRB/USD", 0xBf28D1594873C15E47990eA9BF745388e35D0402),
+      // Feed("CRDOB/USD", 0xF0460864E89268bA8072d4e9968F6D84A7caa34e),
+      // Feed("IRENB/USD", 0x60896F4340fC7B192EBa9F105FdBE7c52f8Cf33e),
+      // Feed("NFLXB/USD", 0x6237Ed53A501273e385cFD2bCd12Ce1Af9E1ACD0),
+      // Feed("SMCIB/USD", 0xF2Ddb1a538A7E28837df9B8Ea200C0943E3fAd24),
+      // Feed("USARB/USD", 0x3DC1CFF29b48Eb5074FC2d551A5433C181B62b51)
+      // ----- Stablecoin push feeds -----
+      Feed("USDF/USD", 0x294Bb1BcF28985D62381879893237e02A2865385)
     ];
 
     vm.startBroadcast(deployerPrivateKey);
