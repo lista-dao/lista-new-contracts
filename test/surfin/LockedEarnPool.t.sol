@@ -41,7 +41,7 @@ contract LockedEarnPoolTest is SurfinTestBase {
     assertEq(payout, 49_600 ether, "flat 0.8% penalty (50,000 * 0.008 = 400)");
 
     vm.prank(alice);
-    locked.requestEarlyRedeem(0, 50_000 ether);
+    locked.requestEarlyRedeem(0, 50_000 ether, 0, block.timestamp);
 
     assertEq(locked.totalPendingWithdraw(), 49_600 ether, "penalized payout queued");
     LockedEarnPool.Position[] memory pos = locked.getUserPositions(alice);
@@ -67,7 +67,7 @@ contract LockedEarnPoolTest is SurfinTestBase {
 
     vm.warp(block.timestamp + 10 days);
     vm.prank(alice);
-    locked.requestEarlyRedeem(0, 20_000 ether); // partial
+    locked.requestEarlyRedeem(0, 20_000 ether, 0, block.timestamp); // partial
 
     LockedEarnPool.Position[] memory pos = locked.getUserPositions(alice);
     assertEq(pos[0].principal, 30_000 ether, "remaining principal stays in the position");
@@ -84,7 +84,7 @@ contract LockedEarnPoolTest is SurfinTestBase {
     vm.warp(block.timestamp + 92 days); // past maturity
     vm.prank(alice);
     vm.expectRevert("already matured");
-    locked.requestEarlyRedeem(0, 50_000 ether);
+    locked.requestEarlyRedeem(0, 50_000 ether, 0, block.timestamp);
   }
 
   /* --------------- B1b: preview only quotes executable redemptions --------------- */
@@ -133,7 +133,7 @@ contract LockedEarnPoolTest is SurfinTestBase {
     // and that is exactly what the real call does
     vm.prank(alice);
     vm.expectRevert("already matured");
-    locked.requestEarlyRedeem(0, 50_000 ether);
+    locked.requestEarlyRedeem(0, 50_000 ether, 0, block.timestamp);
   }
 
   function test_B1b_previewRejectsClosedPosition() public {
@@ -143,10 +143,62 @@ contract LockedEarnPoolTest is SurfinTestBase {
 
     vm.warp(block.timestamp + 10 days);
     vm.prank(alice);
-    locked.requestEarlyRedeem(0, 50_000 ether); // closes the position
+    locked.requestEarlyRedeem(0, 50_000 ether, 0, block.timestamp); // closes the position
 
     vm.expectRevert("invalid position");
     locked.previewEarlyRedeem(alice, 0, 50_000 ether);
+  }
+
+  /* ------------ B1c: early redeem carries slippage + staleness guards ------------ */
+
+  /**
+   * penaltyRate is MANAGER-mutable up to 10% and the payout is recomputed at
+   * execution, so a rate change landing between quote and submission silently
+   * repriced the redemption — and the resulting request cannot be cancelled.
+   */
+  function test_B1c_minPayoutRejectsARepricedRedemption() public {
+    vm.warp(T0);
+    _openCohort(1);
+    _depositLocked(alice, 1, 50_000 ether, false);
+    vm.warp(block.timestamp + 10 days); // inside the penalty window
+
+    uint256 quoted = locked.previewEarlyRedeem(alice, 0, 50_000 ether);
+    assertEq(quoted, 49_600 ether, "quoted at the default 0.8%");
+
+    // MANAGER raises the penalty to the 10% ceiling before alice's tx lands
+    vm.prank(manager);
+    locked.setPenaltyRate(0.1 ether);
+
+    vm.prank(alice);
+    vm.expectRevert("payout below minimum");
+    locked.requestEarlyRedeem(0, 50_000 ether, quoted, block.timestamp);
+
+    // the position is untouched — no principal removed, nothing queued
+    assertEq(locked.getUserPositions(alice)[0].principal, 50_000 ether, "position intact");
+    assertEq(locked.totalPendingWithdraw(), 0, "nothing queued at the worse price");
+
+    // accepting the new price explicitly still works
+    vm.prank(alice);
+    locked.requestEarlyRedeem(0, 50_000 ether, 45_000 ether, block.timestamp);
+    assertEq(locked.totalPendingWithdraw(), 45_000 ether, "10% penalty, accepted knowingly");
+  }
+
+  function test_B1c_deadlineRejectsAStaleTransaction() public {
+    vm.warp(T0);
+    _openCohort(1);
+    _depositLocked(alice, 1, 50_000 ether, false);
+
+    uint256 deadline = block.timestamp + 1 hours;
+    vm.warp(block.timestamp + 2 hours); // tx sat in the mempool past its deadline
+
+    vm.prank(alice);
+    vm.expectRevert("deadline expired");
+    locked.requestEarlyRedeem(0, 50_000 ether, 0, deadline);
+
+    // exactly at the deadline is still accepted (guard uses '<=')
+    vm.prank(alice);
+    locked.requestEarlyRedeem(0, 50_000 ether, 0, block.timestamp);
+    assertEq(locked.totalPendingWithdraw(), 49_600 ether);
   }
 
   /* --------------------- B2: early redeem is irreversible --------------------- */
@@ -158,7 +210,7 @@ contract LockedEarnPoolTest is SurfinTestBase {
 
     vm.warp(block.timestamp + 10 days);
     vm.prank(alice);
-    locked.requestEarlyRedeem(0, 50_000 ether);
+    locked.requestEarlyRedeem(0, 50_000 ether, 0, block.timestamp);
 
     // Unlike FlexEarnPool, LockedEarnPool exposes no cancelWithdraw. The position is
     // closed and the queued payout can only be consumed via claimWithdraw after
@@ -188,7 +240,7 @@ contract LockedEarnPoolTest is SurfinTestBase {
     // same day: a 200k locked early-redeem must still pass on its own counter
     _depositLocked(alice, 1, 200_000 ether, false);
     vm.prank(alice);
-    locked.requestEarlyRedeem(0, 200_000 ether);
+    locked.requestEarlyRedeem(0, 200_000 ether, 0, block.timestamp);
     assertEq(locked.totalPendingWithdraw(), 200_000 ether, "locked daily counter is separate from flex");
   }
 

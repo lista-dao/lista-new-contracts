@@ -153,21 +153,37 @@ contract LockedEarnPool is CreditFundBase {
    *      deposit, a flat `penaltyRate` on the redeemed principal is deducted. The
    *      payout enters the batch queue. The position stays open with reduced
    *      principal, or is closed once fully redeemed.
+   *      `penaltyRate` is mutable (MANAGER, up to MAX_PENALTY_RATE) and the
+   *      payout is recomputed at execution, so a rate change landing between quote and
+   *      submission silently repriced the redemption — a 50,000 exit quoted at 0.8%
+   *      could settle at 10%, removing the full principal from the position and
+   *      queueing a request that cannot be cancelled. `minPayout` and `deadline` give
+   *      the caller the usual slippage/staleness guard over that window.
    * @param posId the caller's position id
    * @param amount the principal amount to early-redeem
+   * @param minPayout lowest acceptable payout; pass the `previewEarlyRedeem` quote
+   * @param deadline last timestamp this request may execute at
    */
-  function requestEarlyRedeem(uint256 posId, uint256 amount) external whenNotPaused whenDepositNotPaused nonReentrant {
+  function requestEarlyRedeem(
+    uint256 posId,
+    uint256 amount,
+    uint256 minPayout,
+    uint256 deadline
+  ) external whenNotPaused whenDepositNotPaused nonReentrant {
+    require(block.timestamp <= deadline, "deadline expired");
+
     Position storage pos = userPositions[msg.sender][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
     require(amount > 0 && amount <= pos.principal, "invalid amount");
 
     // min-withdraw floor with dust exit: a sub-min redeem must clear the position
-    _checkMinWithdraw(amount, pos.principal);
+    _checkMinWithdraw(msg.sender, amount, pos.principal);
 
     uint256 cohortId = pos.cohortId;
     require(block.timestamp < cohorts[cohortId].maturityTime, "already matured");
 
     uint256 payout = _earlyRedeemPayout(pos.depositTime, amount);
+    require(payout >= minPayout, "payout below minimum");
 
     pos.principal -= amount;
     if (pos.principal == 0) {
@@ -399,7 +415,7 @@ contract LockedEarnPool is CreditFundBase {
     Position memory pos = userPositions[user][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
     require(amount > 0 && amount <= pos.principal, "invalid amount");
-    _checkMinWithdraw(amount, pos.principal);
+    _checkMinWithdraw(user, amount, pos.principal);
     require(block.timestamp < cohorts[pos.cohortId].maturityTime, "already matured");
     return _earlyRedeemPayout(pos.depositTime, amount);
   }

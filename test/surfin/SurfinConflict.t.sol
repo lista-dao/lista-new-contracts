@@ -138,7 +138,7 @@ contract SurfinConflict is SurfinTestBase {
     uint256 payout = locked.previewEarlyRedeem(alice, 0, 50_000 ether);
     assertEq(payout, 49_600 ether, "0.8% penalty applied inside the window");
     vm.prank(alice);
-    locked.requestEarlyRedeem(0, 50_000 ether); // enqueues 49,600; position closed
+    locked.requestEarlyRedeem(0, 50_000 ether, 0, block.timestamp); // enqueues 49,600; position closed
 
     // the request sits unfunded until well past the position's maturity
     vm.warp(block.timestamp + 100 days);

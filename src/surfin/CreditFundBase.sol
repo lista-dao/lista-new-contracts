@@ -256,14 +256,25 @@ abstract contract CreditFundBase is
     emit SetMinDeposit(_minDeposit);
   }
 
+  /**
+   * @dev the floor and the cap have to leave a usable window between them.
+   *      Configured independently they could cross — minWithdraw 500 against a
+   *      dailyLimit of 100 leaves a holder of 1,000 with no legal amount at all: 500
+   *      breaks the cap, 100 breaks the floor, and 1,000 breaks the cap too. The dust
+   *      exit does not save them either, since draining the balance also exceeds the
+   *      cap. Either limit may still be 0 (disabled) independently.
+   */
   function setMinWithdraw(uint256 _minWithdraw) external onlyRole(MANAGER) {
     require(minWithdraw != _minWithdraw, "same minWithdraw");
+    require(_minWithdraw == 0 || dailyLimit == 0 || _minWithdraw <= dailyLimit, "min above daily limit");
     minWithdraw = _minWithdraw;
     emit SetMinWithdraw(_minWithdraw);
   }
 
+  /// @dev see setMinWithdraw for why the two are checked against each other.
   function setDailyLimit(uint256 _dailyLimit) external onlyRole(MANAGER) {
     require(dailyLimit != _dailyLimit, "same dailyLimit");
+    require(_dailyLimit == 0 || minWithdraw == 0 || minWithdraw <= _dailyLimit, "daily limit below min");
     dailyLimit = _dailyLimit;
     emit SetDailyLimit(_dailyLimit);
   }
@@ -417,16 +428,54 @@ abstract contract CreditFundBase is
   }
 
   /**
-   * @dev enforce the minimum-withdraw floor with a dust exit: a sub-minimum request
-   *      is only allowed when it drains the caller's whole remaining balance/position,
-   *      so a below-minimum remainder can never get stranded.
+   * @dev enforce the minimum-withdraw floor with a dust exit: a sub-minimum request is
+   *      only allowed when it drains the caller's whole remaining balance/position, so
+   *      a below-minimum remainder can never get stranded.
+   *
+   *      "Drains the balance" cannot be measured against the live balance alone,
+   *      which a cancellable request can put straight back. Hold 100 with a 50 floor:
+   *      request 90, then request the last 10 as a dust exit, then cancel the 90 and
+   *      the LP returns — leaving a 10 request sitting in the settlement queue, below
+   *      the configured minimum, with the position never actually exited. Repeatable,
+   *      so the floor becomes advisory and dust can be injected into any open batch.
+   *      A dust exit therefore also requires that nothing is pending that could be
+   *      cancelled back into spendable balance.
+   * @param user the caller whose position is being drained
    * @param amount the requested withdraw/redeem principal
    * @param remaining the caller's full withdrawable balance/position principal
    */
-  function _checkMinWithdraw(uint256 amount, uint256 remaining) internal view {
+  function _checkMinWithdraw(address user, uint256 amount, uint256 remaining) internal view {
     if (minWithdraw > 0 && amount < minWithdraw) {
       require(amount == remaining, "below min withdraw");
+      require(!_hasCancellableRequest(user), "cancellable request pending");
     }
+  }
+
+  /**
+   * @dev does `user` hold a queued request they could still cancel back into spendable
+   *      balance? Only meaningful where the pool offers a cancel path — see
+   *      `_cancelSupported`. Loops the caller's own (self-bounded) request list, and
+   *      only on the dust-exit branch, so the cost lands on the one caller who triggers
+   *      it rather than on every withdrawal.
+   */
+  function _hasCancellableRequest(address user) internal view returns (bool) {
+    if (!_cancelSupported()) return false;
+    WithdrawalRequest[] storage reqs = userWithdrawalRequests[user];
+    uint256 confirmed = confirmedBatchId;
+    for (uint256 i = 0; i < reqs.length; i++) {
+      if (reqs[i].batchId > confirmed) return true;
+    }
+    return false;
+  }
+
+  /**
+   * @dev whether an unconfirmed request in this pool can be reversed by its owner.
+   *      Flex re-mints the LP on `cancelWithdraw`; the locked pool has no cancel
+   *      entrypoint at all, so its queued redemptions can never come back and must not
+   *      be allowed to block an honest dust exit.
+   */
+  function _cancelSupported() internal pure virtual returns (bool) {
+    return false;
   }
 
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}

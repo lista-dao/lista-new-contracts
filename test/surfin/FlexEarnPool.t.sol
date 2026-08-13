@@ -13,6 +13,96 @@ import "./SurfinTestBase.sol";
  *  - A4 cancel only unlocks the LP, moves no cash; confirmed requests can't cancel (§4.5)
  */
 contract FlexEarnPoolTest is SurfinTestBase {
+  /* ---------------- A6: the two withdraw limits must not cross ---------------- */
+
+  /**
+   * minWithdraw 500 against dailyLimit 100 leaves a 1,000 holder with no legal
+   * amount: 500 breaks the cap, 100 breaks the floor, 1,000 breaks the cap. The dust
+   * exit does not rescue them either, since draining also exceeds the cap. The setters
+   * now refuse the crossing configuration from either direction.
+   */
+  function test_A6_limitsCannotCross() public {
+    vm.startPrank(manager);
+
+    flex.setDailyLimit(100 ether);
+    vm.expectRevert("min above daily limit");
+    flex.setMinWithdraw(500 ether);
+
+    // and from the other side
+    flex.setDailyLimit(1_000 ether);
+    flex.setMinWithdraw(500 ether);
+    vm.expectRevert("daily limit below min");
+    flex.setDailyLimit(100 ether);
+
+    vm.stopPrank();
+    assertEq(flex.minWithdraw(), 500 ether, "rejected config was not applied");
+    assertEq(flex.dailyLimit(), 1_000 ether);
+  }
+
+  /// @dev either limit may still be switched off independently.
+  function test_A6_zeroDisablesEitherLimitIndependently() public {
+    vm.startPrank(manager);
+    flex.setDailyLimit(1_000 ether);
+    flex.setMinWithdraw(500 ether);
+
+    flex.setDailyLimit(0); // cap off, floor stays
+    flex.setMinWithdraw(5_000 ether); // now unconstrained
+    flex.setMinWithdraw(0); // floor off
+    flex.setDailyLimit(100 ether); // cap back, unconstrained
+    vm.stopPrank();
+
+    assertEq(flex.minWithdraw(), 0);
+    assertEq(flex.dailyLimit(), 100 ether);
+  }
+
+  /* ------------- A7: the dust exit cannot be recycled via cancel ------------- */
+
+  /**
+   * The reported bypass: request 90 of a 100 balance, then request the last 10 as a
+   * "dust exit", then cancel the 90 and get the LP back — leaving a 10 request in the
+   * settlement queue below the configured floor, with the position never exited.
+   * Repeatable, so the floor becomes advisory.
+   */
+  function test_A7_dustExitBlockedWhileACancellableRequestIsPending() public {
+    vm.prank(manager);
+    flex.setMinWithdraw(50 ether);
+    _depositFlex(alice, 100 ether);
+
+    vm.prank(alice);
+    flex.requestWithdraw(90 ether); // above the floor, still cancellable
+
+    vm.prank(alice);
+    vm.expectRevert("cancellable request pending");
+    flex.requestWithdraw(10 ether); // would have passed as a dust exit
+
+    // the floor itself is unchanged for ordinary amounts
+    vm.prank(alice);
+    vm.expectRevert("below min withdraw");
+    flex.requestWithdraw(9 ether);
+  }
+
+  /// @dev an honest dust exit still works: nothing cancellable is left behind.
+  function test_A7_dustExitAllowedOnceNothingIsCancellable() public {
+    vm.prank(manager);
+    flex.setMinWithdraw(50 ether);
+    _depositFlex(alice, 100 ether);
+
+    vm.prank(alice);
+    flex.requestWithdraw(90 ether);
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(90 ether); // confirmed -> no longer cancellable
+
+    vm.prank(alice);
+    flex.requestWithdraw(10 ether); // drains the balance, nothing to recycle
+    assertEq(flex.balanceOf(alice), 0, "position genuinely exited");
+
+    // a clean single dust exit with no queue at all also still works
+    _depositFlex(bob, 10 ether);
+    vm.prank(bob);
+    flex.requestWithdraw(10 ether);
+    assertEq(flex.balanceOf(bob), 0);
+  }
+
   /* ----------------------------- A1: deposit ----------------------------- */
 
   function test_A1_depositMints1to1AndForwardsToAdapter() public {
