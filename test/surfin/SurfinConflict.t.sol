@@ -17,9 +17,10 @@ contract SurfinConflict is SurfinTestBase {
    *
    * PRD §4.9: claim-type actions are NOT subject to pause; already-funded money must
    *           stay claimable even in the Frozen state ("users always have an exit").
-   * CONTRACT: CreditFundBase.claimWithdraw and InterestDistributor.claim both carry
+   * CONTRACT: claimWithdraw, cancelWithdraw and InterestDistributor.claim all carry
    *           whenNotPaused, so pausing blocks users from claiming funds that were
-   *           already pushed to them.
+   *           already pushed to them. Kept deliberately: pause is a full stop, and the
+   *           admin's emergencyWithdraw is the escape hatch during an incident.
    * ==========================================================================*/
 
   /// @dev A confirmed, fully-funded flex withdrawal becomes unclaimable once paused.
@@ -41,6 +42,22 @@ contract SurfinConflict is SurfinTestBase {
     flex.claimWithdraw(alice, 0, 50_000 ether);
   }
 
+  /// @dev The LP is burned at request time, so a paused user holds neither LP nor a
+  ///      claimable payout until the pool is unpaused or the request is funded.
+  function test_conflict1_flexCancelBlockedByPause_divergesFromPRD() public {
+    _depositFlex(alice, 100_000 ether);
+    vm.prank(alice);
+    flex.requestWithdraw(50_000 ether);
+    assertEq(flex.balanceOf(alice), 50_000 ether, "LP burned at request time");
+
+    vm.prank(pauser);
+    flex.pause();
+
+    vm.prank(alice);
+    vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+    flex.cancelWithdraw(0, 50_000 ether);
+  }
+
   /// @dev The same divergence for interest: a valid, funded Merkle claim is blocked
   ///      while the distributor is paused. PRD §4.9 expects interest claims to remain open.
   function test_conflict1_interestClaimBlockedByPause_divergesFromPRD() public {
@@ -59,6 +76,26 @@ contract SurfinConflict is SurfinTestBase {
     // PRD §4.9 expectation: alice claims her 1k interest. CURRENT: whenNotPaused reverts.
     vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
     distributor.claim(alice, 1_000 ether, proof);
+  }
+
+  /// @dev batchClaim reaches the shared claim body directly, so it carries its own gate
+  ///      rather than inheriting one from claim().
+  function test_conflict1_batchClaimBlockedByPause() public {
+    _depositFlex(alice, 100_000 ether);
+    vm.prank(manager);
+    adapter.fundInterest(1_000 ether);
+    _publishRoot(_leaf(alice, 1_000 ether));
+
+    vm.prank(pauser);
+    distributor.pause();
+
+    address[] memory accounts = new address[](1);
+    uint256[] memory totals = new uint256[](1);
+    bytes32[][] memory proofs = new bytes32[][](1);
+    (accounts[0], totals[0], proofs[0]) = (alice, 1_000 ether, new bytes32[](0));
+
+    vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+    distributor.batchClaim(accounts, totals, proofs);
   }
 
   /// @dev Counter-check: depositPaused (wind-down) intentionally does NOT block claims

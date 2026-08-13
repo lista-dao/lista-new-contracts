@@ -175,7 +175,7 @@ contract SurfinAdapterGuard is Test {
     assertEq(flex.confirmedBatchId(), 1, "batch confirmed by tick, no DoS");
   }
 
-  // M02, the orphan the first predicate could not see.
+  // the orphan a `totalPendingWithdraw` bound could not see.
   //
   // Comparing withdrawQuota against totalPendingWithdraw also counts confirmed-but-
   // unclaimed payouts whose cash is already in the pool. A confirmed batch sitting in the

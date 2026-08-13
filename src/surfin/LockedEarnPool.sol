@@ -348,7 +348,7 @@ contract LockedEarnPool is CreditFundBase {
   /* MANAGER FUNCTIONS */
   /**
    * @dev create or adjust a cohort (issuance batch). Dates are injected off-chain
-   *      but bounded on-chain. Access control is split per the audit recommendation:
+   *      but bounded on-chain. Access control is split:
    *      - BOT may create new cohorts or toggle the enabled flag of existing ones.
    *      - Only MANAGER may modify the dates of an existing cohort, and the new
    *        maturityTime is anchored to the stored value (±MAX_ALIGN_WINDOW).

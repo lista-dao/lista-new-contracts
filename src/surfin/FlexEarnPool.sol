@@ -86,7 +86,7 @@ contract FlexEarnPool is CreditFundBase {
   /**
    * @dev cancel an unconfirmed withdrawal request in full; restores the LP.
    * @param idx the index of the caller's withdrawal request
-   * @param expectedAmount the expected request amount (M04 fix: prevents swap-and-pop mismatch)
+   * @param expectedAmount the expected request amount; guards against swap-and-pop index drift
    */
   function cancelWithdraw(uint256 idx, uint256 expectedAmount) external whenNotPaused nonReentrant {
     uint256 amount = _removeWithdrawRequest(msg.sender, idx, expectedAmount);

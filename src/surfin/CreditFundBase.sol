@@ -226,7 +226,11 @@ abstract contract CreditFundBase is
    * @param user the owner of the request
    * @param idx the index of the request
    */
-  function claimWithdraw(address user, uint256 idx, uint256 expectedAmount) external whenNotPaused nonReentrant {
+  function claimWithdraw(
+    address user,
+    uint256 idx,
+    uint256 expectedAmount
+  ) external whenNotPaused nonReentrant {
     require(msg.sender == user || hasRole(BOT, msg.sender), "not authorized");
     uint256 amount = _consumeConfirmedWithdraw(user, idx, expectedAmount);
     IERC20(asset).safeTransfer(user, amount);
@@ -297,8 +301,8 @@ abstract contract CreditFundBase is
   }
 
   /**
-   * @dev M03 fix: admin injects funds to cover shortfall when the fund is impaired,
-   *      bypassing the withdrawQuota <= totalPendingWithdraw cap so all batches can confirm.
+   * @dev admin injects funds to cover a shortfall when the fund is impaired, bypassing
+   *      the funding cap so the queued batches can still confirm.
    */
   function adminTopUp(uint256 amount) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
     require(amount > 0, "amount is zero");
@@ -351,7 +355,7 @@ abstract contract CreditFundBase is
     totalPendingWithdraw -= req.amount;
     amount = req.amount;
 
-    // M02 fix: a cancellation is the ONLY operation that shrinks the unconfirmed obligation
+    // A cancellation is the ONLY operation that shrinks the unconfirmed obligation
     // without spending quota, so it is the only place quota can end up exceeding what the
     // pool still owes cash for. Return the orphan to the adapter, where the floor is
     // measured, restoring `withdrawQuota <= _unconfirmedObligation()`.

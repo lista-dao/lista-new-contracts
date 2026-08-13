@@ -140,7 +140,7 @@ contract SurfinInvariant is SurfinTestBase {
   ///      exposed it. Cancellation now returns the orphan on the spot, so the property
   ///      survives every action the handler can take.
   ///
-  ///      Caveat: adminTopUp (M03) deliberately bypasses the cap to cover a shortfall on
+  ///      Caveat: adminTopUp deliberately bypasses the cap to cover a shortfall on
   ///      an impaired fund, so it can leave quota above this bound by design. The handler
   ///      does not drive it; if it is ever added, exclude it here.
   function invariant_quotaNeverExceedsUnconfirmedObligation() public view {
@@ -249,6 +249,69 @@ contract SurfinInvariant is SurfinTestBase {
 
     assertEq(floorAfter, floorBefore, "hard floor must not drop when request only burns LP");
     assertEq(floorAfter, 3_000 ether, "3% of the 100k book is preserved");
+  }
+
+  /**
+   * INV-5: the mirror of INV-4. A pending withdrawal backfills
+   * the floor base only while its cash is still in the adapter. Once finishWithdraw
+   * pushes that cash into the pool the liability must leave the base, or the adapter
+   * reserves twice over — against liquidity it no longer holds.
+   */
+  function test_inv5_fundedWithdrawLeavesFloorBase() public {
+    _depositFlex(alice, 100_000 ether);
+    _depositFlex(bob, 100_000 ether);
+    assertEq(adapter.hardFloor(), 6_000 ether, "3% of the 200k book");
+
+    vm.prank(bob);
+    flex.requestWithdraw(100_000 ether);
+    // INV-4 half: cash has not moved yet, so the base is unchanged
+    assertEq(adapter.hardFloor(), 6_000 ether, "base restored while the cash is still here");
+
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(100_000 ether); // confirmed; 100k now sits in the pool
+    assertEq(flex.totalPendingWithdraw(), 100_000 ether, "pending clears only on claim");
+    assertEq(flex.totalConfirmedUnclaimed(), 100_000 ether, "funded and awaiting bob's claim");
+
+    // only alice's 100k is still backed by adapter cash -> 3% of 100k, not 200k
+    assertEq(adapter.hardFloor(), 3_000 ether, "funded-but-unclaimed no longer inflates the floor");
+
+    // and it stays there once bob finally claims: nothing double-counted on the way out
+    vm.prank(bob);
+    flex.claimWithdraw(bob, 0, 100_000 ether);
+    assertEq(adapter.hardFloor(), 3_000 ether, "claim does not move the floor again");
+  }
+
+  /**
+   * INV-6: a partially funded batch must not wedge itself. The
+   * old base counted the whole pending batch while the part-funding drained the very
+   * balance needed to clear it, so available liquidity hit zero with the batch still
+   * unconfirmed — and FIFO stalled every batch behind it.
+   */
+  function test_inv6_partiallyFundedBatchCanStillBeCompleted() public {
+    _depositFlex(alice, 100 ether);
+    vm.prank(alice);
+    flex.requestWithdraw(98 ether); // 2 live principal, 98 pending, floor 3% of 100 = 3
+
+    assertEq(adapter.hardFloor(), 3 ether, "full batch still backed by adapter cash");
+    assertEq(adapter.instantWithdrawable(), 97 ether, "one ether short of the 98 batch");
+
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(97 ether); // partial: batch needs 98, stays unconfirmed
+    assertEq(flex.confirmedBatchId(), 0, "batch not confirmed on partial funding");
+    assertEq(flex.withdrawQuota(), 97 ether, "97 parked in the pool as quota");
+
+    // base is now 2 live + the 1 still owed = 3; the 97 already in the pool is not
+    // the adapter's to reserve against, so the remaining ether is payable
+    assertEq(adapter.hardFloor(), 0.09 ether, "floor tracks only adapter-held liability");
+    assertGe(adapter.instantWithdrawable(), 1 ether, "top-up is not blocked by a stale floor");
+
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(1 ether);
+    assertEq(flex.confirmedBatchId(), 1, "batch confirmed on top-up");
+
+    vm.prank(alice);
+    flex.claimWithdraw(alice, 0, 98 ether);
+    assertEq(usdt.balanceOf(alice), 98 ether, "user exits in full");
   }
 
   /* ---- helper ---- */

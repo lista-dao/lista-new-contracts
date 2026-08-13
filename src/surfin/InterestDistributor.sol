@@ -126,7 +126,11 @@ contract InterestDistributor is
    * @param _totalAmounts Total amounts of interest claimable by the accounts
    * @param _proofs Merkle proofs of the claims
    */
-  function batchClaim(address[] memory _accounts, uint256[] memory _totalAmounts, bytes32[][] memory _proofs) external {
+  function batchClaim(
+    address[] memory _accounts,
+    uint256[] memory _totalAmounts,
+    bytes32[][] memory _proofs
+  ) external whenNotPaused {
     require(_accounts.length == _totalAmounts.length && _accounts.length == _proofs.length, "Invalid input lengths");
 
     for (uint256 i = 0; i < _accounts.length; i++) {

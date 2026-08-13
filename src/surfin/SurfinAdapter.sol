@@ -241,16 +241,29 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   }
 
   /**
-   * @dev floor base: both pools' live principal book, restored to the pre-burn
-   *      level by adding totalPendingWithdraw (principal is decremented at request
-   *      time, but the cash only leaves the adapter at finishWithdraw).
+   * @dev floor base: both pools' live principal book, restored to the pre-burn level
+   *      by adding back the pending withdrawals whose cash the adapter still holds.
    */
   function _floorBase() internal view returns (uint256) {
-    return
-      ICreditFundPool(flexPool).totalPrincipal() +
-      ICreditFundPool(flexPool).totalPendingWithdraw() +
-      ICreditFundPool(lockedPool).totalPrincipal() +
-      ICreditFundPool(lockedPool).totalPendingWithdraw();
+    return _poolFloorBase(flexPool) + _poolFloorBase(lockedPool);
+  }
+
+  /**
+   * @dev one pool's contribution to the floor base.
+   *
+   * Requesting a withdrawal burns principal before the cash moves, so pending has to
+   * backfill the base; once `finishWithdraw` pushes that cash into the pool it must
+   * stop, or the adapter reserves against money it no longer holds — and a part-funded
+   * batch wedges itself, floor unchanged while the balance that would clear it is gone.
+   * `withdrawQuota + totalConfirmedUnclaimed` is the pool's balance, i.e. exactly what
+   * left here. Clamped, not checked: `adminTopUp` injects quota outside the usual bound
+   * and `hardFloor()` must not revert on an impaired fund.
+   */
+  function _poolFloorBase(address pool) internal view returns (uint256) {
+    ICreditFundPool p = ICreditFundPool(pool);
+    uint256 pending = p.totalPendingWithdraw();
+    uint256 funded = p.withdrawQuota() + p.totalConfirmedUnclaimed();
+    return p.totalPrincipal() + (pending > funded ? pending - funded : 0);
   }
 
   /**
