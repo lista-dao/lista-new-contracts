@@ -33,6 +33,13 @@ contract LockedEarnPool is CreditFundBase {
     bool closed; // position terminated (redeemed / matured-out / renewed)
   }
 
+  // why batchRequestMaturityWithdraw passed over an entry
+  enum SkipReason {
+    InvalidPosition, // out of range, already closed, or zero principal
+    NotMatured, // cohort maturity not reached yet
+    AutoRenew // still opted into renewal, so renewPosition owns it
+  }
+
   // an issuance batch (cohort). Dates are settlement-aligned and injected
   // off-chain by the manager; all positions in a cohort share them, so one
   // update covers the whole batch ("same batch, same maturity").
@@ -74,6 +81,7 @@ contract LockedEarnPool is CreditFundBase {
   event LockedDeposit(address indexed user, uint256 posId, uint256 cohortId, uint256 amount, uint256 maturityTime);
   event RequestEarlyRedeem(address indexed user, uint256 posId, uint256 principal, uint256 batchId, uint256 payout);
   event RequestMaturityWithdraw(address indexed user, uint256 posId, uint256 principal, uint256 batchId);
+  event SkipMaturityWithdraw(address indexed user, uint256 posId, SkipReason reason);
   event RenewPosition(address indexed user, uint256 oldPosId, uint256 newPosId, uint256 principal);
   event Reinvest(address indexed user, uint256 idx, uint256 newCohortId, uint256 newPosId, uint256 principal);
   event ToggleAutoRenew(address indexed user, uint256 posId, bool autoRenew);
@@ -190,8 +198,19 @@ contract LockedEarnPool is CreditFundBase {
    *      platform covers the gas. Run early each month once positions have matured.
    *      Each entry follows the same rules as the user path (matured, not
    *      auto-renewing); withdrawTime is the BOT call time (after maturity, so it
-   *      reads as a normal redemption). Reverts atomically on any invalid entry so
-   *      a BOT list-building bug surfaces instead of being silently skipped.
+   *      reads as a normal redemption).
+   *
+   *      Entries that no longer qualify are skipped rather than reverting the whole
+   *      batch: a position can go stale between the BOT building its list and the
+   *      transaction landing (most obviously when the owner calls
+   *      requestMaturityWithdraw first), and one such row must not strand everyone
+   *      else in the batch.
+   *
+   *      Every skip emits SkipMaturityWithdraw with a reason, so a legitimately stale
+   *      row and a BOT list-building bug stay distinguishable after the fact; skipping
+   *      quietly would only trade a visible revert for an invisible no-op. An
+   *      out-of-range posId is skipped too — left to panic on the array access it would
+   *      take the whole batch down, the very failure this function exists to avoid.
    * @param users the position owners
    * @param posIds the matching position ids
    */
@@ -201,12 +220,27 @@ contract LockedEarnPool is CreditFundBase {
   ) external whenNotPaused onlyRole(BOT) nonReentrant {
     require(users.length == posIds.length, "length mismatch");
     for (uint256 i = 0; i < users.length; i++) {
-      Position storage pos = userPositions[users[i]][posIds[i]];
-      // skip already-closed or not-yet-matured positions instead of reverting the whole batch
-      if (pos.principal == 0 || pos.closed) continue;
-      if (block.timestamp < cohorts[pos.cohortId].maturityTime) continue;
-      if (pos.autoRenew) continue;
-      _requestMaturityWithdraw(users[i], posIds[i]);
+      address user = users[i];
+      uint256 posId = posIds[i];
+
+      if (posId >= userPositions[user].length) {
+        emit SkipMaturityWithdraw(user, posId, SkipReason.InvalidPosition);
+        continue;
+      }
+      Position storage pos = userPositions[user][posId];
+      if (pos.principal == 0 || pos.closed) {
+        emit SkipMaturityWithdraw(user, posId, SkipReason.InvalidPosition);
+        continue;
+      }
+      if (block.timestamp < cohorts[pos.cohortId].maturityTime) {
+        emit SkipMaturityWithdraw(user, posId, SkipReason.NotMatured);
+        continue;
+      }
+      if (pos.autoRenew) {
+        emit SkipMaturityWithdraw(user, posId, SkipReason.AutoRenew);
+        continue;
+      }
+      _requestMaturityWithdraw(user, posId);
     }
   }
 
@@ -349,11 +383,24 @@ contract LockedEarnPool is CreditFundBase {
 
   /**
    * @dev preview the early-redeem payout for `amount` principal of a position.
+   *
+   * Mirrors `requestEarlyRedeem`'s validity checks, with the same revert strings, so a
+   * UI can never show a valid-looking number for a redemption that would be rejected.
+   *
+   * The per-address daily limit is deliberately NOT mirrored. It is a rate limit on the
+   * caller rather than a property of the redemption, it is measured against the payout
+   * this call is being asked to compute, and it is already separately readable via
+   * `dailyLimit()` / `dailySubmitted(day, user)` — which is what the frontend uses to
+   * cap the input field. Folding it in here would stop the position page from quoting a
+   * payout at all once the day's allowance was used up.
    */
   function previewEarlyRedeem(address user, uint256 posId, uint256 amount) external view returns (uint256) {
+    require(posId < userPositions[user].length, "invalid position");
     Position memory pos = userPositions[user][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
-    require(amount <= pos.principal, "amount exceeds principal");
+    require(amount > 0 && amount <= pos.principal, "invalid amount");
+    _checkMinWithdraw(amount, pos.principal);
+    require(block.timestamp < cohorts[pos.cohortId].maturityTime, "already matured");
     return _earlyRedeemPayout(pos.depositTime, amount);
   }
 

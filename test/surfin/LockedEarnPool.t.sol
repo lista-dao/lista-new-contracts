@@ -87,6 +87,68 @@ contract LockedEarnPoolTest is SurfinTestBase {
     locked.requestEarlyRedeem(0, 50_000 ether);
   }
 
+  /* --------------- B1b: preview only quotes executable redemptions --------------- */
+
+  /**
+   * previewEarlyRedeem used to compute a payout for closed positions, over-sized
+   * amounts and matured positions alike, so a UI could show a perfectly valid-looking
+   * number for a redemption requestEarlyRedeem would reject. It now mirrors that
+   * function's validity checks, with the same revert strings.
+   */
+  function test_B1b_previewRejectsWhatRequestWouldReject() public {
+    vm.warp(T0);
+    _openCohort(1);
+    vm.prank(manager);
+    locked.setMinWithdraw(1_000 ether);
+    _depositLocked(alice, 1, 50_000 ether, false);
+
+    // out of range
+    vm.expectRevert("invalid position");
+    locked.previewEarlyRedeem(alice, 5, 1_000 ether);
+
+    // zero / over-sized amount
+    vm.expectRevert("invalid amount");
+    locked.previewEarlyRedeem(alice, 0, 0);
+    vm.expectRevert("invalid amount");
+    locked.previewEarlyRedeem(alice, 0, 50_000 ether + 1);
+
+    // below the min-withdraw floor without draining the position (no dust exit)
+    vm.expectRevert("below min withdraw");
+    locked.previewEarlyRedeem(alice, 0, 999 ether);
+
+    // the happy path still quotes
+    assertEq(locked.previewEarlyRedeem(alice, 0, 50_000 ether), 49_600 ether, "valid quote unaffected");
+  }
+
+  function test_B1b_previewRejectsMaturedPosition() public {
+    vm.warp(T0);
+    _openCohort(1);
+    _depositLocked(alice, 1, 50_000 ether, false);
+
+    vm.warp(block.timestamp + 92 days); // past maturity: requestEarlyRedeem reverts here
+
+    vm.expectRevert("already matured");
+    locked.previewEarlyRedeem(alice, 0, 50_000 ether);
+
+    // and that is exactly what the real call does
+    vm.prank(alice);
+    vm.expectRevert("already matured");
+    locked.requestEarlyRedeem(0, 50_000 ether);
+  }
+
+  function test_B1b_previewRejectsClosedPosition() public {
+    vm.warp(T0);
+    _openCohort(1);
+    _depositLocked(alice, 1, 50_000 ether, false);
+
+    vm.warp(block.timestamp + 10 days);
+    vm.prank(alice);
+    locked.requestEarlyRedeem(0, 50_000 ether); // closes the position
+
+    vm.expectRevert("invalid position");
+    locked.previewEarlyRedeem(alice, 0, 50_000 ether);
+  }
+
   /* --------------------- B2: early redeem is irreversible --------------------- */
 
   function test_B2_earlyRedeemIsIrreversibleNoCancelEntrypoint() public {
@@ -187,6 +249,61 @@ contract LockedEarnPoolTest is SurfinTestBase {
     vm.prank(bot);
     locked.batchRequestMaturityWithdraw(users, posIds);
     assertEq(locked.totalPendingWithdraw(), 50_000 ether, "BOT queued the matured principal");
+  }
+
+  /* ---------------- B4b: batch maturity skips are observable ---------------- */
+
+  /**
+   * Skipping beat reverting the whole batch, but a silent skip only traded a visible
+   * failure for an invisible one — the BOT could not tell a stale row from a
+   * list-building bug. Every skip now names its reason, and an out-of-range posId is
+   * skipped instead of panicking the array access and taking the batch down with it.
+   */
+  function test_B4b_batchSkipsEmitReasonAndDoNotStrandOthers() public {
+    address carol = makeAddr("carol");
+    address dave = makeAddr("dave"); // no positions at all
+    vm.warp(T0);
+    _openCohort(1); // matures T0 + 91d
+    _setCohort(2, 200, block.timestamp + 1 days, block.timestamp + 201 days, true); // matures much later
+
+    _depositLocked(alice, 1, 10_000 ether, false); // alice[0]: will go stale (self-served)
+    _depositLocked(alice, 2, 10_000 ether, false); // alice[1]: not matured
+    _depositLocked(bob, 1, 20_000 ether, true); // bob[0]:   auto-renew on
+    _depositLocked(carol, 1, 30_000 ether, false); // carol[0]: the one valid entry
+
+    vm.warp(block.timestamp + 92 days); // cohort 1 matured, cohort 2 not
+
+    vm.prank(alice);
+    locked.requestMaturityWithdraw(0); // alice[0] closes before the BOT lands
+
+    address[] memory users = new address[](5);
+    uint256[] memory posIds = new uint256[](5);
+    (users[0], posIds[0]) = (alice, 0); // closed
+    (users[1], posIds[1]) = (alice, 1); // not matured
+    (users[2], posIds[2]) = (bob, 0); // auto-renew
+    (users[3], posIds[3]) = (dave, 7); // out of range — used to panic the whole batch
+    (users[4], posIds[4]) = (carol, 0); // valid, must still be processed
+
+    vm.expectEmit(true, false, false, true, address(locked));
+    emit LockedEarnPool.SkipMaturityWithdraw(alice, 0, LockedEarnPool.SkipReason.InvalidPosition);
+    vm.expectEmit(true, false, false, true, address(locked));
+    emit LockedEarnPool.SkipMaturityWithdraw(alice, 1, LockedEarnPool.SkipReason.NotMatured);
+    vm.expectEmit(true, false, false, true, address(locked));
+    emit LockedEarnPool.SkipMaturityWithdraw(bob, 0, LockedEarnPool.SkipReason.AutoRenew);
+    vm.expectEmit(true, false, false, true, address(locked));
+    emit LockedEarnPool.SkipMaturityWithdraw(dave, 7, LockedEarnPool.SkipReason.InvalidPosition);
+
+    vm.prank(bot);
+    locked.batchRequestMaturityWithdraw(users, posIds);
+
+    // carol's entry survived four skips ahead of it
+    assertEq(locked.getUserWithdrawalRequests(carol).length, 1, "valid entry queued");
+    assertEq(locked.getUserWithdrawalRequests(carol)[0].amount, 30_000 ether);
+    assertTrue(locked.getUserPositions(carol)[0].closed, "carol's position closed out");
+
+    // and the skipped ones are untouched
+    assertFalse(locked.getUserPositions(alice)[1].closed, "not-matured position left alone");
+    assertFalse(locked.getUserPositions(bob)[0].closed, "auto-renew position left for renewPosition");
   }
 
   /* ------------------------- B5: auto-renew (renew) ------------------------- */
