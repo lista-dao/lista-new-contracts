@@ -263,6 +263,12 @@ contract LockedEarnPool is CreditFundBase {
 
     Cohort memory c = cohorts[newCohortId];
     require(c.enabled, "cohort not enabled");
+    // Renewal is an entry into `newCohortId` just like deposit and reinvest, so
+    // it obeys the same deposit window. `enabled` alone was not enough — a cohort whose
+    // deadline has passed is still enabled until someone toggles it, and rolling
+    // principal into an already-priced tranche puts the renewed position on a schedule
+    // that tranche's off-chain interest allocation was never sized for.
+    require(block.timestamp <= c.depositDeadline, "deposit window closed");
 
     uint256 principal = pos.principal;
     pos.closed = true;

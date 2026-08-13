@@ -213,6 +213,37 @@ contract LockedEarnPoolTest is SurfinTestBase {
     assertEq(usdt.balanceOf(address(adapter)), adapterBefore, "renewal moves no funds");
   }
 
+  /**
+   * `enabled` alone does not stop a renewal into a cohort whose
+   * deposit window had already closed — a tranche that is priced and no longer meant
+   * to take principal. deposit/reinvest both check the deadline; renewal now does too.
+   */
+  function test_B5_renewIntoClosedWindowReverts() public {
+    vm.warp(T0);
+    _openCohort(1);
+    _depositLocked(alice, 1, 50_000 ether, true); // auto-renew ON
+
+    // cohort 2 opens now (deadline T0 + 1d) but alice only matures much later
+    _openCohort(2);
+    vm.warp(block.timestamp + 92 days); // alice matured; cohort 2's window long shut
+
+    (, , , bool stillEnabled) = locked.cohorts(2);
+    assertTrue(stillEnabled, "target cohort is still flagged enabled");
+
+    vm.prank(bot);
+    vm.expectRevert("deposit window closed");
+    locked.renewPosition(alice, 0, 2);
+
+    // the position is untouched and a cohort with an open window still works
+    LockedEarnPool.Position[] memory pos = locked.getUserPositions(alice);
+    assertFalse(pos[0].closed, "failed renewal leaves the position open");
+
+    _openCohort(3);
+    vm.prank(bot);
+    locked.renewPosition(alice, 0, 3);
+    assertEq(locked.getUserPositions(alice)[1].cohortId, 3, "renewed into the live cohort");
+  }
+
   function test_B5_renewNonBotReverts() public {
     vm.warp(T0);
     _openCohort(1);
