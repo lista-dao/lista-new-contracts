@@ -52,14 +52,30 @@ contract InterestDistributor is
   /// @dev the waiting period before accepting the pending merkle root; 6 hours by default
   uint256 public waitingPeriod;
 
+  /**
+   * @dev earliest timestamp `pendingMerkleRoot` may be accepted at, frozen when the root
+   *      is staged. 0 when nothing is pending.
+   *
+   *      Computing acceptance live as `lastSetTime + waitingPeriod` would let a
+   *      `changeWaitingPeriod` landing mid-flight retroactively move the deadline of a
+   *      root already under review — shortening the window the delay exists to provide,
+   *      or pushing an urgent root days out by accident. Each root instead carries the
+   *      period it was staged under, so `changeWaitingPeriod` only affects roots staged
+   *      after it.
+   *
+   *      Declared last so no existing storage slot shifts; one slot is taken from __gap.
+   */
+  uint256 public pendingActivationTime;
+
   bytes32 public constant MANAGER = keccak256("MANAGER");
   bytes32 public constant BOT = keccak256("BOT");
   bytes32 public constant PAUSER = keccak256("PAUSER");
   bytes32 public constant FUNDER = keccak256("FUNDER");
 
   event Claimed(address indexed account, uint256 amount, uint256 totalAmount);
+  event SkipClaim(address indexed account, uint256 totalAmount, uint256 alreadyClaimed);
   event RewardFunded(address indexed funder, uint256 amount);
-  event SetPendingMerkleRoot(bytes32 merkleRoot, uint256 lastSetTime);
+  event SetPendingMerkleRoot(bytes32 merkleRoot, uint256 lastSetTime, uint256 activationTime);
   event AcceptMerkleRoot(bytes32 merkleRoot, uint256 acceptedTime);
   event WaitingPeriodUpdated(uint256 waitingPeriod);
   event EmergencyWithdrawal(address indexed to, address indexed token, uint256 amount);
@@ -121,7 +137,18 @@ contract InterestDistributor is
   }
 
   /**
-   * @dev Batch claim interest. Can be called by anyone as long as proof is valid.
+   * @dev Batch claim interest. Can be called by anyone as long as the proofs are valid.
+   *
+   *      Entries whose cumulative amount is already claimed are skipped rather than
+   *      reverting the batch. Claims are permissionless, so anyone can land one entry
+   *      ahead of a prepared batch; an atomic loop would let that single already-settled
+   *      row roll back every other claim in the transaction, forcing a rebuild and
+   *      resubmit while the rest of the users wait. Each skip emits SkipClaim so the
+   *      submitter can reconcile.
+   *
+   *      Only the already-claimed race is tolerated. An invalid proof still reverts: that
+   *      is a malformed batch, not a race, and swallowing it would hide a bad root or a
+   *      bad tree from whoever built it.
    * @param _accounts Addresses of claiming accounts
    * @param _totalAmounts Total amounts of interest claimable by the accounts
    * @param _proofs Merkle proofs of the claims
@@ -134,7 +161,11 @@ contract InterestDistributor is
     require(_accounts.length == _totalAmounts.length && _accounts.length == _proofs.length, "Invalid input lengths");
 
     for (uint256 i = 0; i < _accounts.length; i++) {
-      claim(_accounts[i], _totalAmounts[i], _proofs[i]);
+      if (_totalAmounts[i] <= claimed[_accounts[i]]) {
+        emit SkipClaim(_accounts[i], _totalAmounts[i], claimed[_accounts[i]]);
+        continue;
+      }
+      _claim(_accounts[i], _totalAmounts[i], _proofs[i]);
     }
   }
 
@@ -145,6 +176,13 @@ contract InterestDistributor is
    * @param _proof Merkle proof of the claim
    */
   function claim(address _account, uint256 _totalAmount, bytes32[] memory _proof) public whenNotPaused {
+    _claim(_account, _totalAmount, _proof);
+  }
+
+  /// @dev shared claim body; `batchClaim` filters the already-claimed case before
+  ///      calling in, the single-claim entrypoint lets it revert. Both entrypoints carry
+  ///      `whenNotPaused`, so the gate is not bypassed by routing through here.
+  function _claim(address _account, uint256 _totalAmount, bytes32[] memory _proof) internal {
     require(merkleRoot != bytes32(0), "Invalid merkle root");
 
     uint256 claimedAmount = claimed[_account];
@@ -175,18 +213,22 @@ contract InterestDistributor is
 
     pendingMerkleRoot = _merkleRoot;
     lastSetTime = block.timestamp;
+    // Freeze this root's activation against the period in force right now, so a
+    // later changeWaitingPeriod cannot move a deadline that is already running.
+    pendingActivationTime = block.timestamp + waitingPeriod;
 
-    emit SetPendingMerkleRoot(_merkleRoot, lastSetTime);
+    emit SetPendingMerkleRoot(_merkleRoot, lastSetTime, pendingActivationTime);
   }
 
-  /// @dev Accept the pending merkle root; pending merkle root can only be accepted after the waiting period
+  /// @dev Accept the pending merkle root; only once its frozen activation time has passed
   function acceptMerkleRoot() external onlyRole(BOT) whenNotPaused {
     require(pendingMerkleRoot != bytes32(0) && pendingMerkleRoot != merkleRoot, "Invalid pending merkle root");
-    require(block.timestamp >= lastSetTime + waitingPeriod, "Not ready to accept");
+    require(block.timestamp >= pendingActivationTime, "Not ready to accept");
 
     merkleRoot = pendingMerkleRoot;
     pendingMerkleRoot = bytes32(0);
     lastSetTime = type(uint256).max;
+    pendingActivationTime = 0;
 
     emit AcceptMerkleRoot(merkleRoot, block.timestamp);
   }
@@ -197,11 +239,13 @@ contract InterestDistributor is
 
     pendingMerkleRoot = bytes32(0);
     lastSetTime = type(uint256).max;
+    pendingActivationTime = 0;
 
-    emit SetPendingMerkleRoot(bytes32(0), lastSetTime);
+    emit SetPendingMerkleRoot(bytes32(0), lastSetTime, 0);
   }
 
-  /// @dev Change waiting period.
+  /// @dev Change waiting period. Applies to roots staged AFTER this call; a root already
+  ///      under review keeps the activation time frozen when it was staged.
   /// @param _waitingPeriod Waiting period to be set
   function changeWaitingPeriod(uint256 _waitingPeriod) external onlyRole(MANAGER) whenNotPaused {
     require(
@@ -234,5 +278,5 @@ contract InterestDistributor is
 
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
-  uint256[50] private __gap;
+  uint256[49] private __gap;
 }
