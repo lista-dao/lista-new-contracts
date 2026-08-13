@@ -155,4 +155,21 @@ contract FlexEarnPoolTest is SurfinTestBase {
     vm.expectRevert("not able to claim yet");
     flex.claimWithdraw(alice, 0, 40_000 ether);
   }
+
+  /// @dev the pool's rescue event names its receiver too.
+  function test_A5_emergencyWithdrawEventCarriesReceiver() public {
+    _depositFlex(alice, 100_000 ether);
+    vm.prank(alice);
+    flex.requestWithdraw(40_000 ether);
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(40_000 ether); // park cash in the pool
+
+    address rescueTo = makeAddr("rescueTo");
+    vm.expectEmit(true, true, false, true, address(flex));
+    emit CreditFundBase.EmergencyWithdraw(address(usdt), rescueTo, 40_000 ether);
+
+    vm.prank(admin);
+    flex.emergencyWithdraw(address(usdt), 40_000 ether, rescueTo);
+    assertEq(usdt.balanceOf(rescueTo), 40_000 ether, "funds reached the logged receiver");
+  }
 }

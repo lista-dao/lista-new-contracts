@@ -149,4 +149,18 @@ contract InterestDistributorTest is SurfinTestBase {
     vm.expectRevert("Invalid proof");
     distributor.claim(alice, 1_000 ether, emptyProof);
   }
+
+  /// @dev indexed receiver on the distributor's rescue event.
+  ///      This entrypoint has no receiver parameter — it always pays msg.sender — but
+  ///      the field is indexed so it filters the same way as the pools and the adapter.
+  function test_D4_emergencyWithdrawEventCarriesReceiver() public {
+    usdt.mint(address(distributor), 1_000 ether);
+
+    vm.expectEmit(true, true, false, true, address(distributor));
+    emit InterestDistributor.EmergencyWithdrawal(manager, address(usdt), 1_000 ether);
+
+    vm.prank(manager);
+    distributor.emergencyWithdraw(address(usdt));
+    assertEq(usdt.balanceOf(manager), 1_000 ether, "funds reached the logged receiver");
+  }
 }

@@ -50,7 +50,12 @@ contract LockedEarnPool is CreditFundBase {
   uint256 public constant MAX_PENALTY_RATE = 0.1 ether;
   // guardrail: maturity can be at most this far past the nominal term end
   uint256 public constant MAX_ALIGN_WINDOW = 31 days;
-  // auto-renew is locked within this window before maturity (T-32 checkpoint)
+  // auto-renew is locked within this window before maturity (T-32 checkpoint).
+  //
+  // 32, not 30, on purpose: the off-chain settlement job snapshots the auto-renew flags
+  // at T-30, and a lock starting exactly at T-30 would let a user flip a flag in the
+  // same block the snapshot reads it. The extra two days are that margin. Product docs
+  // describe the checkpoint as "T-30" — that is the SNAPSHOT, not the lock.
   uint256 public constant AUTO_RENEW_LOCK_WINDOW = 32 days;
   // upper bound on termDays to prevent absurd lock durations
   uint256 public constant MAX_TERM_DAYS = 366;
@@ -228,15 +233,15 @@ contract LockedEarnPool is CreditFundBase {
   }
 
   /**
-   * @dev toggle auto-renew for a position. Enforced on-chain to be locked from the
-   *      T-30 checkpoint: no changes are allowed within AUTO_RENEW_LOCK_WINDOW of
-   *      maturity, so the settlement-day job can rely on a stable auto-renew flag.
+   * @dev toggle auto-renew for a position. Locked from T-32: no changes are allowed
+   *      within AUTO_RENEW_LOCK_WINDOW of maturity, so the settlement-day job reads a
+   *      stable flag at its T-30 snapshot.
    * @param posId the caller's position id
    */
   function toggleAutoRenew(uint256 posId) external whenNotPaused {
     Position storage pos = userPositions[msg.sender][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
-    require(block.timestamp + AUTO_RENEW_LOCK_WINDOW < cohorts[pos.cohortId].maturityTime, "auto renew locked (T-30)");
+    require(block.timestamp + AUTO_RENEW_LOCK_WINDOW < cohorts[pos.cohortId].maturityTime, "auto renew locked (T-32)");
 
     pos.autoRenew = !pos.autoRenew;
     emit ToggleAutoRenew(msg.sender, posId, pos.autoRenew);

@@ -71,7 +71,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   event SetSurfinWallet(address surfinWallet);
   event SetInterestDistributor(address interestDistributor);
   event SetFeeReceiver(address feeReceiver);
-  event EmergencyWithdraw(address token, uint256 amount);
+  event EmergencyWithdraw(address indexed token, address indexed receiver, uint256 amount);
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -374,7 +374,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
     require(amount > 0, "amount is zero");
     require(receiver != address(0), "receiver is zero address");
     IERC20(token).safeTransfer(receiver, amount);
-    emit EmergencyWithdraw(token, amount);
+    emit EmergencyWithdraw(token, receiver, amount);
   }
 
   /* INTERNAL FUNCTIONS */

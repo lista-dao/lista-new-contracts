@@ -275,10 +275,38 @@ contract LockedEarnPoolTest is SurfinTestBase {
     _setCohort(1, 90, block.timestamp + 1 days, maturity, true);
     _depositLocked(alice, 1, 50_000 ether, false);
 
+    // one second before T-32 the toggle is still open
+    vm.warp(maturity - 32 days - 1);
+    vm.prank(alice);
+    locked.toggleAutoRenew(0);
+    assertTrue(locked.getUserPositions(alice)[0].autoRenew, "open just outside the window");
+
     // exactly T-32: block.timestamp + 32d == maturity, guard uses '<' so it reverts
     vm.warp(maturity - 32 days);
     vm.prank(alice);
-    vm.expectRevert("auto renew locked (T-30)");
+    vm.expectRevert("auto renew locked (T-32)");
+    locked.toggleAutoRenew(0);
+  }
+
+  /**
+   * The enforced lock is 32 days; product docs describe a T-30 checkpoint and
+   * docstring said "T-30", so a user trusting the documented deadline would find the
+   * toggle already shut between T-32 and T-30. The wording was wrong, not the constant
+   * — 32 is the deliberate margin over the settlement job's T-30 snapshot. Pin both the
+   * enforced value and the message so they cannot drift apart again.
+   */
+  function test_B6_lockWindowIsThirtyTwoDaysNotThirty() public {
+    vm.warp(T0);
+    uint256 maturity = block.timestamp + 91 days;
+    _setCohort(1, 90, block.timestamp + 1 days, maturity, true);
+    _depositLocked(alice, 1, 50_000 ether, false);
+
+    assertEq(locked.AUTO_RENEW_LOCK_WINDOW(), 32 days, "enforced window");
+
+    // T-31: inside the real window, outside the once-documented one
+    vm.warp(maturity - 31 days);
+    vm.prank(alice);
+    vm.expectRevert("auto renew locked (T-32)");
     locked.toggleAutoRenew(0);
   }
 

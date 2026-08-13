@@ -62,7 +62,7 @@ contract InterestDistributor is
   event SetPendingMerkleRoot(bytes32 merkleRoot, uint256 lastSetTime);
   event AcceptMerkleRoot(bytes32 merkleRoot, uint256 acceptedTime);
   event WaitingPeriodUpdated(uint256 waitingPeriod);
-  event EmergencyWithdrawal(address to, address token, uint256 amount);
+  event EmergencyWithdrawal(address indexed to, address indexed token, uint256 amount);
 
   /// @custom:oz-upgrades-unsafe-allow constructor
   constructor() {
