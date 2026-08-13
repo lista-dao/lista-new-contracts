@@ -291,6 +291,7 @@ contract LockedEarnPool is CreditFundBase {
    *      which leaves claimWithdraw as the only exit.
    * @param idx the caller's confirmed (funded) withdrawal request index
    * @param newCohortId the cohort to reinvest into
+   * @param expectedAmount the expected request amount; guards against swap-and-pop index drift
    */
   function reinvest(
     uint256 idx,

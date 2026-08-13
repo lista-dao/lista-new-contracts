@@ -202,10 +202,23 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   function fundInterest(uint256 amount) external onlyRole(MANAGER) {
     require(interestDistributor != address(0), "interestDistributor not set");
     require(amount > 0, "amount is zero");
-    // interest may consume the hard floor (floor doubles as the interest reserve);
-    // only the fee earmark is protected. A drained floor blocks flex withdrawals
-    // via _availableForWithdraw until the next weekly recall tops it back up.
-    require(amount <= freeIdle(), "insufficient idle");
+    // Interest may still consume the hard floor — the floor doubles as the interest
+    // reserve — and the fee earmark stays protected via freeIdle. A drained floor
+    // blocks withdrawals through _availableForWithdraw until the next recall tops it
+    // back up.
+    //
+    // freeIdle alone does not distinguish realized yield from user principal, so a
+    // fresh deposit could otherwise be paid straight out as someone else's interest,
+    // leaving the pool's principal liability unbacked. It would also make the outcome
+    // depend on whether MANAGER or the BOT moved first — funding interest before the
+    // queue could starve a withdrawal that was fundable a block earlier. Reserving the
+    // queued obligation removes both. Realized-yield accounting itself stays off-chain.
+    //
+    // The hard floor is deliberately NOT reserved on top: it is the interest reserve,
+    // and reserving it here would make interest unable to pierce it at all. The residual
+    // is that a maxed-out interest run leaves the queue payable only down to the floor
+    // (withdrawals may never pierce it), with the last slice waiting on the next recall.
+    require(amount <= _availableForInterest(), "insufficient idle");
     IERC20(asset).safeIncreaseAllowance(interestDistributor, amount);
     IInterestDistributor(interestDistributor).notifyReward(amount);
     emit FundInterest(amount);
@@ -260,10 +273,18 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
    * and `hardFloor()` must not revert on an impaired fund.
    */
   function _poolFloorBase(address pool) internal view returns (uint256) {
+    return ICreditFundPool(pool).totalPrincipal() + _poolUnfunded(pool);
+  }
+
+  /**
+   * @dev the unfunded half of one pool's queue. Shared by the floor base, the deploy
+   *      ceiling and the interest cap so the three agree on what "already funded" means.
+   */
+  function _poolUnfunded(address pool) internal view returns (uint256) {
     ICreditFundPool p = ICreditFundPool(pool);
     uint256 pending = p.totalPendingWithdraw();
     uint256 funded = p.withdrawQuota() + p.totalConfirmedUnclaimed();
-    return p.totalPrincipal() + (pending > funded ? pending - funded : 0);
+    return pending > funded ? pending - funded : 0;
   }
 
   /**
@@ -275,15 +296,32 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   }
 
   /**
-   * @dev max amount deployable to Surfin: everything above the hard floor (free idle
-   *      already excludes the fee earmark). The 15% buffer / pending-withdrawal
-   *      liquidity is maintained off-chain by the multisig when sizing the deploy;
-   *      on-chain only the hard floor is reserved.
+   * @dev principal both pools have queued and still need cash for. Cash already pushed
+   *      into a pool (confirmed-unclaimed, or quota awaiting a batch) is excluded — it
+   *      has left the adapter and is no longer ours to reserve.
+   */
+  function unfundedWithdrawals() public view returns (uint256) {
+    return _poolUnfunded(flexPool) + _poolUnfunded(lockedPool);
+  }
+
+  /**
+   * @dev max amount deployable to Surfin: free idle (already net of the fee earmark)
+   *      less the hard floor and the queued withdrawals still owed cash.
+   *
+   * Requesting a withdrawal only moves accounting from principal into
+   * totalPendingWithdraw, so a ceiling blind to it would let the manager deploy the very
+   * cash meant to pay a queued exit, leaving the BOT unable to fund it until the next
+   * recall. Reserving the unfunded obligation is not double-counting against the floor:
+   * the floor reserves a percentage of the whole book, while this reserves 100% of what
+   * is already queued.
+   *
+   * The larger off-chain buffer target is still the multisig's job when sizing a
+   * deploy; on-chain we only guarantee the queue stays fundable.
    */
   function maxDeployToSurfin() public view returns (uint256) {
     uint256 free = freeIdle();
-    uint256 floor = hardFloor();
-    return free > floor ? free - floor : 0;
+    uint256 reserved = hardFloor() + unfundedWithdrawals();
+    return free > reserved ? free - reserved : 0;
   }
 
   /**
@@ -348,6 +386,17 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
     uint256 cash = idleBalance();
     uint256 protectedAmt = accruedFee + hardFloor();
     return cash > protectedAmt ? cash - protectedAmt : 0;
+  }
+
+  /**
+   * @dev cash payable as interest: free idle less the queued withdrawals still owed
+   *      cash. Deliberately does NOT subtract the hard floor — the floor is the
+   *      interest reserve and interest is the one flow allowed to consume it.
+   */
+  function _availableForInterest() internal view returns (uint256) {
+    uint256 free = freeIdle();
+    uint256 reserved = unfundedWithdrawals();
+    return free > reserved ? free - reserved : 0;
   }
 
   /**

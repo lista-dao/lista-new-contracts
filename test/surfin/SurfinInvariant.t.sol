@@ -314,6 +314,88 @@ contract SurfinInvariant is SurfinTestBase {
     assertEq(usdt.balanceOf(alice), 98 ether, "user exits in full");
   }
 
+  /**
+   * INV-7: a queued withdrawal must stay fundable. Requesting an
+   * exit only moves accounting from principal into totalPendingWithdraw, so the deploy
+   * ceiling used to ignore it entirely and the manager could send off the very cash
+   * meant to pay it.
+   */
+  function test_inv7_deployCeilingReservesQueuedWithdrawals() public {
+    _depositFlex(alice, 100_000 ether);
+    assertEq(adapter.maxDeployToSurfin(), 97_000 ether, "no queue yet: idle - floor");
+
+    vm.prank(alice);
+    flex.requestWithdraw(50_000 ether);
+
+    // floor base is unchanged (cash still here) -> 3k; the 50k queue is now reserved too
+    assertEq(adapter.unfundedWithdrawals(), 50_000 ether, "queue owed cash");
+    assertEq(adapter.maxDeployToSurfin(), 47_000 ether, "100k - 3k floor - 50k queue");
+
+    // deploying the whole ceiling must still leave the queue payable
+    vm.prank(manager);
+    adapter.deployToSurfin(47_000 ether);
+    assertGe(adapter.instantWithdrawable(), 50_000 ether, "queue still fundable after max deploy");
+
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(50_000 ether);
+    vm.prank(alice);
+    flex.claimWithdraw(alice, 0, 50_000 ether);
+    assertEq(usdt.balanceOf(alice), 50_000 ether, "user exits without waiting for a recall");
+  }
+
+  /// @dev once a queue is funded it stops being reserved — the cash left the adapter.
+  function test_inv7_fundedQueueStopsReservingDeployCapacity() public {
+    _depositFlex(alice, 100_000 ether);
+    vm.prank(alice);
+    flex.requestWithdraw(50_000 ether);
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(50_000 ether); // confirmed, cash now in the pool
+
+    assertEq(adapter.unfundedWithdrawals(), 0, "nothing left owed");
+    // idle 50k, floor base = 50k principal only -> 1.5k
+    assertEq(adapter.maxDeployToSurfin(), 48_500 ether, "50k - 1.5k floor");
+  }
+
+  /**
+   * INV-8: interest may consume the hard floor, but never the
+   * cash a queued withdrawal is already waiting on — otherwise a fresh deposit gets
+   * paid out as someone else's interest and the principal liability goes unbacked.
+   */
+  function test_inv8_interestCannotConsumeQueuedWithdrawalCash() public {
+    _depositFlex(alice, 100_000 ether);
+    vm.prank(alice);
+    flex.requestWithdraw(60_000 ether);
+
+    // free idle 100k, of which 60k is spoken for -> 40k fundable as interest
+    assertEq(adapter.freeIdle(), 100_000 ether);
+    vm.prank(manager);
+    vm.expectRevert("insufficient idle");
+    adapter.fundInterest(40_000 ether + 1);
+
+    vm.prank(manager);
+    adapter.fundInterest(40_000 ether);
+    assertEq(usdt.balanceOf(address(distributor)), 40_000 ether);
+    assertEq(adapter.idleBalance(), 60_000 ether, "the queue's cash stayed home");
+
+    // The residual is the hard floor itself: withdrawals may never pierce it, so a
+    // maxed-out interest run leaves the queue payable down to the floor (60k - 3k) and
+    // the last slice waits for the next recall. Under the old freeIdle cap the whole
+    // 100k could have gone out and the queue would have been left with nothing.
+    assertEq(adapter.hardFloor(), 3_000 ether);
+    assertEq(adapter.instantWithdrawable(), 57_000 ether, "payable down to the floor");
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(57_000 ether);
+    assertEq(flex.confirmedBatchId(), 0, "60k batch still 3k short");
+
+    // recall tops the floor back up; the batch then confirms and alice exits in full
+    _fundAdapter(3_000 ether);
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(3_000 ether);
+    vm.prank(alice);
+    flex.claimWithdraw(alice, 0, 60_000 ether);
+    assertEq(usdt.balanceOf(alice), 60_000 ether, "queued exit survived the interest run");
+  }
+
   /* ---- helper ---- */
   function _assertConservation() internal view {
     uint256 lhs = usdt.balanceOf(address(adapter)) + usdt.balanceOf(address(flex)) + usdt.balanceOf(surfinWallet);
