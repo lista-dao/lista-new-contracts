@@ -98,7 +98,7 @@ contract FlexEarnPool is CreditFundBase {
 
   /* VIEWS */
   /// @inheritdoc CreditFundBase
-  function totalPrincipal() external view override returns (uint256) {
+  function totalPrincipal() public view override returns (uint256) {
     return totalSupply;
   }
 

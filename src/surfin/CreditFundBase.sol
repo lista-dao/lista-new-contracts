@@ -156,7 +156,7 @@ abstract contract CreditFundBase is
 
   /* ABSTRACT */
   /// @dev total user principal booked in the pool
-  function totalPrincipal() external view virtual returns (uint256);
+  function totalPrincipal() public view virtual returns (uint256);
 
   /* ADAPTER-DRIVEN FUNCTIONS */
   /**
@@ -226,11 +226,7 @@ abstract contract CreditFundBase is
    * @param user the owner of the request
    * @param idx the index of the request
    */
-  function claimWithdraw(
-    address user,
-    uint256 idx,
-    uint256 expectedAmount
-  ) external whenNotPaused nonReentrant {
+  function claimWithdraw(address user, uint256 idx, uint256 expectedAmount) external whenNotPaused nonReentrant {
     require(msg.sender == user || hasRole(BOT, msg.sender), "not authorized");
     uint256 amount = _consumeConfirmedWithdraw(user, idx, expectedAmount);
     IERC20(asset).safeTransfer(user, amount);
@@ -285,9 +281,12 @@ abstract contract CreditFundBase is
     emit SetDepositPaused(_paused);
   }
 
+  /// @dev deploy-time rewire only. Deposits forward to whichever adapter is current, so
+  ///      repointing a pool with books leaves the backing at the old address.
   function setAdapter(address _adapter) external onlyRole(DEFAULT_ADMIN_ROLE) {
     require(_adapter != address(0), "adapter is zero address");
     require(_adapter != adapter, "same adapter");
+    require(totalPrincipal() == 0 && totalPendingWithdraw == 0 && withdrawQuota == 0, "pool has live accounting");
     adapter = _adapter;
     emit SetAdapter(_adapter);
   }

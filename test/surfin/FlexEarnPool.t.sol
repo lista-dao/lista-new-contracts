@@ -13,6 +13,52 @@ import "./SurfinTestBase.sol";
  *  - A4 cancel only unlocks the LP, moves no cash; confirmed requests can't cancel (§4.5)
  */
 contract FlexEarnPoolTest is SurfinTestBase {
+  /* ---------- A8: the adapter can only be rewired on an empty pool ---------- */
+
+  function test_A8_setAdapterRejectedWhilePrincipalIsLive() public {
+    _depositFlex(alice, 100_000 ether);
+
+    vm.prank(admin);
+    vm.expectRevert("pool has live accounting");
+    flex.setAdapter(makeAddr("otherAdapter"));
+  }
+
+  function test_A8_setAdapterRejectedWhileAWithdrawIsQueued() public {
+    _depositFlex(alice, 100_000 ether);
+    vm.prank(alice);
+    flex.requestWithdraw(100_000 ether); // principal 0, but pending 100k
+
+    assertEq(flex.totalPrincipal(), 0, "principal alone would have allowed it");
+    vm.prank(admin);
+    vm.expectRevert("pool has live accounting");
+    flex.setAdapter(makeAddr("otherAdapter"));
+  }
+
+  function test_A8_setAdapterRejectedWhileQuotaSitsInThePool() public {
+    // adminTopUp parks quota with no principal or queue behind it
+    usdt.mint(admin, 1_000 ether);
+    vm.startPrank(admin);
+    usdt.approve(address(flex), 1_000 ether);
+    flex.adminTopUp(1_000 ether);
+    vm.stopPrank();
+
+    assertEq(flex.totalPrincipal(), 0);
+    assertEq(flex.totalPendingWithdraw(), 0);
+    assertEq(flex.withdrawQuota(), 1_000 ether, "cash still sitting here");
+
+    vm.prank(admin);
+    vm.expectRevert("pool has live accounting");
+    flex.setAdapter(makeAddr("otherAdapter"));
+  }
+
+  /// @dev the deploy-time rewire still works.
+  function test_A8_setAdapterAllowedOnAFreshPool() public {
+    address newAdapter = makeAddr("otherAdapter");
+    vm.prank(admin);
+    flex.setAdapter(newAdapter);
+    assertEq(flex.adapter(), newAdapter, "rewire on an empty pool is the supported path");
+  }
+
   /* ---------------- A6: the two withdraw limits must not cross ---------------- */
 
   /**
