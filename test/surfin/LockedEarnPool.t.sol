@@ -149,6 +149,26 @@ contract LockedEarnPoolTest is SurfinTestBase {
     locked.previewEarlyRedeem(alice, 0, 50_000 ether);
   }
 
+  /**
+   * The penalty rounds up, so a truncated remainder accrues to the fund rather than to
+   * the redeemer. One extra wei of principal is therefore fully absorbed by the penalty.
+   */
+  function test_B1d_penaltyRoundsUpAgainstTheRedeemer() public {
+    vm.warp(T0);
+    _openCohort(1);
+    _depositLocked(alice, 1, 1_000 ether, false);
+
+    // exact division: 1e18 * 0.008 == 8e15, no remainder
+    assertEq(locked.previewEarlyRedeem(alice, 0, 1 ether), 0.992 ether, "exact case unchanged");
+
+    // one wei more principal: the penalty rounds up and swallows it, same payout
+    assertEq(
+      locked.previewEarlyRedeem(alice, 0, 1 ether + 1),
+      0.992 ether,
+      "remainder goes to the fund, not the redeemer"
+    );
+  }
+
   /* ------------ B1c: early redeem carries slippage + staleness guards ------------ */
 
   /**
@@ -228,7 +248,7 @@ contract LockedEarnPoolTest is SurfinTestBase {
     _openCohort(1);
     _depositLocked(alice, 1, 1_000 ether, false);
 
-    uint256 gross = 50_403225806451612903; // * 0.992 == exactly 50e18
+    uint256 gross = 50_403225806451612904; // penalty rounds up to leave exactly 50e18
     assertEq(locked.previewEarlyRedeem(alice, 0, gross), 50 ether, "payout sits on the floor");
 
     vm.prank(alice);

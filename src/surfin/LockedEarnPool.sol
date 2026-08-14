@@ -491,14 +491,14 @@ contract LockedEarnPool is CreditFundBase {
   /**
    * @dev early-redeem payout on `amount` principal. Within PENALTY_WINDOW of the
    *      position's deposit time a flat `penaltyRate` is charged on the redeemed
-   *      principal; past the window the full principal is returned. Interest is
-   *      always forfeited on early redemption (distributed off-pool).
-   *      payout = amount - (amount * penaltyRate / PRECISION)  [within window]
-   *      payout = amount                                        [after window]
+   *      principal; past the window the full principal is returned.
+   *
+   *      The penalty rounds UP, so the truncated remainder accrues to the fund rather
+   *      than to the redeemer.
    */
   function _earlyRedeemPayout(uint256 depositTime, uint256 amount) internal view returns (uint256) {
     if (block.timestamp < depositTime + PENALTY_WINDOW) {
-      uint256 penalty = (amount * penaltyRate) / PRECISION;
+      uint256 penalty = (amount * penaltyRate + PRECISION - 1) / PRECISION;
       return amount - penalty;
     }
     return amount;
