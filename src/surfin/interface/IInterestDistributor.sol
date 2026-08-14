@@ -11,6 +11,9 @@ pragma solidity ^0.8.20;
  * the distributor.
  */
 interface IInterestDistributor {
+  /// @dev the single interest token; leaves and payouts are denominated in it
+  function token() external view returns (address);
+
   /// @dev fund the distributor with interest to distribute; pulls `amount` of the
   ///      interest token from the caller, who must hold the FUNDER role
   function notifyReward(uint256 amount) external;

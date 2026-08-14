@@ -99,6 +99,8 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
     require(_flexPool != address(0), "flexPool is zero address");
     require(_lockedPool != address(0), "lockedPool is zero address");
     require(_surfinWallet != address(0), "surfinWallet is zero address");
+    require(ICreditFundPool(_flexPool).asset() == asset, "flexPool asset mismatch");
+    require(ICreditFundPool(_lockedPool).asset() == asset, "lockedPool asset mismatch");
 
     __AccessControlEnumerable_init();
     __Pausable_init();
@@ -357,6 +359,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
 
   function setInterestDistributor(address _interestDistributor) external onlyRole(MANAGER) {
     require(_interestDistributor != address(0), "interestDistributor is zero address");
+    require(IInterestDistributor(_interestDistributor).token() == asset, "distributor asset mismatch");
     interestDistributor = _interestDistributor;
     emit SetInterestDistributor(_interestDistributor);
   }

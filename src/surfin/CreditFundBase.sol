@@ -9,6 +9,8 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
+import { ISurfinAdapter } from "./interface/ISurfinAdapter.sol";
+
 /**
  * @title CreditFundBase
  * @notice Shared base for the Surfin flex/locked earn pools.
@@ -287,6 +289,7 @@ abstract contract CreditFundBase is
     require(_adapter != address(0), "adapter is zero address");
     require(_adapter != adapter, "same adapter");
     require(totalPrincipal() == 0 && totalPendingWithdraw == 0 && withdrawQuota == 0, "pool has live accounting");
+    require(ISurfinAdapter(_adapter).asset() == asset, "adapter asset mismatch");
     adapter = _adapter;
     emit SetAdapter(_adapter);
   }
@@ -440,12 +443,15 @@ abstract contract CreditFundBase is
    *      A dust exit therefore also requires that nothing is pending that could be
    *      cancelled back into spendable balance.
    * @param user the caller whose position is being drained
-   * @param amount the requested withdraw/redeem principal
+   * @param queued the payout that will enter the settlement queue — what the floor
+   *        measures, since an early-redeem penalty makes it smaller than `redeemed`
+   * @param redeemed the principal leaving the balance/position — what the dust exit
+   *        measures, since a penalized payout can never equal the position
    * @param remaining the caller's full withdrawable balance/position principal
    */
-  function _checkMinWithdraw(address user, uint256 amount, uint256 remaining) internal view {
-    if (minWithdraw > 0 && amount < minWithdraw) {
-      require(amount == remaining, "below min withdraw");
+  function _checkMinWithdraw(address user, uint256 queued, uint256 redeemed, uint256 remaining) internal view {
+    if (minWithdraw > 0 && queued < minWithdraw) {
+      require(redeemed == remaining, "below min withdraw");
       require(!_hasCancellableRequest(user), "cancellable request pending");
     }
   }

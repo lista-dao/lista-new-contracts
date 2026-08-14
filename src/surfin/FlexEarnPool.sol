@@ -72,7 +72,7 @@ contract FlexEarnPool is CreditFundBase {
 
     // min-withdraw floor with dust exit: a sub-min request must drain the balance and
     // leave nothing cancellable behind it
-    _checkMinWithdraw(msg.sender, amount, balanceOf[msg.sender]);
+    _checkMinWithdraw(msg.sender, amount, amount, balanceOf[msg.sender]);
 
     // enforce per-address daily submit limit
     _consumeDailyLimit(msg.sender, amount);

@@ -201,6 +201,76 @@ contract LockedEarnPoolTest is SurfinTestBase {
     assertEq(locked.totalPendingWithdraw(), 49_600 ether);
   }
 
+  /* ------- B1d: withdrawal limits measure the payout, not the gross redeem ------- */
+
+  /**
+   * The floor guards the settlement queue, and what lands there is the payout. Measuring
+   * it on the gross amount let a sub-floor row in while the position stayed open.
+   */
+  function test_B1d_grossAtTheFloorIsRejectedWhenThePayoutIsBelowIt() public {
+    vm.warp(T0);
+    vm.prank(manager);
+    locked.setMinWithdraw(50 ether);
+    _openCohort(1);
+    _depositLocked(alice, 1, 1_000 ether, false);
+
+    // gross 50 == floor, but payout 49.6 < floor and the position is not being cleared
+    vm.prank(alice);
+    vm.expectRevert("below min withdraw");
+    locked.requestEarlyRedeem(0, 50 ether, 0, block.timestamp);
+  }
+
+  /// @dev the smallest redeem that clears the floor on a payout basis is accepted.
+  function test_B1d_payoutAtTheFloorIsAccepted() public {
+    vm.warp(T0);
+    vm.prank(manager);
+    locked.setMinWithdraw(50 ether);
+    _openCohort(1);
+    _depositLocked(alice, 1, 1_000 ether, false);
+
+    uint256 gross = 50_403225806451612903; // * 0.992 == exactly 50e18
+    assertEq(locked.previewEarlyRedeem(alice, 0, gross), 50 ether, "payout sits on the floor");
+
+    vm.prank(alice);
+    locked.requestEarlyRedeem(0, gross, 0, block.timestamp);
+    assertEq(locked.getUserWithdrawalRequests(alice)[0].amount, 50 ether, "queued at the floor");
+    assertFalse(locked.getUserPositions(alice)[0].closed, "partial redeem, position stays open");
+  }
+
+  /**
+   * The dust exit still measures the gross redeem: a penalized payout can never equal
+   * the position, so keying the escape on it would strand any position below the floor
+   * for the whole penalty window.
+   */
+  function test_B1d_wholePositionBelowTheFloorStillExits() public {
+    vm.warp(T0);
+    vm.prank(manager);
+    locked.setMinWithdraw(50 ether);
+    _openCohort(1);
+    _depositLocked(alice, 1, 40 ether, false); // entire position under the floor
+
+    vm.prank(alice);
+    locked.requestEarlyRedeem(0, 40 ether, 0, block.timestamp);
+
+    assertTrue(locked.getUserPositions(alice)[0].closed, "position cleared");
+    assertEq(locked.getUserWithdrawalRequests(alice)[0].amount, 39.68 ether, "penalized payout queued");
+  }
+
+  /// @dev the daily cap keeps measuring the payout — it paces cash the fund must send.
+  function test_B1d_dailyCapCountsThePayout() public {
+    vm.warp(T0);
+    vm.prank(manager);
+    locked.setDailyLimit(200_000 ether);
+    _openCohort(1);
+    _depositLocked(alice, 1, 500_000 ether, false);
+
+    vm.prank(alice);
+    locked.requestEarlyRedeem(0, 201_612 ether, 0, block.timestamp);
+
+    assertEq(locked.dailySubmitted(block.timestamp / 1 days, alice), 199_999.104 ether, "payout, not gross");
+    assertEq(locked.totalPendingWithdraw(), 199_999.104 ether, "queue owes exactly the payout");
+  }
+
   /* --------------------- B2: early redeem is irreversible --------------------- */
 
   function test_B2_earlyRedeemIsIrreversibleNoCancelEntrypoint() public {

@@ -313,6 +313,10 @@ contract MockDistributor {
     asset = _asset;
   }
 
+  function token() external view returns (address) {
+    return asset;
+  }
+
   function notifyReward(uint256 amount) external {
     IERC20(asset).transferFrom(msg.sender, address(this), amount);
   }

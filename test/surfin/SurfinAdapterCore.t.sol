@@ -144,6 +144,68 @@ contract SurfinAdapterCoreTest is SurfinTestBase {
     adapter.claimFee(10_000 ether + 1);
   }
 
+  /* ------------ C6: wiring must agree on the underlying asset ------------ */
+
+  function test_C6_initializeRejectsAPoolOnAnotherAsset() public {
+    MockERC20 other = new MockERC20("OTHER", "OTHER");
+    FlexEarnPool foreignPool = FlexEarnPool(
+      address(
+        new ERC1967Proxy(
+          address(new FlexEarnPool()),
+          abi.encodeWithSelector(
+            FlexEarnPool.initialize.selector,
+            admin,
+            manager,
+            pauser,
+            bot,
+            address(other),
+            address(this),
+            "Foreign",
+            "FGN"
+          )
+        )
+      )
+    );
+
+    address impl = address(new SurfinAdapter(address(usdt)));
+    bytes memory init = abi.encodeWithSelector(
+      SurfinAdapter.initialize.selector,
+      admin,
+      manager,
+      pauser,
+      bot,
+      address(foreignPool),
+      address(locked),
+      surfinWallet
+    );
+    vm.expectRevert("flexPool asset mismatch");
+    new ERC1967Proxy(impl, init);
+  }
+
+  function test_C6_setInterestDistributorRejectsAForeignToken() public {
+    MockERC20 other = new MockERC20("OTHER", "OTHER");
+    InterestDistributor foreignDist = InterestDistributor(
+      address(
+        new ERC1967Proxy(
+          address(new InterestDistributor()),
+          abi.encodeWithSelector(
+            InterestDistributor.initialize.selector,
+            admin,
+            manager,
+            bot,
+            pauser,
+            address(adapter),
+            address(other)
+          )
+        )
+      )
+    );
+
+    vm.prank(manager);
+    vm.expectRevert("distributor asset mismatch");
+    adapter.setInterestDistributor(address(foreignDist));
+  }
+
   /* --------------------------- C5: emergency rescue --------------------------- */
 
   /// @dev the receiver is caller-supplied, so it must appear in

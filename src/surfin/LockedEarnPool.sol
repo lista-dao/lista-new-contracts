@@ -176,13 +176,14 @@ contract LockedEarnPool is CreditFundBase {
     require(pos.principal > 0 && !pos.closed, "invalid position");
     require(amount > 0 && amount <= pos.principal, "invalid amount");
 
+    uint256 payout = _earlyRedeemPayout(pos.depositTime, amount);
+
     // min-withdraw floor with dust exit: a sub-min redeem must clear the position
-    _checkMinWithdraw(msg.sender, amount, pos.principal);
+    _checkMinWithdraw(msg.sender, payout, amount, pos.principal);
 
     uint256 cohortId = pos.cohortId;
     require(block.timestamp < cohorts[cohortId].maturityTime, "already matured");
 
-    uint256 payout = _earlyRedeemPayout(pos.depositTime, amount);
     require(payout >= minPayout, "payout below minimum");
 
     pos.principal -= amount;
@@ -415,9 +416,10 @@ contract LockedEarnPool is CreditFundBase {
     Position memory pos = userPositions[user][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
     require(amount > 0 && amount <= pos.principal, "invalid amount");
-    _checkMinWithdraw(user, amount, pos.principal);
+    uint256 payout = _earlyRedeemPayout(pos.depositTime, amount);
+    _checkMinWithdraw(user, payout, amount, pos.principal);
     require(block.timestamp < cohorts[pos.cohortId].maturityTime, "already matured");
-    return _earlyRedeemPayout(pos.depositTime, amount);
+    return payout;
   }
 
   /* MANAGER FUNCTIONS */
