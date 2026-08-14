@@ -10,15 +10,14 @@ import { CreditFundBase } from "./CreditFundBase.sol";
  * @title LockedEarnPool
  * @notice Locked (term) product of the Surfin Credit Fund (e.g. 3M+, 6M+).
  *
- * Each deposit joins a cohort (issuance batch). The cohort carries the
- * settlement-aligned interest-start and maturity dates, injected
- * off-chain by the manager and bounded on-chain, so every position in a batch
- * shares the same schedule and one update covers them all. Early redemption
- * (partial allowed) forfeits all interest and, if made within PENALTY_WINDOW of
- * deposit, deducts a flat `penaltyRate` on the redeemed principal; past the
- * window the full principal is returned. Interest (base + loyalty) is distributed
- * off-pool via the cumulative Merkle InterestDistributor; renewal rolls the
- * principal only into a fresh cohort.
+ * Each deposit joins a cohort (issuance batch) whose settlement-aligned maturity is
+ * injected off-chain by the manager and bounded on-chain, so every position in a batch
+ * shares one schedule. Early redemption (partial allowed) deducts a flat `penaltyRate`
+ * on the redeemed principal within PENALTY_WINDOW of deposit; past the window the
+ * principal is returned in full. Interest lives entirely off-pool in the cumulative
+ * Merkle InterestDistributor: forfeiting it on early redemption is the off-chain
+ * calculator's policy, not something this contract enforces or can revoke. Renewal
+ * rolls principal only.
  */
 contract LockedEarnPool is CreditFundBase {
   using SafeERC20 for IERC20;
