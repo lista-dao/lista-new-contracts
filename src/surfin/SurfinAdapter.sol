@@ -37,7 +37,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   // interest distributor (cumulative Merkle interest payouts)
   address public interestDistributor;
 
-  // accrued Lista profit fee earmark; withdrawable by manager only
+  // accrued Lista profit fee earmark; the BOT claims it, only to the manager-set feeReceiver
   uint256 public accruedFee;
   // book value currently deployed to Surfin
   uint256 public deployedToSurfin;
