@@ -418,9 +418,8 @@ abstract contract CreditFundBase is
     amount = req.amount;
   }
 
-  /**
-   * @dev check and consume the per-address daily submit limit.
-   */
+  /// @dev check and consume the per-address daily submit limit. Cancelling a request does
+  ///      not give the allowance back: this counts submissions per day, not net position.
   function _consumeDailyLimit(address user, uint256 amount) internal {
     if (dailyLimit > 0) {
       uint256 day = block.timestamp / 1 days;
