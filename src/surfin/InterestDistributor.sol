@@ -73,7 +73,7 @@ contract InterestDistributor is
   bytes32 public constant FUNDER = keccak256("FUNDER");
 
   event Claimed(address indexed account, uint256 amount, uint256 totalAmount);
-  event SkipClaim(address indexed account, uint256 totalAmount, uint256 alreadyClaimed);
+  event SkipClaim(address indexed account, uint256 totalAmount);
   event RewardFunded(address indexed funder, uint256 amount);
   event SetPendingMerkleRoot(bytes32 merkleRoot, uint256 lastSetTime, uint256 activationTime);
   event AcceptMerkleRoot(bytes32 merkleRoot, uint256 acceptedTime);
@@ -139,16 +139,9 @@ contract InterestDistributor is
   /**
    * @dev Batch claim interest. Can be called by anyone as long as the proofs are valid.
    *
-   *      Entries whose cumulative amount is already claimed are skipped rather than
-   *      reverting the batch. Claims are permissionless, so anyone can land one entry
-   *      ahead of a prepared batch; an atomic loop would let that single already-settled
-   *      row roll back every other claim in the transaction, forcing a rebuild and
-   *      resubmit while the rest of the users wait. Each skip emits SkipClaim so the
-   *      submitter can reconcile.
-   *
-   *      Only the already-claimed race is tolerated. An invalid proof still reverts: that
-   *      is a malformed batch, not a race, and swallowing it would hide a bad root or a
-   *      bad tree from whoever built it.
+   *      Claims are permissionless, so a row may already be settled by the time the batch
+   *      lands; those are skipped rather than reverting everyone else. Only exact equality
+   *      is tolerated — a lower total means a backwards root or a stale tree.
    * @param _accounts Addresses of claiming accounts
    * @param _totalAmounts Total amounts of interest claimable by the accounts
    * @param _proofs Merkle proofs of the claims
@@ -161,10 +154,11 @@ contract InterestDistributor is
     require(_accounts.length == _totalAmounts.length && _accounts.length == _proofs.length, "Invalid input lengths");
 
     for (uint256 i = 0; i < _accounts.length; i++) {
-      if (_totalAmounts[i] <= claimed[_accounts[i]]) {
-        emit SkipClaim(_accounts[i], _totalAmounts[i], claimed[_accounts[i]]);
+      if (_totalAmounts[i] == claimed[_accounts[i]]) {
+        emit SkipClaim(_accounts[i], _totalAmounts[i]);
         continue;
       }
+      // a lower total falls through and _claim reverts it with "Invalid total amount"
       _claim(_accounts[i], _totalAmounts[i], _proofs[i]);
     }
   }
@@ -179,9 +173,8 @@ contract InterestDistributor is
     _claim(_account, _totalAmount, _proof);
   }
 
-  /// @dev shared claim body; `batchClaim` filters the already-claimed case before
-  ///      calling in, the single-claim entrypoint lets it revert. Both entrypoints carry
-  ///      `whenNotPaused`, so the gate is not bypassed by routing through here.
+  /// @dev shared claim body. Both entrypoints carry `whenNotPaused`, so routing through
+  ///      here does not bypass the gate.
   function _claim(address _account, uint256 _totalAmount, bytes32[] memory _proof) internal {
     require(merkleRoot != bytes32(0), "Invalid merkle root");
 

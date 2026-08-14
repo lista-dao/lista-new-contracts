@@ -58,7 +58,7 @@ contract InterestDistributorTest is SurfinTestBase {
     (accounts[1], totals[1], proofs[1]) = (bob, 2_000 ether, proofB); // still owed
 
     vm.expectEmit(true, false, false, true, address(distributor));
-    emit InterestDistributor.SkipClaim(alice, 1_000 ether, 1_000 ether);
+    emit InterestDistributor.SkipClaim(alice, 1_000 ether);
 
     distributor.batchClaim(accounts, totals, proofs);
 
@@ -79,6 +79,55 @@ contract InterestDistributorTest is SurfinTestBase {
 
     vm.expectRevert("Invalid proof");
     distributor.batchClaim(accounts, totals, proofs);
+  }
+
+  /**
+   * @dev a row asking for LESS than the account already claimed is not a race — `claimed`
+   *      is pinned to the live leaf, so no caller can manufacture it. It means the
+   *      published root lowered someone's cumulative, or the batch was built against a
+   *      stale tree. Either way the batch must revert rather than quietly drop the row.
+   */
+  function test_D5_batchClaimRevertsOnALowerTotalThanAlreadyClaimed() public {
+    usdt.mint(address(distributor), 3_000 ether);
+    _publishRoot(_leaf(alice, 1_000 ether));
+    distributor.claim(alice, 1_000 ether, emptyProof);
+
+    // an operator publishes a root that lowers alice's cumulative
+    _publishRoot(_leaf(alice, 500 ether));
+
+    address[] memory accounts = new address[](1);
+    uint256[] memory totals = new uint256[](1);
+    bytes32[][] memory proofs = new bytes32[][](1);
+    (accounts[0], totals[0], proofs[0]) = (alice, 500 ether, emptyProof);
+
+    // the single-claim path already surfaced this; the batch path now does too
+    vm.expectRevert("Invalid total amount");
+    distributor.claim(alice, 500 ether, emptyProof);
+    vm.expectRevert("Invalid total amount");
+    distributor.batchClaim(accounts, totals, proofs);
+  }
+
+  /// @dev and a lower-total row takes the rest of the batch with it, by design.
+  function test_D5_aLowerTotalRowStopsTheWholeBatch() public {
+    usdt.mint(address(distributor), 5_000 ether);
+    _publishRoot(_leaf(alice, 1_000 ether));
+    distributor.claim(alice, 1_000 ether, emptyProof);
+
+    (bytes32 root, bytes32[] memory proofA, bytes32[] memory proofB) = _pairTree(
+      _leaf(alice, 500 ether), // lowered
+      _leaf(bob, 2_000 ether)
+    );
+    _publishRoot(root);
+
+    address[] memory accounts = new address[](2);
+    uint256[] memory totals = new uint256[](2);
+    bytes32[][] memory proofs = new bytes32[][](2);
+    (accounts[0], totals[0], proofs[0]) = (alice, 500 ether, proofA);
+    (accounts[1], totals[1], proofs[1]) = (bob, 2_000 ether, proofB);
+
+    vm.expectRevert("Invalid total amount");
+    distributor.batchClaim(accounts, totals, proofs);
+    assertEq(usdt.balanceOf(bob), 0, "nothing settles until the root is corrected");
   }
 
   /* ---------- D6: a staged root keeps the period it was staged under ---------- */
