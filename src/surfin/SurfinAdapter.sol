@@ -204,22 +204,10 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   function fundInterest(uint256 amount) external onlyRole(MANAGER) {
     require(interestDistributor != address(0), "interestDistributor not set");
     require(amount > 0, "amount is zero");
-    // Interest may still consume the hard floor — the floor doubles as the interest
-    // reserve — and the fee earmark stays protected via freeIdle. A drained floor
-    // blocks withdrawals through _availableForWithdraw until the next recall tops it
-    // back up.
-    //
-    // freeIdle alone does not distinguish realized yield from user principal, so a
-    // fresh deposit could otherwise be paid straight out as someone else's interest,
-    // leaving the pool's principal liability unbacked. It would also make the outcome
-    // depend on whether MANAGER or the BOT moved first — funding interest before the
-    // queue could starve a withdrawal that was fundable a block earlier. Reserving the
-    // queued obligation removes both. Realized-yield accounting itself stays off-chain.
-    //
-    // The hard floor is deliberately NOT reserved on top: it is the interest reserve,
-    // and reserving it here would make interest unable to pierce it at all. The residual
-    // is that a maxed-out interest run leaves the queue payable only down to the floor
-    // (withdrawals may never pierce it), with the last slice waiting on the next recall.
+    // Reserved: the flex queue, payable on demand from this same buffer. Not reserved:
+    // the hard floor (it doubles as the interest reserve, so a drained floor only blocks
+    // withdrawals until the next recall) and the locked maturity queue — see
+    // onDemandUnfunded. Realized-yield accounting stays off-chain.
     require(amount <= _availableForInterest(), "insufficient idle");
     IERC20(asset).safeIncreaseAllowance(interestDistributor, amount);
     IInterestDistributor(interestDistributor).notifyReward(amount);
@@ -280,7 +268,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
 
   /**
    * @dev the unfunded half of one pool's queue. Shared by the floor base, the deploy
-   *      ceiling and the interest cap so the three agree on what "already funded" means.
+   *      ceiling and the interest cap; they differ only in which pools they aggregate.
    */
   function _poolUnfunded(address pool) internal view returns (uint256) {
     ICreditFundPool p = ICreditFundPool(pool);
@@ -307,6 +295,20 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   }
 
   /**
+   * @dev the queue slice that must be payable on demand out of idle cash: the flex pool
+   *      only. The locked MATURITY queue is settled from the recall earmarked for it, so
+   *      reserving it here books the same obligation twice — it froze interest funding
+   *      (for every user, flex included) and deployment for the whole maturity-to-recall
+   *      gap, and no in-pool action could clear it: feeding the queue lowers idle and the
+   *      reservation equally. Early redemptions ride along, being indistinguishable
+   *      on-chain. deployToSurfin stays MANAGER-gated, so holding back while maturities
+   *      are outstanding remains an operating choice rather than a hard block.
+   */
+  function onDemandUnfunded() public view returns (uint256) {
+    return _poolUnfunded(flexPool);
+  }
+
+  /**
    * @dev max amount deployable to Surfin: free idle (already net of the fee earmark)
    *      less the hard floor and the queued withdrawals still owed cash.
    *
@@ -322,7 +324,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
    */
   function maxDeployToSurfin() public view returns (uint256) {
     uint256 free = freeIdle();
-    uint256 reserved = hardFloor() + unfundedWithdrawals();
+    uint256 reserved = hardFloor() + onDemandUnfunded();
     return free > reserved ? free - reserved : 0;
   }
 
@@ -398,7 +400,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
    */
   function _availableForInterest() internal view returns (uint256) {
     uint256 free = freeIdle();
-    uint256 reserved = unfundedWithdrawals();
+    uint256 reserved = onDemandUnfunded();
     return free > reserved ? free - reserved : 0;
   }
 

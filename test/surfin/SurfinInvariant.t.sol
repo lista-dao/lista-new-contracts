@@ -396,6 +396,74 @@ contract SurfinInvariant is SurfinTestBase {
     assertEq(usdt.balanceOf(alice), 60_000 ether, "queued exit survived the interest run");
   }
 
+  /// inv9 — a locked MATURITY queue blocks neither interest funding nor deployment,
+  ///        while a flex queue still reserves against both. The maturity queue is settled
+  ///        from the recall proceeds earmarked for it, so reserving it out of idle cash
+  ///        reserves the same obligation twice; the old rule froze interest for every
+  ///        user (flex holders included) and froze deployment for the whole
+  ///        maturity-to-recall gap, and no in-pool action could clear it — feeding the
+  ///        queue lowers idle and the reservation by the same amount.
+  function test_inv9_lockedMaturityQueueBlocksNeitherInterestNorDeploy() public {
+    vm.warp(1_000_000);
+    _setCohort(1, 90, block.timestamp + 1 days, block.timestamp + 91 days, true);
+    _depositLocked(alice, 1, 500_000 ether, false);
+    _depositFlex(bob, 100_000 ether);
+
+    // the locked principal is put to work at Surfin, leaving only the 100k buffer idle
+    vm.prank(manager);
+    adapter.deployToSurfin(500_000 ether);
+    assertEq(adapter.idleBalance(), 100_000 ether, "only the buffer stays home");
+
+    // the cohort matures and the BOT queues the exit; the recall has not landed yet
+    vm.warp(block.timestamp + 92 days);
+    address[] memory users = new address[](1);
+    uint256[] memory posIds = new uint256[](1);
+    users[0] = alice;
+    vm.prank(bot);
+    locked.batchRequestMaturityWithdraw(users, posIds);
+
+    assertEq(locked.totalPendingWithdraw(), 500_000 ether, "maturity queued");
+    assertEq(adapter.unfundedWithdrawals(), 500_000 ether, "the full obligation is still reported");
+    assertEq(adapter.onDemandUnfunded(), 0, "but none of it is payable on demand");
+
+    // deployment is no longer frozen: idle 100k - 18k floor (floor base is unchanged,
+    // the maturing principal just moved from totalPrincipal into the pending queue)
+    assertEq(adapter.hardFloor(), 18_000 ether);
+    assertEq(adapter.maxDeployToSurfin(), 82_000 ether, "maturity queue no longer freezes deploy");
+
+    // interest for the epoch is fundable out of the idle buffer
+    assertEq(adapter.freeIdle(), 100_000 ether);
+    vm.prank(manager);
+    adapter.fundInterest(20_000 ether);
+    assertEq(usdt.balanceOf(address(distributor)), 20_000 ether, "interest funded despite maturity queue");
+
+    // a FLEX queue is still reserved: it is payable on demand from this same buffer
+    vm.prank(bob);
+    flex.requestWithdraw(60_000 ether);
+    assertEq(adapter.onDemandUnfunded(), 60_000 ether, "flex queue reserved");
+    assertEq(adapter.freeIdle(), 80_000 ether);
+    vm.prank(manager);
+    vm.expectRevert("insufficient idle");
+    adapter.fundInterest(20_000 ether + 1);
+    vm.prank(manager);
+    adapter.fundInterest(20_000 ether); // 80k idle - 60k flex queue
+
+    // the flex queue reserves against the deploy ceiling too: 60k idle left, of which the
+    // 60k queue and the 18k floor claim everything, so nothing may leave for Surfin
+    assertEq(adapter.idleBalance(), 60_000 ether);
+    assertEq(adapter.maxDeployToSurfin(), 0, "flex queue + floor fully reserve the buffer");
+    vm.prank(manager);
+    vm.expectRevert("exceeds deployable");
+    adapter.deployToSurfin(1);
+
+    // and the queue is payable down to the floor, the documented residual: the last
+    // slice waits for the next recall exactly as it did before this change
+    assertEq(adapter.instantWithdrawable(), 42_000 ether, "60k idle - 18k floor");
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(42_000 ether);
+    assertEq(flex.confirmedBatchId(), 0, "60k batch still short by the floor");
+  }
+
   /* ---- helper ---- */
   function _assertConservation() internal view {
     uint256 lhs = usdt.balanceOf(address(adapter)) + usdt.balanceOf(address(flex)) + usdt.balanceOf(surfinWallet);
