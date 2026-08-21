@@ -112,52 +112,35 @@ contract FlexEarnPoolTest is SurfinTestBase {
     assertEq(flex.dailyLimit(), 100 ether);
   }
 
-  /* ------------- A7: the dust exit cannot be recycled via cancel ------------- */
+  /* --------------------------- A7: the dust exit --------------------------- */
 
-  /**
-   * The reported bypass: request 90 of a 100 balance, then request the last 10 as a
-   * "dust exit", then cancel the 90 and get the LP back — leaving a 10 request in the
-   * settlement queue below the configured floor, with the position never exited.
-   * Repeatable, so the floor becomes advisory.
-   */
-  function test_A7_dustExitBlockedWhileACancellableRequestIsPending() public {
+  /// @dev a queued request can never come back as spendable balance, so the live
+  ///      balance is a sound measure of "drains the position" and a sub-floor request
+  ///      behind an earlier one is an honest exit.
+  function test_A7_dustExitDrainsThePositionOrReverts() public {
     vm.prank(manager);
     flex.setMinWithdraw(50 ether);
     _depositFlex(alice, 100 ether);
 
     vm.prank(alice);
-    flex.requestWithdraw(90 ether); // above the floor, still cancellable
+    flex.requestWithdraw(90 ether); // above the floor
 
     vm.prank(alice);
-    vm.expectRevert("cancellable request pending");
-    flex.requestWithdraw(10 ether); // would have passed as a dust exit
+    flex.requestWithdraw(10 ether); // sub-floor but drains the balance -> allowed
+    assertEq(flex.balanceOf(alice), 0, "position genuinely exited");
+    assertEq(flex.totalPendingWithdraw(), 100 ether, "both requests queued");
 
-    // the floor itself is unchanged for ordinary amounts
-    vm.prank(alice);
+    // a sub-floor request that leaves a remainder is still rejected
+    _depositFlex(bob, 100 ether);
+    vm.prank(bob);
     vm.expectRevert("below min withdraw");
     flex.requestWithdraw(9 ether);
-  }
 
-  /// @dev an honest dust exit still works: nothing cancellable is left behind.
-  function test_A7_dustExitAllowedOnceNothingIsCancellable() public {
-    vm.prank(manager);
-    flex.setMinWithdraw(50 ether);
-    _depositFlex(alice, 100 ether);
-
-    vm.prank(alice);
-    flex.requestWithdraw(90 ether);
-    vm.prank(bot);
-    adapter.finishFlexWithdraw(90 ether); // confirmed -> no longer cancellable
-
-    vm.prank(alice);
-    flex.requestWithdraw(10 ether); // drains the balance, nothing to recycle
-    assertEq(flex.balanceOf(alice), 0, "position genuinely exited");
-
-    // a clean single dust exit with no queue at all also still works
-    _depositFlex(bob, 10 ether);
-    vm.prank(bob);
+    // a clean single dust exit with no queue at all works
+    _depositFlex(charlie, 10 ether);
+    vm.prank(charlie);
     flex.requestWithdraw(10 ether);
-    assertEq(flex.balanceOf(bob), 0);
+    assertEq(flex.balanceOf(charlie), 0);
   }
 
   /* ----------------------------- A1: deposit ----------------------------- */
@@ -245,9 +228,9 @@ contract FlexEarnPoolTest is SurfinTestBase {
     assertEq(flex.balanceOf(alice), 100_000 ether, "both days' requests cleared");
   }
 
-  /* --------------------- A3: cancel does not refund quota --------------------- */
+  /* ------------------ A3: the daily cap counts submissions ------------------ */
 
-  function test_A3_cancelDoesNotRefundDailyQuota() public {
+  function test_A3_dailyCapAccumulatesAcrossRequests() public {
     vm.prank(manager);
     flex.setDailyLimit(200_000 ether);
     _depositFlex(alice, 500_000 ether);
@@ -255,43 +238,13 @@ contract FlexEarnPoolTest is SurfinTestBase {
     vm.prank(alice);
     flex.requestWithdraw(100_000 ether); // 100k of today's cap consumed
 
-    vm.prank(alice);
-    flex.cancelWithdraw(0, 100_000 ether); // restores LP, but the daily quota is NOT given back
-
     // 100k already counted + 150k new = 250k > 200k cap -> revert
     vm.prank(alice);
     vm.expectRevert("exceeds daily limit");
     flex.requestWithdraw(150_000 ether);
   }
 
-  /* ----------------------- A4: cancel semantics ----------------------- */
-
-  function test_A4_cancelRestoresLpAndMovesNoCash() public {
-    _depositFlex(alice, 100_000 ether);
-    vm.prank(alice);
-    flex.requestWithdraw(40_000 ether);
-
-    uint256 adapterBal = usdt.balanceOf(address(adapter));
-    vm.prank(alice);
-    flex.cancelWithdraw(0, 40_000 ether);
-
-    assertEq(flex.balanceOf(alice), 100_000 ether, "LP fully restored");
-    assertEq(flex.totalPendingWithdraw(), 0, "pending removed");
-    assertEq(usdt.balanceOf(address(adapter)), adapterBal, "cancel moves no USDT");
-    assertEq(usdt.balanceOf(alice), 0, "user receives nothing on cancel");
-  }
-
-  function test_A4_cancelConfirmedRequestReverts() public {
-    _depositFlex(alice, 100_000 ether);
-    vm.prank(alice);
-    flex.requestWithdraw(40_000 ether);
-    vm.prank(bot);
-    adapter.finishFlexWithdraw(40_000 ether); // batch 1 confirmed
-
-    vm.prank(alice);
-    vm.expectRevert("already confirmed");
-    flex.cancelWithdraw(0, 40_000 ether);
-  }
+  /* ----------------------- A4: claim semantics ----------------------- */
 
   function test_A4_claimBeforeConfirmationReverts() public {
     _depositFlex(alice, 100_000 ether);

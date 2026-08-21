@@ -71,18 +71,6 @@ contract FlexInvariantHandler is Test {
     }
   }
 
-  function cancelFlex(uint256 actorSeed) public {
-    address a = actors[actorSeed % actors.length];
-    CreditFundBase.WithdrawalRequest[] memory reqs = flex.getUserWithdrawalRequests(a);
-    for (uint256 i = 0; i < reqs.length; i++) {
-      if (reqs[i].batchId > flex.confirmedBatchId()) {
-        vm.prank(a);
-        flex.cancelWithdraw(i, reqs[i].amount);
-        return;
-      }
-    }
-  }
-
   function deploy(uint256 amount) public {
     uint256 max = adapter.maxDeployToSurfin();
     if (max == 0) return;

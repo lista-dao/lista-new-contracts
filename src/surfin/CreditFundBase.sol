@@ -106,7 +106,6 @@ abstract contract CreditFundBase is
   event RequestWithdraw(address indexed owner, address indexed receiver, uint256 batchId, uint256 amount);
   event FinishWithdraw(uint256 batchId, uint256 amount);
   event ClaimWithdrawal(address indexed user, uint256 idx, uint256 amount);
-  event CancelWithdrawal(address indexed user, uint256 idx, uint256 amount);
   event SetMinDeposit(uint256 minDeposit);
   event SetMinWithdraw(uint256 minWithdraw);
   event SetDailyLimit(uint256 dailyLimit);
@@ -176,12 +175,10 @@ abstract contract CreditFundBase is
       //
       // The bound is the UNCONFIRMED obligation, not totalPendingWithdraw: a confirmed
       // batch's cash already sits in this contract, so counting it here would license a
-      // second, unbacked helping of quota. Under the wider bound a partial push followed
-      // by a cancellation left quota stranded behind the confirmed-unclaimed balance,
-      // invisible until the last claim dropped totalPendingWithdraw to 0.
+      // second, unbacked helping of quota.
       //
       // Checked only on funding pushes (amount > 0); a 0-amount tick can always advance
-      // batches, so cancellations can never wedge batch confirmation.
+      // batches.
       require(withdrawQuota <= _unconfirmedObligation(), "quota exceeds pending");
     }
 
@@ -351,44 +348,6 @@ abstract contract CreditFundBase is
   }
 
   /**
-   * @dev remove an unconfirmed withdrawal request (for cancellation). Returns its amount.
-   */
-  function _removeWithdrawRequest(address user, uint256 idx, uint256 expectedAmount) internal returns (uint256 amount) {
-    WithdrawalRequest[] storage reqs = userWithdrawalRequests[user];
-    require(idx < reqs.length, "invalid index");
-
-    WithdrawalRequest memory req = reqs[idx];
-    require(req.amount == expectedAmount, "amount mismatch");
-    require(req.batchId > confirmedBatchId, "already confirmed");
-
-    reqs[idx] = reqs[reqs.length - 1];
-    reqs.pop();
-
-    totalWithdrawAmountInBatch[req.batchId] -= req.amount;
-    totalPendingWithdraw -= req.amount;
-    amount = req.amount;
-
-    // A cancellation is the ONLY operation that shrinks the unconfirmed obligation
-    // without spending quota, so it is the only place quota can end up exceeding what the
-    // pool still owes cash for. Return the orphan to the adapter, where the floor is
-    // measured, restoring `withdrawQuota <= _unconfirmedObligation()`.
-    //
-    // Measured against the unconfirmed half, not totalPendingWithdraw: the wider predicate
-    // stays false while a confirmed-unclaimed balance masks the excess, so the orphan would
-    // survive here and only surface once the last claim drained the mask.
-    //
-    // Claims need no counterpart: _consumeConfirmedWithdraw shrinks totalPendingWithdraw
-    // and totalConfirmedUnclaimed together, leaving the unconfirmed half — and therefore
-    // this bound — untouched.
-    uint256 unconfirmed = _unconfirmedObligation();
-    if (withdrawQuota > unconfirmed) {
-      uint256 excess = withdrawQuota - unconfirmed;
-      withdrawQuota -= excess;
-      IERC20(asset).safeTransfer(adapter, excess);
-    }
-  }
-
-  /**
    * @dev consume a confirmed (already-funded) withdrawal request: remove it and
    *      decrement the pending total, returning its amount. Shared by claimWithdraw
    *      (pays the user) and the locked pool's reinvest (rolls the funded principal
@@ -431,16 +390,8 @@ abstract contract CreditFundBase is
   /**
    * @dev enforce the minimum-withdraw floor with a dust exit: a sub-minimum request is
    *      only allowed when it drains the caller's whole remaining balance/position, so
-   *      a below-minimum remainder can never get stranded.
-   *
-   *      "Drains the balance" cannot be measured against the live balance alone,
-   *      which a cancellable request can put straight back. Hold 100 with a 50 floor:
-   *      request 90, then request the last 10 as a dust exit, then cancel the 90 and
-   *      the LP returns — leaving a 10 request sitting in the settlement queue, below
-   *      the configured minimum, with the position never actually exited. Repeatable,
-   *      so the floor becomes advisory and dust can be injected into any open batch.
-   *      A dust exit therefore also requires that nothing is pending that could be
-   *      cancelled back into spendable balance.
+   *      a below-minimum remainder can never get stranded. A queued request cannot be
+   *      reversed, so the live balance is a sound measure of what is left.
    * @param user the caller whose position is being drained
    * @param queued the payout that will enter the settlement queue — what the floor
    *        measures, since an early-redeem penalty makes it smaller than `redeemed`
@@ -451,35 +402,7 @@ abstract contract CreditFundBase is
   function _checkMinWithdraw(address user, uint256 queued, uint256 redeemed, uint256 remaining) internal view {
     if (minWithdraw > 0 && queued < minWithdraw) {
       require(redeemed == remaining, "below min withdraw");
-      require(!_hasCancellableRequest(user), "cancellable request pending");
     }
-  }
-
-  /**
-   * @dev does `user` hold a queued request they could still cancel back into spendable
-   *      balance? Only meaningful where the pool offers a cancel path — see
-   *      `_cancelSupported`. Loops the caller's own (self-bounded) request list, and
-   *      only on the dust-exit branch, so the cost lands on the one caller who triggers
-   *      it rather than on every withdrawal.
-   */
-  function _hasCancellableRequest(address user) internal view returns (bool) {
-    if (!_cancelSupported()) return false;
-    WithdrawalRequest[] storage reqs = userWithdrawalRequests[user];
-    uint256 confirmed = confirmedBatchId;
-    for (uint256 i = 0; i < reqs.length; i++) {
-      if (reqs[i].batchId > confirmed) return true;
-    }
-    return false;
-  }
-
-  /**
-   * @dev whether an unconfirmed request in this pool can be reversed by its owner.
-   *      Flex re-mints the LP on `cancelWithdraw`; the locked pool has no cancel
-   *      entrypoint at all, so its queued redemptions can never come back and must not
-   *      be allowed to block an honest dust exit.
-   */
-  function _cancelSupported() internal pure virtual returns (bool) {
-    return false;
   }
 
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}

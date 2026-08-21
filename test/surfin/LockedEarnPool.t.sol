@@ -302,7 +302,7 @@ contract LockedEarnPoolTest is SurfinTestBase {
     vm.prank(alice);
     locked.requestEarlyRedeem(0, 50_000 ether, 0, block.timestamp);
 
-    // Unlike FlexEarnPool, LockedEarnPool exposes no cancelWithdraw. The position is
+    // Neither pool exposes a cancel path. The position is
     // closed and the queued payout can only be consumed via claimWithdraw after
     // funding — there is no path to reopen the position or reclaim the principal.
     LockedEarnPool.Position[] memory pos = locked.getUserPositions(alice);
