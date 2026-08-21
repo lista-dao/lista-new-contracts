@@ -71,7 +71,7 @@ contract FlexEarnPool is CreditFundBase {
     require(balanceOf[msg.sender] >= amount, "insufficient balance");
 
     // min-withdraw floor with dust exit: a sub-min request must drain the balance
-    _checkMinWithdraw(amount, balanceOf[msg.sender]);
+    _checkMinWithdraw(msg.sender, amount, amount, balanceOf[msg.sender]);
 
     // enforce per-address daily submit limit
     _consumeDailyLimit(msg.sender, amount);
@@ -83,21 +83,9 @@ contract FlexEarnPool is CreditFundBase {
     emit RequestWithdraw(msg.sender, msg.sender, batchId, amount);
   }
 
-  /**
-   * @dev cancel an unconfirmed withdrawal request in full; restores the LP.
-   * @param idx the index of the caller's withdrawal request
-   * @param expectedAmount the expected request amount (M04 fix: prevents swap-and-pop mismatch)
-   */
-  function cancelWithdraw(uint256 idx, uint256 expectedAmount) external whenNotPaused nonReentrant {
-    uint256 amount = _removeWithdrawRequest(msg.sender, idx, expectedAmount);
-    _mint(msg.sender, amount);
-
-    emit CancelWithdrawal(msg.sender, idx, amount);
-  }
-
   /* VIEWS */
   /// @inheritdoc CreditFundBase
-  function totalPrincipal() external view override returns (uint256) {
+  function totalPrincipal() public view override returns (uint256) {
     return totalSupply;
   }
 

@@ -9,6 +9,8 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
+import { ISurfinAdapter } from "./interface/ISurfinAdapter.sol";
+
 /**
  * @title CreditFundBase
  * @notice Shared base for the Surfin flex/locked earn pools.
@@ -104,7 +106,6 @@ abstract contract CreditFundBase is
   event RequestWithdraw(address indexed owner, address indexed receiver, uint256 batchId, uint256 amount);
   event FinishWithdraw(uint256 batchId, uint256 amount);
   event ClaimWithdrawal(address indexed user, uint256 idx, uint256 amount);
-  event CancelWithdrawal(address indexed user, uint256 idx, uint256 amount);
   event SetMinDeposit(uint256 minDeposit);
   event SetMinWithdraw(uint256 minWithdraw);
   event SetDailyLimit(uint256 dailyLimit);
@@ -156,7 +157,7 @@ abstract contract CreditFundBase is
 
   /* ABSTRACT */
   /// @dev total user principal booked in the pool
-  function totalPrincipal() external view virtual returns (uint256);
+  function totalPrincipal() public view virtual returns (uint256);
 
   /* ADAPTER-DRIVEN FUNCTIONS */
   /**
@@ -174,12 +175,10 @@ abstract contract CreditFundBase is
       //
       // The bound is the UNCONFIRMED obligation, not totalPendingWithdraw: a confirmed
       // batch's cash already sits in this contract, so counting it here would license a
-      // second, unbacked helping of quota. Under the wider bound a partial push followed
-      // by a cancellation left quota stranded behind the confirmed-unclaimed balance,
-      // invisible until the last claim dropped totalPendingWithdraw to 0.
+      // second, unbacked helping of quota.
       //
       // Checked only on funding pushes (amount > 0); a 0-amount tick can always advance
-      // batches, so cancellations can never wedge batch confirmation.
+      // batches.
       require(withdrawQuota <= _unconfirmedObligation(), "quota exceeds pending");
     }
 
@@ -252,14 +251,25 @@ abstract contract CreditFundBase is
     emit SetMinDeposit(_minDeposit);
   }
 
+  /**
+   * @dev the floor and the cap have to leave a usable window between them.
+   *      Configured independently they could cross — minWithdraw 500 against a
+   *      dailyLimit of 100 leaves a holder of 1,000 with no legal amount at all: 500
+   *      breaks the cap, 100 breaks the floor, and 1,000 breaks the cap too. The dust
+   *      exit does not save them either, since draining the balance also exceeds the
+   *      cap. Either limit may still be 0 (disabled) independently.
+   */
   function setMinWithdraw(uint256 _minWithdraw) external onlyRole(MANAGER) {
     require(minWithdraw != _minWithdraw, "same minWithdraw");
+    require(_minWithdraw == 0 || dailyLimit == 0 || _minWithdraw <= dailyLimit, "min above daily limit");
     minWithdraw = _minWithdraw;
     emit SetMinWithdraw(_minWithdraw);
   }
 
+  /// @dev see setMinWithdraw for why the two are checked against each other.
   function setDailyLimit(uint256 _dailyLimit) external onlyRole(MANAGER) {
     require(dailyLimit != _dailyLimit, "same dailyLimit");
+    require(_dailyLimit == 0 || minWithdraw == 0 || minWithdraw <= _dailyLimit, "daily limit below min");
     dailyLimit = _dailyLimit;
     emit SetDailyLimit(_dailyLimit);
   }
@@ -270,9 +280,13 @@ abstract contract CreditFundBase is
     emit SetDepositPaused(_paused);
   }
 
+  /// @dev deploy-time rewire only. Deposits forward to whichever adapter is current, so
+  ///      repointing a pool with books leaves the backing at the old address.
   function setAdapter(address _adapter) external onlyRole(DEFAULT_ADMIN_ROLE) {
     require(_adapter != address(0), "adapter is zero address");
     require(_adapter != adapter, "same adapter");
+    require(totalPrincipal() == 0 && totalPendingWithdraw == 0 && withdrawQuota == 0, "pool has live accounting");
+    require(ISurfinAdapter(_adapter).asset() == asset, "adapter asset mismatch");
     adapter = _adapter;
     emit SetAdapter(_adapter);
   }
@@ -297,8 +311,8 @@ abstract contract CreditFundBase is
   }
 
   /**
-   * @dev M03 fix: admin injects funds to cover shortfall when the fund is impaired,
-   *      bypassing the withdrawQuota <= totalPendingWithdraw cap so all batches can confirm.
+   * @dev admin injects funds to cover a shortfall when the fund is impaired, bypassing
+   *      the funding cap so the queued batches can still confirm.
    */
   function adminTopUp(uint256 amount) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
     require(amount > 0, "amount is zero");
@@ -334,44 +348,6 @@ abstract contract CreditFundBase is
   }
 
   /**
-   * @dev remove an unconfirmed withdrawal request (for cancellation). Returns its amount.
-   */
-  function _removeWithdrawRequest(address user, uint256 idx, uint256 expectedAmount) internal returns (uint256 amount) {
-    WithdrawalRequest[] storage reqs = userWithdrawalRequests[user];
-    require(idx < reqs.length, "invalid index");
-
-    WithdrawalRequest memory req = reqs[idx];
-    require(req.amount == expectedAmount, "amount mismatch");
-    require(req.batchId > confirmedBatchId, "already confirmed");
-
-    reqs[idx] = reqs[reqs.length - 1];
-    reqs.pop();
-
-    totalWithdrawAmountInBatch[req.batchId] -= req.amount;
-    totalPendingWithdraw -= req.amount;
-    amount = req.amount;
-
-    // M02 fix: a cancellation is the ONLY operation that shrinks the unconfirmed obligation
-    // without spending quota, so it is the only place quota can end up exceeding what the
-    // pool still owes cash for. Return the orphan to the adapter, where the floor is
-    // measured, restoring `withdrawQuota <= _unconfirmedObligation()`.
-    //
-    // Measured against the unconfirmed half, not totalPendingWithdraw: the wider predicate
-    // stays false while a confirmed-unclaimed balance masks the excess, so the orphan would
-    // survive here and only surface once the last claim drained the mask.
-    //
-    // Claims need no counterpart: _consumeConfirmedWithdraw shrinks totalPendingWithdraw
-    // and totalConfirmedUnclaimed together, leaving the unconfirmed half — and therefore
-    // this bound — untouched.
-    uint256 unconfirmed = _unconfirmedObligation();
-    if (withdrawQuota > unconfirmed) {
-      uint256 excess = withdrawQuota - unconfirmed;
-      withdrawQuota -= excess;
-      IERC20(asset).safeTransfer(adapter, excess);
-    }
-  }
-
-  /**
    * @dev consume a confirmed (already-funded) withdrawal request: remove it and
    *      decrement the pending total, returning its amount. Shared by claimWithdraw
    *      (pays the user) and the locked pool's reinvest (rolls the funded principal
@@ -401,9 +377,8 @@ abstract contract CreditFundBase is
     amount = req.amount;
   }
 
-  /**
-   * @dev check and consume the per-address daily submit limit.
-   */
+  /// @dev check and consume the per-address daily submit limit. Cancelling a request does
+  ///      not give the allowance back: this counts submissions per day, not net position.
   function _consumeDailyLimit(address user, uint256 amount) internal {
     if (dailyLimit > 0) {
       uint256 day = block.timestamp / 1 days;
@@ -413,15 +388,20 @@ abstract contract CreditFundBase is
   }
 
   /**
-   * @dev enforce the minimum-withdraw floor with a dust exit: a sub-minimum request
-   *      is only allowed when it drains the caller's whole remaining balance/position,
-   *      so a below-minimum remainder can never get stranded.
-   * @param amount the requested withdraw/redeem principal
+   * @dev enforce the minimum-withdraw floor with a dust exit: a sub-minimum request is
+   *      only allowed when it drains the caller's whole remaining balance/position, so
+   *      a below-minimum remainder can never get stranded. A queued request cannot be
+   *      reversed, so the live balance is a sound measure of what is left.
+   * @param user the caller whose position is being drained
+   * @param queued the payout that will enter the settlement queue — what the floor
+   *        measures, since an early-redeem penalty makes it smaller than `redeemed`
+   * @param redeemed the principal leaving the balance/position — what the dust exit
+   *        measures, since a penalized payout can never equal the position
    * @param remaining the caller's full withdrawable balance/position principal
    */
-  function _checkMinWithdraw(uint256 amount, uint256 remaining) internal view {
-    if (minWithdraw > 0 && amount < minWithdraw) {
-      require(amount == remaining, "below min withdraw");
+  function _checkMinWithdraw(address user, uint256 queued, uint256 redeemed, uint256 remaining) internal view {
+    if (minWithdraw > 0 && queued < minWithdraw) {
+      require(redeemed == remaining, "below min withdraw");
     }
   }
 

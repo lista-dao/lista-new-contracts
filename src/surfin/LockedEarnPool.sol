@@ -10,15 +10,14 @@ import { CreditFundBase } from "./CreditFundBase.sol";
  * @title LockedEarnPool
  * @notice Locked (term) product of the Surfin Credit Fund (e.g. 3M+, 6M+).
  *
- * Each deposit joins a cohort (issuance batch). The cohort carries the
- * settlement-aligned interest-start and maturity dates, injected
- * off-chain by the manager and bounded on-chain, so every position in a batch
- * shares the same schedule and one update covers them all. Early redemption
- * (partial allowed) forfeits all interest and, if made within PENALTY_WINDOW of
- * deposit, deducts a flat `penaltyRate` on the redeemed principal; past the
- * window the full principal is returned. Interest (base + loyalty) is distributed
- * off-pool via the cumulative Merkle InterestDistributor; renewal rolls the
- * principal only into a fresh cohort.
+ * Each deposit joins a cohort (issuance batch) whose settlement-aligned maturity is
+ * injected off-chain by the manager and bounded on-chain, so every position in a batch
+ * shares one schedule. Early redemption (partial allowed) deducts a flat `penaltyRate`
+ * on the redeemed principal within PENALTY_WINDOW of deposit; past the window the
+ * principal is returned in full. Interest lives entirely off-pool in the cumulative
+ * Merkle InterestDistributor: forfeiting it on early redemption is the off-chain
+ * calculator's policy, not something this contract enforces or can revoke. Renewal
+ * rolls principal only.
  */
 contract LockedEarnPool is CreditFundBase {
   using SafeERC20 for IERC20;
@@ -31,6 +30,13 @@ contract LockedEarnPool is CreditFundBase {
     uint256 depositTime; // position creation time; early-redeem penalty window anchor
     bool autoRenew; // roll principal into a new term on maturity
     bool closed; // position terminated (redeemed / matured-out / renewed)
+  }
+
+  // why batchRequestMaturityWithdraw passed over an entry
+  enum SkipReason {
+    InvalidPosition, // out of range, already closed, or zero principal
+    NotMatured, // cohort maturity not reached yet
+    AutoRenew // still opted into renewal, so renewPosition owns it
   }
 
   // an issuance batch (cohort). Dates are settlement-aligned and injected
@@ -50,7 +56,12 @@ contract LockedEarnPool is CreditFundBase {
   uint256 public constant MAX_PENALTY_RATE = 0.1 ether;
   // guardrail: maturity can be at most this far past the nominal term end
   uint256 public constant MAX_ALIGN_WINDOW = 31 days;
-  // auto-renew is locked within this window before maturity (T-32 checkpoint)
+  // auto-renew is locked within this window before maturity (T-32 checkpoint).
+  //
+  // 32, not 30, on purpose: the off-chain settlement job snapshots the auto-renew flags
+  // at T-30, and a lock starting exactly at T-30 would let a user flip a flag in the
+  // same block the snapshot reads it. The extra two days are that margin. Product docs
+  // describe the checkpoint as "T-30" — that is the SNAPSHOT, not the lock.
   uint256 public constant AUTO_RENEW_LOCK_WINDOW = 32 days;
   // upper bound on termDays to prevent absurd lock durations
   uint256 public constant MAX_TERM_DAYS = 366;
@@ -69,6 +80,7 @@ contract LockedEarnPool is CreditFundBase {
   event LockedDeposit(address indexed user, uint256 posId, uint256 cohortId, uint256 amount, uint256 maturityTime);
   event RequestEarlyRedeem(address indexed user, uint256 posId, uint256 principal, uint256 batchId, uint256 payout);
   event RequestMaturityWithdraw(address indexed user, uint256 posId, uint256 principal, uint256 batchId);
+  event SkipMaturityWithdraw(address indexed user, uint256 posId, SkipReason reason);
   event RenewPosition(address indexed user, uint256 oldPosId, uint256 newPosId, uint256 principal);
   event Reinvest(address indexed user, uint256 idx, uint256 newCohortId, uint256 newPosId, uint256 principal);
   event ToggleAutoRenew(address indexed user, uint256 posId, bool autoRenew);
@@ -140,21 +152,38 @@ contract LockedEarnPool is CreditFundBase {
    *      deposit, a flat `penaltyRate` on the redeemed principal is deducted. The
    *      payout enters the batch queue. The position stays open with reduced
    *      principal, or is closed once fully redeemed.
+   *      `penaltyRate` is mutable (MANAGER, up to MAX_PENALTY_RATE) and the
+   *      payout is recomputed at execution, so a rate change landing between quote and
+   *      submission silently repriced the redemption — a 50,000 exit quoted at 0.8%
+   *      could settle at 10%, removing the full principal from the position and
+   *      queueing a request that cannot be cancelled. `minPayout` and `deadline` give
+   *      the caller the usual slippage/staleness guard over that window.
    * @param posId the caller's position id
    * @param amount the principal amount to early-redeem
+   * @param minPayout lowest acceptable payout; pass the `previewEarlyRedeem` quote
+   * @param deadline last timestamp this request may execute at
    */
-  function requestEarlyRedeem(uint256 posId, uint256 amount) external whenNotPaused whenDepositNotPaused nonReentrant {
+  function requestEarlyRedeem(
+    uint256 posId,
+    uint256 amount,
+    uint256 minPayout,
+    uint256 deadline
+  ) external whenNotPaused whenDepositNotPaused nonReentrant {
+    require(block.timestamp <= deadline, "deadline expired");
+
     Position storage pos = userPositions[msg.sender][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
     require(amount > 0 && amount <= pos.principal, "invalid amount");
 
+    uint256 payout = _earlyRedeemPayout(pos.depositTime, amount);
+
     // min-withdraw floor with dust exit: a sub-min redeem must clear the position
-    _checkMinWithdraw(amount, pos.principal);
+    _checkMinWithdraw(msg.sender, payout, amount, pos.principal);
 
     uint256 cohortId = pos.cohortId;
     require(block.timestamp < cohorts[cohortId].maturityTime, "already matured");
 
-    uint256 payout = _earlyRedeemPayout(pos.depositTime, amount);
+    require(payout >= minPayout, "payout below minimum");
 
     pos.principal -= amount;
     if (pos.principal == 0) {
@@ -185,8 +214,19 @@ contract LockedEarnPool is CreditFundBase {
    *      platform covers the gas. Run early each month once positions have matured.
    *      Each entry follows the same rules as the user path (matured, not
    *      auto-renewing); withdrawTime is the BOT call time (after maturity, so it
-   *      reads as a normal redemption). Reverts atomically on any invalid entry so
-   *      a BOT list-building bug surfaces instead of being silently skipped.
+   *      reads as a normal redemption).
+   *
+   *      Entries that no longer qualify are skipped rather than reverting the whole
+   *      batch: a position can go stale between the BOT building its list and the
+   *      transaction landing (most obviously when the owner calls
+   *      requestMaturityWithdraw first), and one such row must not strand everyone
+   *      else in the batch.
+   *
+   *      Every skip emits SkipMaturityWithdraw with a reason, so a legitimately stale
+   *      row and a BOT list-building bug stay distinguishable after the fact; skipping
+   *      quietly would only trade a visible revert for an invisible no-op. An
+   *      out-of-range posId is skipped too — left to panic on the array access it would
+   *      take the whole batch down, the very failure this function exists to avoid.
    * @param users the position owners
    * @param posIds the matching position ids
    */
@@ -196,12 +236,27 @@ contract LockedEarnPool is CreditFundBase {
   ) external whenNotPaused onlyRole(BOT) nonReentrant {
     require(users.length == posIds.length, "length mismatch");
     for (uint256 i = 0; i < users.length; i++) {
-      Position storage pos = userPositions[users[i]][posIds[i]];
-      // skip already-closed or not-yet-matured positions instead of reverting the whole batch
-      if (pos.principal == 0 || pos.closed) continue;
-      if (block.timestamp < cohorts[pos.cohortId].maturityTime) continue;
-      if (pos.autoRenew) continue;
-      _requestMaturityWithdraw(users[i], posIds[i]);
+      address user = users[i];
+      uint256 posId = posIds[i];
+
+      if (posId >= userPositions[user].length) {
+        emit SkipMaturityWithdraw(user, posId, SkipReason.InvalidPosition);
+        continue;
+      }
+      Position storage pos = userPositions[user][posId];
+      if (pos.principal == 0 || pos.closed) {
+        emit SkipMaturityWithdraw(user, posId, SkipReason.InvalidPosition);
+        continue;
+      }
+      if (block.timestamp < cohorts[pos.cohortId].maturityTime) {
+        emit SkipMaturityWithdraw(user, posId, SkipReason.NotMatured);
+        continue;
+      }
+      if (pos.autoRenew) {
+        emit SkipMaturityWithdraw(user, posId, SkipReason.AutoRenew);
+        continue;
+      }
+      _requestMaturityWithdraw(user, posId);
     }
   }
 
@@ -228,15 +283,15 @@ contract LockedEarnPool is CreditFundBase {
   }
 
   /**
-   * @dev toggle auto-renew for a position. Enforced on-chain to be locked from the
-   *      T-30 checkpoint: no changes are allowed within AUTO_RENEW_LOCK_WINDOW of
-   *      maturity, so the settlement-day job can rely on a stable auto-renew flag.
+   * @dev toggle auto-renew for a position. Locked from T-32: no changes are allowed
+   *      within AUTO_RENEW_LOCK_WINDOW of maturity, so the settlement-day job reads a
+   *      stable flag at its T-30 snapshot.
    * @param posId the caller's position id
    */
   function toggleAutoRenew(uint256 posId) external whenNotPaused {
     Position storage pos = userPositions[msg.sender][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
-    require(block.timestamp + AUTO_RENEW_LOCK_WINDOW < cohorts[pos.cohortId].maturityTime, "auto renew locked (T-30)");
+    require(block.timestamp + AUTO_RENEW_LOCK_WINDOW < cohorts[pos.cohortId].maturityTime, "auto renew locked (T-32)");
 
     pos.autoRenew = !pos.autoRenew;
     emit ToggleAutoRenew(msg.sender, posId, pos.autoRenew);
@@ -263,6 +318,12 @@ contract LockedEarnPool is CreditFundBase {
 
     Cohort memory c = cohorts[newCohortId];
     require(c.enabled, "cohort not enabled");
+    // Renewal is an entry into `newCohortId` just like deposit and reinvest, so
+    // it obeys the same deposit window. `enabled` alone was not enough — a cohort whose
+    // deadline has passed is still enabled until someone toggles it, and rolling
+    // principal into an already-priced tranche puts the renewed position on a schedule
+    // that tranche's off-chain interest allocation was never sized for.
+    require(block.timestamp <= c.depositDeadline, "deposit window closed");
 
     uint256 principal = pos.principal;
     pos.closed = true;
@@ -291,6 +352,7 @@ contract LockedEarnPool is CreditFundBase {
    *      which leaves claimWithdraw as the only exit.
    * @param idx the caller's confirmed (funded) withdrawal request index
    * @param newCohortId the cohort to reinvest into
+   * @param expectedAmount the expected request amount; guards against swap-and-pop index drift
    */
   function reinvest(
     uint256 idx,
@@ -327,7 +389,7 @@ contract LockedEarnPool is CreditFundBase {
 
   /* VIEWS */
   /// @inheritdoc CreditFundBase
-  function totalPrincipal() external view override returns (uint256) {
+  function totalPrincipal() public view override returns (uint256) {
     return totalPrincipalAmount;
   }
 
@@ -337,18 +399,32 @@ contract LockedEarnPool is CreditFundBase {
 
   /**
    * @dev preview the early-redeem payout for `amount` principal of a position.
+   *
+   * Mirrors `requestEarlyRedeem`'s validity checks, with the same revert strings, so a
+   * UI can never show a valid-looking number for a redemption that would be rejected.
+   *
+   * The per-address daily limit is deliberately NOT mirrored. It is a rate limit on the
+   * caller rather than a property of the redemption, it is measured against the payout
+   * this call is being asked to compute, and it is already separately readable via
+   * `dailyLimit()` / `dailySubmitted(day, user)` — which is what the frontend uses to
+   * cap the input field. Folding it in here would stop the position page from quoting a
+   * payout at all once the day's allowance was used up.
    */
   function previewEarlyRedeem(address user, uint256 posId, uint256 amount) external view returns (uint256) {
+    require(posId < userPositions[user].length, "invalid position");
     Position memory pos = userPositions[user][posId];
     require(pos.principal > 0 && !pos.closed, "invalid position");
-    require(amount <= pos.principal, "amount exceeds principal");
-    return _earlyRedeemPayout(pos.depositTime, amount);
+    require(amount > 0 && amount <= pos.principal, "invalid amount");
+    uint256 payout = _earlyRedeemPayout(pos.depositTime, amount);
+    _checkMinWithdraw(user, payout, amount, pos.principal);
+    require(block.timestamp < cohorts[pos.cohortId].maturityTime, "already matured");
+    return payout;
   }
 
   /* MANAGER FUNCTIONS */
   /**
    * @dev create or adjust a cohort (issuance batch). Dates are injected off-chain
-   *      but bounded on-chain. Access control is split per the audit recommendation:
+   *      but bounded on-chain. Access control is split:
    *      - BOT may create new cohorts or toggle the enabled flag of existing ones.
    *      - Only MANAGER may modify the dates of an existing cohort, and the new
    *        maturityTime is anchored to the stored value (±MAX_ALIGN_WINDOW).
@@ -415,14 +491,14 @@ contract LockedEarnPool is CreditFundBase {
   /**
    * @dev early-redeem payout on `amount` principal. Within PENALTY_WINDOW of the
    *      position's deposit time a flat `penaltyRate` is charged on the redeemed
-   *      principal; past the window the full principal is returned. Interest is
-   *      always forfeited on early redemption (distributed off-pool).
-   *      payout = amount - (amount * penaltyRate / PRECISION)  [within window]
-   *      payout = amount                                        [after window]
+   *      principal; past the window the full principal is returned.
+   *
+   *      The penalty rounds UP, so the truncated remainder accrues to the fund rather
+   *      than to the redeemer.
    */
   function _earlyRedeemPayout(uint256 depositTime, uint256 amount) internal view returns (uint256) {
     if (block.timestamp < depositTime + PENALTY_WINDOW) {
-      uint256 penalty = (amount * penaltyRate) / PRECISION;
+      uint256 penalty = (amount * penaltyRate + PRECISION - 1) / PRECISION;
       return amount - penalty;
     }
     return amount;
