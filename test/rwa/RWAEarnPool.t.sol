@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../../src/rwa/RWAEarnPool.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../../src/mock/MockAsyncVault.sol";
 import "../../src/mock/MockERC20.sol";
 import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -360,5 +361,252 @@ contract RWAEarnPoolTest is Test {
     vm.stopPrank();
 
     assertEq(earnPool.balanceOf(feeReceiver), 0, "feeReceiver earnPool shares after requestWithdraw");
+  }
+
+  /* ---------- ERC20 surface ---------- */
+
+  function test_erc20Metadata() public view {
+    assertEq(earnPool.name(), "USD1.Treasury", "name");
+    assertEq(earnPool.symbol(), "USD1.Treasury", "symbol");
+    assertEq(earnPool.decimals(), 18, "decimals");
+    assertEq(IERC20(address(earnPool)).totalSupply(), 0, "usable via plain IERC20");
+  }
+
+  function test_transfer() public {
+    address other = makeAddr("other");
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.prank(user);
+    vm.expectEmit(true, true, false, true);
+    emit IERC20.Transfer(user, other, 0.4 ether);
+    assertTrue(earnPool.transfer(other, 0.4 ether), "transfer return value");
+
+    assertEq(earnPool.balanceOf(user), 0.6 ether, "sender shares");
+    assertEq(earnPool.balanceOf(other), 0.4 ether, "receiver shares");
+  }
+
+  function test_transfer_isAccountingNeutral() public {
+    address other = makeAddr("other");
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    uint256 supplyBefore = earnPool.totalSupply();
+    uint256 assetsBefore = earnPool.totalAssets();
+    uint256 userAssetsBefore = earnPool.userTotalAssets();
+
+    vm.prank(user);
+    earnPool.transfer(other, 0.4 ether);
+
+    assertEq(earnPool.totalSupply(), supplyBefore, "totalSupply unchanged");
+    assertEq(earnPool.totalAssets(), assetsBefore, "totalAssets unchanged");
+    assertEq(earnPool.userTotalAssets(), userAssetsBefore, "userTotalAssets unchanged");
+    assertEq(earnPool.balanceOf(user) + earnPool.balanceOf(other), supplyBefore, "shares conserved");
+  }
+
+  function test_transferredShares_areWithdrawable() public {
+    address other = makeAddr("other");
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.prank(user);
+    earnPool.transfer(other, 0.4 ether);
+
+    // the receiver never deposited, but can exit with what it was sent
+    vm.prank(other);
+    earnPool.requestWithdraw(0, 0.4 ether, other);
+
+    assertEq(earnPool.balanceOf(other), 0, "receiver shares after requestWithdraw");
+
+    RWAEarnPool.WithdrawalRequest[] memory requests = earnPool.getUserWithdrawalRequests(other);
+    assertEq(requests.length, 1, "receiver withdrawal requests length");
+    assertEq(requests[0].amount, 0.4 ether, "receiver withdrawal request amount");
+  }
+
+  function test_transfer_revertsOnInsufficientBalance() public {
+    address other = makeAddr("other");
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.prank(user);
+    vm.expectRevert("transfer amount exceeds balance");
+    earnPool.transfer(other, 1 ether + 1);
+  }
+
+  function test_transfer_revertsToZeroAddress() public {
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.prank(user);
+    vm.expectRevert("transfer to the zero address");
+    earnPool.transfer(address(0), 1);
+  }
+
+  function test_transfer_revertsWhenPaused() public {
+    address other = makeAddr("other");
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.prank(pauser);
+    earnPool.pause();
+
+    vm.prank(user);
+    vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
+    earnPool.transfer(other, 1);
+  }
+
+  function test_transfer_receiverMustBeWhitelisted() public {
+    address allowed = makeAddr("allowed");
+    address blocked = makeAddr("blocked");
+
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.startPrank(manager);
+    earnPool.setWhiteList(user, true);
+    earnPool.setWhiteList(allowed, true);
+    vm.stopPrank();
+
+    vm.startPrank(user);
+    vm.expectRevert("receiver not in whitelist");
+    earnPool.transfer(blocked, 1);
+
+    earnPool.transfer(allowed, 1);
+    vm.stopPrank();
+
+    assertEq(earnPool.balanceOf(allowed), 1, "whitelisted receiver shares");
+  }
+
+  function test_transfer_senderNeedNotBeWhitelisted() public {
+    address allowed = makeAddr("allowed");
+
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    // user is left out of the whitelist on purpose: it must still send out and exit
+    vm.prank(manager);
+    earnPool.setWhiteList(allowed, true);
+
+    vm.startPrank(user);
+    earnPool.transfer(allowed, 0.4 ether);
+    earnPool.requestWithdraw(0, 0.1 ether, user);
+    vm.stopPrank();
+
+    assertEq(earnPool.balanceOf(allowed), 0.4 ether, "receiver shares");
+    assertEq(earnPool.balanceOf(user), 0.5 ether, "sender shares");
+  }
+
+  function test_approveAndTransferFrom() public {
+    address spender = makeAddr("spender");
+    address other = makeAddr("other");
+
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.prank(user);
+    vm.expectEmit(true, true, false, true);
+    emit IERC20.Approval(user, spender, 0.5 ether);
+    assertTrue(earnPool.approve(spender, 0.5 ether), "approve return value");
+    assertEq(earnPool.allowance(user, spender), 0.5 ether, "allowance");
+
+    vm.prank(spender);
+    assertTrue(earnPool.transferFrom(user, other, 0.2 ether), "transferFrom return value");
+
+    assertEq(earnPool.allowance(user, spender), 0.3 ether, "allowance after spend");
+    assertEq(earnPool.balanceOf(user), 0.8 ether, "owner shares");
+    assertEq(earnPool.balanceOf(other), 0.2 ether, "receiver shares");
+  }
+
+  function test_transferFrom_infiniteAllowanceNotDecremented() public {
+    address spender = makeAddr("spender");
+    address other = makeAddr("other");
+
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.prank(user);
+    earnPool.approve(spender, type(uint256).max);
+
+    vm.prank(spender);
+    earnPool.transferFrom(user, other, 0.2 ether);
+
+    assertEq(earnPool.allowance(user, spender), type(uint256).max, "infinite allowance untouched");
+  }
+
+  function test_transferFrom_revertsOnInsufficientAllowance() public {
+    address spender = makeAddr("spender");
+    address other = makeAddr("other");
+
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.prank(user);
+    earnPool.approve(spender, 0.1 ether);
+
+    vm.prank(spender);
+    vm.expectRevert("insufficient allowance");
+    earnPool.transferFrom(user, other, 0.2 ether);
+  }
+
+  function test_transferFrom_respectsWhitelistAndPause() public {
+    address spender = makeAddr("spender");
+    address blocked = makeAddr("blocked");
+
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.prank(user);
+    earnPool.approve(spender, 1 ether);
+
+    vm.prank(manager);
+    earnPool.setWhiteList(user, true);
+
+    vm.prank(spender);
+    vm.expectRevert("receiver not in whitelist");
+    earnPool.transferFrom(user, blocked, 1);
+
+    vm.prank(pauser);
+    earnPool.pause();
+
+    vm.prank(spender);
+    vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
+    earnPool.transferFrom(user, user, 1);
+  }
+
+  function test_approve_worksWhilePaused() public {
+    address spender = makeAddr("spender");
+
+    vm.prank(pauser);
+    earnPool.pause();
+
+    vm.startPrank(user);
+    earnPool.approve(spender, 1 ether);
+    assertEq(earnPool.allowance(user, spender), 1 ether, "allowance set while paused");
+    earnPool.approve(spender, 0);
+    assertEq(earnPool.allowance(user, spender), 0, "allowance revoked while paused");
+    vm.stopPrank();
+  }
+
+  function test_approve_revertsToZeroAddress() public {
+    vm.prank(user);
+    vm.expectRevert("approve to the zero address");
+    earnPool.approve(address(0), 1 ether);
+  }
+
+  function test_withdrawFeeShares_bypassWhitelist() public {
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.startPrank(manager);
+    earnPool.setWithdrawFeeRate(0.1 ether); // 10%
+    earnPool.setFeeReceiver(feeReceiver);
+    // feeReceiver is intentionally NOT whitelisted
+    earnPool.setWhiteList(user, true);
+    vm.stopPrank();
+
+    vm.prank(user);
+    earnPool.requestWithdraw(0, 1 ether, user);
+
+    assertEq(earnPool.balanceOf(feeReceiver), 0.1 ether, "fee shares reached a non-whitelisted feeReceiver");
   }
 }
