@@ -12,6 +12,7 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract RWAEarnPool is
+  IERC20Metadata,
   UUPSUpgradeable,
   AccessControlEnumerableUpgradeable,
   PausableUpgradeable,
@@ -34,9 +35,9 @@ contract RWAEarnPool is
 
   /* VARIABLES */
   // user => shares
-  mapping(address => uint256) public balanceOf;
+  mapping(address => uint256) public override balanceOf;
   // total shares
-  uint256 public totalSupply;
+  uint256 public override totalSupply;
   // last assets
   uint256 public userTotalAssets;
   // asset token address
@@ -62,15 +63,17 @@ contract RWAEarnPool is
   // last confirmed batch id
   uint256 public confirmedBatchId;
   // name of the pool
-  string public name;
+  string public override name;
   // symbol of the pool
-  string public symbol;
+  string public override symbol;
   // adapter address
   address public adapter;
   // deposit whitelist
   EnumerableSet.AddressSet private whitelist;
   // minimum deposit amount, in asset units
   uint256 public minDeposit;
+  // owner => spender => allowance. Appended last: the proxies are live, new slots go at the end.
+  mapping(address => mapping(address => uint256)) public override allowance;
 
   /* constants */
   bytes32 public constant MANAGER = keccak256("MANAGER"); // manager role
@@ -80,7 +83,7 @@ contract RWAEarnPool is
   uint256 constant MAX_WITHDRAW_FEE_RATE = 0.1 ether; // max withdraw fee rate is 10%
 
   /* EVENTS */
-  event Transfer(address indexed from, address indexed to, uint256 value);
+  // Transfer and Approval come from IERC20
   event RequestWithdraw(
     address owner,
     address receiver,
@@ -318,6 +321,48 @@ contract RWAEarnPool is
     emit NotifyInterest(amount);
   }
 
+  /* ERC20 FUNCTIONS */
+  /**
+   * @dev transfer shares to another address
+   * @param to The address of the receiver
+   * @param value The amount of shares to transfer
+   * @return True if the transfer succeeded
+   * @dev `to` passes the same whitelist gate as `deposit` — transferable shares must not widen who
+   *      may hold a claim on the vault. The sender is not gated, so a de-whitelisted holder can
+   *      still send out and exit.
+   */
+  function transfer(address to, uint256 value) external override whenNotPaused returns (bool) {
+    require(isInWhitelist(to), "receiver not in whitelist");
+    _transfer(msg.sender, to, value);
+    return true;
+  }
+
+  /**
+   * @dev transfer shares on behalf of `from`, spending the caller's allowance
+   * @param from The address of the owner
+   * @param to The address of the receiver
+   * @param value The amount of shares to transfer
+   * @return True if the transfer succeeded
+   */
+  function transferFrom(address from, address to, uint256 value) external override whenNotPaused returns (bool) {
+    require(isInWhitelist(to), "receiver not in whitelist");
+    _spendAllowance(from, msg.sender, value);
+    _transfer(from, to, value);
+    return true;
+  }
+
+  /**
+   * @dev approve `spender` to move `value` of the caller's shares
+   * @param spender The address of the spender
+   * @param value The allowance to set
+   * @return True if the approval succeeded
+   * @dev Not `whenNotPaused`: an approval moves nothing, and revoking one must work while paused.
+   */
+  function approve(address spender, uint256 value) external override returns (bool) {
+    _approve(msg.sender, spender, value);
+    return true;
+  }
+
   /**
    * @dev get unvest amount
    * @return The amount of unvest
@@ -375,7 +420,7 @@ contract RWAEarnPool is
    * @dev get decimals of the pool
    * @return The decimals of the pool
    */
-  function decimals() external view returns (uint8) {
+  function decimals() external view override returns (uint8) {
     return 18;
   }
 
@@ -490,6 +535,24 @@ contract RWAEarnPool is
     balanceOf[to] += amount;
 
     emit Transfer(from, to, amount);
+  }
+
+  function _approve(address owner, address spender, uint256 value) internal {
+    require(owner != address(0), "approve from the zero address");
+    require(spender != address(0), "approve to the zero address");
+
+    allowance[owner][spender] = value;
+
+    emit Approval(owner, spender, value);
+  }
+
+  function _spendAllowance(address owner, address spender, uint256 value) internal {
+    uint256 currentAllowance = allowance[owner][spender];
+    // matching OZ ERC20: infinite allowance is not decremented, and a spend emits no Approval
+    if (currentAllowance != type(uint256).max) {
+      require(currentAllowance >= value, "insufficient allowance");
+      allowance[owner][spender] = currentAllowance - value;
+    }
   }
 
   /**
