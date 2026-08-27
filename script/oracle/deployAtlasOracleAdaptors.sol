@@ -98,10 +98,11 @@ contract DeployAtlasOracleAdaptors is Script {
       // Feed("NFLXB/USD", 0x6237Ed53A501273e385cFD2bCd12Ce1Af9E1ACD0),
       // Feed("SMCIB/USD", 0xF2Ddb1a538A7E28837df9B8Ea200C0943E3fAd24),
       // Feed("USARB/USD", 0x3DC1CFF29b48Eb5074FC2d551A5433C181B62b51)
-      // ----- Stablecoin push feeds (already deployed) -----
+      // ----- Batch 10 tokenized-equity push feeds (already deployed) -----
+      // Feed("GMEB/USD", 0x8e043F10207DcF201C70e1A943844d98cd9856a7)
+      // ----- Stablecoin push feeds -----
       // Feed("USDF/USD", 0x294Bb1BcF28985D62381879893237e02A2865385)
-      // ----- Batch 10 tokenized-equity push feeds -----
-      Feed("GMEB/USD", 0x8e043F10207DcF201C70e1A943844d98cd9856a7)
+      Feed("USDAT/USD", 0x110fA0C7E374942eE8Cfa3CD2A5e046acB704103)
     ];
 
     vm.startBroadcast(deployerPrivateKey);
