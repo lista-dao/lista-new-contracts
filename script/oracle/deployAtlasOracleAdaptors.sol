@@ -23,7 +23,7 @@ contract DeployAtlasOracleAdaptors is Script {
     address deployer = vm.addr(deployerPrivateKey);
     console.log("Deployer:", deployer);
 
-    Feed[1] memory feeds = [
+    Feed[4] memory feeds = [
       // ----- Atlas tokenized-equity / RWA push feeds (already deployed) -----
       // Feed("TSLAB/USD", 0xC64bF44C23586aE5eab37775662Dc1E0c56469fe),
       // Feed("NVDAB/USD", 0x67d168bF5d7851a7b361bFFcf794696858F9697A),
@@ -102,7 +102,12 @@ contract DeployAtlasOracleAdaptors is Script {
       // Feed("GMEB/USD", 0x8e043F10207DcF201C70e1A943844d98cd9856a7)
       // ----- Stablecoin push feeds -----
       // Feed("USDF/USD", 0x294Bb1BcF28985D62381879893237e02A2865385)
-      Feed("USDAT/USD", 0x110fA0C7E374942eE8Cfa3CD2A5e046acB704103)
+      // Feed("USDAT/USD", 0x110fA0C7E374942eE8Cfa3CD2A5e046acB704103)
+      // ----- Batch 11 tokenized-equity push feeds -----
+      Feed("STXB/USD", 0xc7Fe35BcD376Aa7729dA3B5AAEec8Ae21e427e8F),
+      Feed("SQQQB/USD", 0x20dB4d71c70908Dc5Fd66b4D6005c76c40047D76),
+      Feed("MRNAB/USD", 0x84846012824f993E942519DA3414A43CaBEe6Dd1),
+      Feed("CRWDB/USD", 0xAb645950b9A4d6a52A081B3276A0041f9000a358)
     ];
 
     vm.startBroadcast(deployerPrivateKey);
