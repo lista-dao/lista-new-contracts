@@ -206,6 +206,112 @@ contract SurfinAdapterGuard is Test {
     adapter.fundInterest(1);
   }
 
+  // ---- the interest reservation is clamped to what the queue can actually settle ----
+
+  function _wireDistributor() internal returns (MockDistributor dist) {
+    dist = new MockDistributor(address(usdt));
+    vm.prank(manager);
+    adapter.setInterestDistributor(address(dist));
+  }
+
+  /// (a) queue >= idle cash — the testnet shape: idle sat on the floor, 1 wei of interest
+  ///     reverted, the floor sat unspent. Old ceiling 0, new ceiling = floor.
+  function test_fundInterest_queueBeyondIdle_floorStaysReachable() public {
+    MockDistributor dist = _wireDistributor();
+    _depositFlex(userA, 100_000 ether); // idle 100k, principal 100k, floor 3k
+    vm.prank(manager);
+    adapter.deployToSurfin(97_000 ether); // idle 3k == floor
+    vm.prank(userA);
+    flex.requestWithdraw(100_000 ether); // queue 100k; floor base unchanged -> floor 3k
+
+    assertEq(adapter.freeIdle(), 3_000 ether);
+    assertEq(adapter.hardFloor(), 3_000 ether, "floor base is principal + unfunded");
+    assertEq(adapter.instantWithdrawable(), 0, "the queue can draw nothing from this cash");
+    assertEq(adapter.onDemandUnfunded(), 100_000 ether);
+
+    // freeIdle - queue was max(0, 3k - 100k) = 0, so this reverted before the clamp
+    vm.prank(manager);
+    adapter.fundInterest(3_000 ether);
+    assertEq(usdt.balanceOf(address(dist)), 3_000 ether, "the floor is spendable as interest");
+
+    // the documented cost: the floor is gone, so the queue waits for the next recall
+    assertEq(adapter.instantWithdrawable(), 0, "queue still waits on the recall");
+    vm.prank(manager);
+    vm.expectRevert("insufficient idle");
+    adapter.fundInterest(1);
+  }
+
+  /// (b) floor < queue < idle cash: fundable before, but the floor was out of reach.
+  ///     2_000 ether + 1 is one wei past the old ceiling (freeIdle - queue), which is what
+  ///     discriminates — at queue == freeIdle - floor exactly the two agree.
+  function test_fundInterest_queueBeyondWithdrawable_floorStaysReachable() public {
+    MockDistributor dist = _wireDistributor();
+    _depositFlex(userA, 100_000 ether); // idle 100k, floor 3k, withdrawable 97k
+    vm.prank(userA);
+    flex.requestWithdraw(98_000 ether); // 97k < queue 98k < idle 100k
+
+    assertEq(adapter.instantWithdrawable(), 97_000 ether);
+    assertEq(adapter.onDemandUnfunded(), 98_000 ether);
+
+    vm.prank(manager);
+    adapter.fundInterest(2_000 ether + 1); // one wei past the old ceiling
+    assertEq(usdt.balanceOf(address(dist)), 2_000 ether + 1);
+  }
+
+  /// (c) queue < withdrawable — clamp inert, full queue still reserved. Guards against
+  ///     the change loosening the normal-state ceiling.
+  function test_fundInterest_smallQueue_reservationUnchanged() public {
+    MockDistributor dist = _wireDistributor();
+    _depositFlex(userA, 100_000 ether); // idle 100k, floor 3k, withdrawable 97k
+    vm.prank(userA);
+    flex.requestWithdraw(50_000 ether); // queue 50k < withdrawable 97k
+
+    vm.prank(manager);
+    vm.expectRevert("insufficient idle");
+    adapter.fundInterest(50_000 ether + 1); // ceiling is still freeIdle - queue
+
+    vm.prank(manager);
+    adapter.fundInterest(50_000 ether);
+    assertEq(usdt.balanceOf(address(dist)), 50_000 ether, "full queue still reserved");
+    assertEq(adapter.instantWithdrawable(), 47_000 ether, "queue keeps its cash down to the floor");
+  }
+
+  /// (d) The residual, pinned deliberately: the ceiling is per-call, so repeated calls
+  ///     drain the balance — there is no on-chain total bound once the queue exceeds
+  ///     withdrawable. Not an approval of draining; recorded so it is not mistaken for a
+  ///     new defect later. Total draw is bounded procedurally (see _availableForInterest).
+  function test_fundInterest_ceilingRegenerates_totalBoundIsProcedural() public {
+    MockDistributor dist = _wireDistributor();
+    _depositFlex(userA, 100_000 ether);
+    vm.prank(userA);
+    flex.requestWithdraw(98_000 ether); // queue 98k > withdrawable 97k
+
+    uint256 floorAmt = adapter.hardFloor();
+    assertEq(floorAmt, 3_000 ether);
+
+    // three successive max-sized fundings each clear the floor amount
+    for (uint256 i = 0; i < 3; i++) {
+      vm.prank(manager);
+      adapter.fundInterest(floorAmt);
+    }
+    assertEq(usdt.balanceOf(address(dist)), 9_000 ether, "ceiling regenerated each call");
+    assertEq(adapter.hardFloor(), floorAmt, "the floor itself never moved");
+
+    // and it keeps regenerating until the cash is gone
+    while (adapter.freeIdle() > 0) {
+      uint256 c = adapter.freeIdle();
+      uint256 avail = adapter.instantWithdrawable();
+      uint256 q = adapter.onDemandUnfunded();
+      uint256 reserved = q < avail ? q : avail;
+      c = c > reserved ? c - reserved : 0;
+      if (c == 0) break;
+      vm.prank(manager);
+      adapter.fundInterest(c);
+    }
+    assertEq(adapter.freeIdle(), 0, "no on-chain total bound: interest can reach every unit");
+    assertEq(adapter.onDemandUnfunded(), 98_000 ether, "the queue is still owed all of it");
+  }
+
   // deposit into a cohort, warp past maturity, request maturity withdraw
   function _lockedMaturedRequest(address who, uint256 amount) internal {
     vm.warp(1_000_000);

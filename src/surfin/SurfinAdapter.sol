@@ -204,10 +204,9 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   function fundInterest(uint256 amount) external onlyRole(MANAGER) {
     require(interestDistributor != address(0), "interestDistributor not set");
     require(amount > 0, "amount is zero");
-    // Reserved: the flex queue, payable on demand from this same buffer. Not reserved:
-    // the hard floor (it doubles as the interest reserve, so a drained floor only blocks
-    // withdrawals until the next recall) and the locked maturity queue — see
-    // onDemandUnfunded. Realized-yield accounting stays off-chain.
+    // Reserved: the flex queue, clamped to what this cash can settle — see
+    // _availableForInterest. Not reserved: the hard floor (it doubles as the interest
+    // reserve) and the locked maturity queue — see onDemandUnfunded.
     require(amount <= _availableForInterest(), "insufficient idle");
     IERC20(asset).safeIncreaseAllowance(interestDistributor, amount);
     IInterestDistributor(interestDistributor).notifyReward(amount);
@@ -400,7 +399,17 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
    */
   function _availableForInterest() internal view returns (uint256) {
     uint256 free = freeIdle();
-    uint256 reserved = onDemandUnfunded();
+    // Reserve only the part of the queue this cash can settle: the queue is paid solely
+    // through _availableForWithdraw, which already sets the floor aside, so reserving it
+    // against the sub-floor band booked the same obligation twice over the one slice only
+    // interest may enter.
+    //
+    // This is a per-call ceiling, not a budget — paying interest lowers idle cash and the
+    // reservation equally, so it regenerates at the floor. Total draw is bounded
+    // procedurally: MANAGER-gated, and funded with the epoch's actual interest.
+    uint256 claimable = _availableForWithdraw();
+    uint256 queued = onDemandUnfunded();
+    uint256 reserved = queued < claimable ? queued : claimable;
     return free > reserved ? free - reserved : 0;
   }
 
