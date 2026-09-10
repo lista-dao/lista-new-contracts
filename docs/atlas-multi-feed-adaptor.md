@@ -72,3 +72,18 @@ key; no transactions were broadcast.
 References: [Atlas interface](https://github.com/oracle-atlas/push-oracle-interfaces/blob/main/src/IMultiFeed.sol),
 [MultiFeed documentation](https://docs.atlasoracle.io/developers/api-reference/multi-feed-contract),
 [partner feed list](https://docs.google.com/spreadsheets/d/1kVl81yh4QPc9ZYESuSk7KTEr4GdEArp9M8Izwo161Yc/edit?gid=0#gid=0).
+
+## BSC deployment: QQQB, feed 947
+
+- Source commit: `2b3736b`.
+- Adaptor: [`0xcAeF7a33cb7f8804e7baDEB58A58A02c81108bd4`](https://bscscan.com/address/0xcAeF7a33cb7f8804e7baDEB58A58A02c81108bd4#code).
+- Transaction: [`0xba280ec23e1bde6645e99a4b077badc10eb15997ee75947fb371aad28a28bb97`](https://bscscan.com/tx/0xba280ec23e1bde6645e99a4b077badc10eb15997ee75947fb371aad28a28bb97).
+- Successful receipt at block `121011038`; fee `0.0000262437 BNB`.
+- BscScan source verification: **Pass - Verified**.
+- Post-deployment reads at block `121011072` (2026-09-10 05:04:43 UTC)
+  confirmed the registry address, feed ID `0x000003b3` (947), and 8 decimals.
+  The adaptor returned `71627255117`, matching source price
+  `716272551172653221380 / 1e10`, rounded down. `updatedAt` matched the source
+  aggregation timestamp `1789016629`.
+- This deployment did not register the adaptor in ResilientOracle or change
+  existing asset configurations.
