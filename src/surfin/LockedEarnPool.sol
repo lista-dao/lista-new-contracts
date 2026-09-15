@@ -148,7 +148,8 @@ contract LockedEarnPool is CreditFundBase {
 
   /**
    * @dev request early redemption of `amount` principal from a position (partial
-   *      allowed). All interest is forfeited; if redeemed within PENALTY_WINDOW of
+   *      allowed). Interest forfeiture is the off-chain calculator's policy — this pool
+   *      neither enforces nor can revoke it. If redeemed within PENALTY_WINDOW of
    *      deposit, a flat `penaltyRate` on the redeemed principal is deducted. The
    *      payout enters the batch queue. The position stays open with reduced
    *      principal, or is closed once fully redeemed.
@@ -299,8 +300,10 @@ contract LockedEarnPool is CreditFundBase {
 
   /**
    * @dev roll a matured auto-renew position's principal into a fresh cohort.
-   *      Only principal is rolled (interest is distributed separately). Renewal
-   *      is limited to one term: the new position has auto-renew forced off.
+   *      Only principal is rolled (interest is distributed separately). The new position
+   *      is created with auto-renew off, so a further rollover takes a deliberate opt-in
+   *      on that position; no per-position renewal state is kept, so the one-term
+   *      convention is not enforced here.
    *      Driven by the settlement-day job (BOT).
    * @param user the position owner
    * @param posId the matured position id
@@ -347,9 +350,11 @@ contract LockedEarnPool is CreditFundBase {
    *      into a fresh locked cohort instead of claiming it to the wallet. Offered on
    *      the position page after settlement-day funding (finishWithdraw), as the peer
    *      alternative to claimWithdraw. Only principal is rolled (interest is
-   *      distributed separately). Renewal is limited to one term: the new position
-   *      has auto-renew forced off. Blocked during wind-down (whenDepositNotPaused),
-   *      which leaves claimWithdraw as the only exit.
+   *      distributed separately). The new position is created with auto-renew off and the
+   *      holder may opt in again — this consumes no rollover budget, since the payout was
+   *      already claimable to the wallet and the cash takes a fresh deposit's custody
+   *      path. Blocked during wind-down (whenDepositNotPaused), which leaves
+   *      claimWithdraw as the only exit.
    * @param idx the caller's confirmed (funded) withdrawal request index
    * @param newCohortId the cohort to reinvest into
    * @param expectedAmount the expected request amount; guards against swap-and-pop index drift

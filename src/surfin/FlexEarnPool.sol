@@ -12,8 +12,8 @@ import { CreditFundBase } from "./CreditFundBase.sol";
  *
  * Principal is tracked 1:1 as an LP balance (deposit mints, withdraw burns).
  * Interest is distributed off-pool via the cumulative Merkle InterestDistributor.
- * Withdrawals go through the shared daily batch queue; unconfirmed requests can
- * be cancelled in full, restoring the LP with no interest loss.
+ * Withdrawals go through the shared daily batch queue and are irreversible once
+ * submitted: the LP is burned at request time and there is no cancel path.
  */
 contract FlexEarnPool is CreditFundBase {
   using SafeERC20 for IERC20;
