@@ -17,9 +17,10 @@ contract SurfinConflict is SurfinTestBase {
    *
    * PRD §4.9: claim-type actions are NOT subject to pause; already-funded money must
    *           stay claimable even in the Frozen state ("users always have an exit").
-   * CONTRACT: CreditFundBase.claimWithdraw and InterestDistributor.claim both carry
+   * CONTRACT: claimWithdraw and InterestDistributor.claim both carry
    *           whenNotPaused, so pausing blocks users from claiming funds that were
-   *           already pushed to them.
+   *           already pushed to them. Kept deliberately: pause is a full stop, and the
+   *           admin's emergencyWithdraw is the escape hatch during an incident.
    * ==========================================================================*/
 
   /// @dev A confirmed, fully-funded flex withdrawal becomes unclaimable once paused.
@@ -59,6 +60,26 @@ contract SurfinConflict is SurfinTestBase {
     // PRD §4.9 expectation: alice claims her 1k interest. CURRENT: whenNotPaused reverts.
     vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
     distributor.claim(alice, 1_000 ether, proof);
+  }
+
+  /// @dev batchClaim reaches the shared claim body directly, so it carries its own gate
+  ///      rather than inheriting one from claim().
+  function test_conflict1_batchClaimBlockedByPause() public {
+    _depositFlex(alice, 100_000 ether);
+    vm.prank(manager);
+    adapter.fundInterest(1_000 ether);
+    _publishRoot(_leaf(alice, 1_000 ether));
+
+    vm.prank(pauser);
+    distributor.pause();
+
+    address[] memory accounts = new address[](1);
+    uint256[] memory totals = new uint256[](1);
+    bytes32[][] memory proofs = new bytes32[][](1);
+    (accounts[0], totals[0], proofs[0]) = (alice, 1_000 ether, new bytes32[](0));
+
+    vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+    distributor.batchClaim(accounts, totals, proofs);
   }
 
   /// @dev Counter-check: depositPaused (wind-down) intentionally does NOT block claims
@@ -101,7 +122,7 @@ contract SurfinConflict is SurfinTestBase {
     uint256 payout = locked.previewEarlyRedeem(alice, 0, 50_000 ether);
     assertEq(payout, 49_600 ether, "0.8% penalty applied inside the window");
     vm.prank(alice);
-    locked.requestEarlyRedeem(0, 50_000 ether); // enqueues 49,600; position closed
+    locked.requestEarlyRedeem(0, 50_000 ether, 0, block.timestamp); // enqueues 49,600; position closed
 
     // the request sits unfunded until well past the position's maturity
     vm.warp(block.timestamp + 100 days);

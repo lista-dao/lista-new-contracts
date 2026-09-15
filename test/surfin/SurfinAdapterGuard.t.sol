@@ -151,83 +151,6 @@ contract SurfinAdapterGuard is Test {
     assertEq(flex.withdrawQuota(), 0, "no surplus quota");
   }
 
-  // partial funding followed by a cancellation must NOT wedge batch confirmation: the
-  // cancellation hands the now-unbacked surplus straight back to the adapter, and the
-  // shrunk batch confirms on the next tick.
-  function test_finishFlexWithdraw_cancel_after_partial_fund_does_not_wedge() public {
-    _depositFlex(userA, 100_000 ether);
-    vm.startPrank(userA);
-    flex.requestWithdraw(40_000 ether); // req idx0, batch1
-    flex.requestWithdraw(60_000 ether); // req idx1, batch1 (total 100k)
-    vm.stopPrank();
-
-    vm.prank(bot);
-    adapter.finishFlexWithdraw(70_000 ether); // partial fund: quota 70k < batch 100k
-    assertEq(flex.confirmedBatchId(), 0, "not yet confirmed");
-
-    vm.prank(userA);
-    flex.cancelWithdraw(1, 60_000 ether); // cancel the 60k -> batch1 now 40k
-    assertEq(flex.withdrawQuota(), 40_000 ether, "surplus 30k returned to adapter");
-
-    // a 0-amount tick confirms the 40k batch (no revert)
-    vm.prank(bot);
-    adapter.finishFlexWithdraw(0);
-    assertEq(flex.confirmedBatchId(), 1, "batch confirmed by tick, no DoS");
-  }
-
-  // M02, the orphan the first predicate could not see.
-  //
-  // Comparing withdrawQuota against totalPendingWithdraw also counts confirmed-but-
-  // unclaimed payouts whose cash is already in the pool. A confirmed batch sitting in the
-  // queue therefore MASKS a surplus: the predicate stays false, the orphan survives the
-  // cancellation, and it only surfaces once the final claim drops pending to 0 — by which
-  // point funding pushes revert with "quota exceeds pending" and no 0-amount tick can
-  // drain it (the cancelled batch total is 0, so the confirmation loop subtracts nothing).
-  //
-  // Measured against the UNCONFIRMED obligation instead, the surplus is returned at the
-  // cancellation — the moment it actually stops backing anything.
-  function test_cancel_orphanQuota_returned_even_when_masked_by_confirmed_batch() public {
-    _depositFlex(userA, 100_000 ether);
-
-    vm.prank(userA);
-    flex.requestWithdraw(600 ether); // batch1
-    vm.warp(block.timestamp + 1 days); // roll to a new day so the next request opens batch2
-    vm.prank(userA);
-    flex.requestWithdraw(300 ether); // batch2
-
-    // partial fund: covers batch1 (600) exactly, leaving 299 that batch2 (300) cannot use
-    uint256 adapterBefore = usdt.balanceOf(address(adapter));
-    vm.prank(bot);
-    adapter.finishFlexWithdraw(899 ether);
-    assertEq(flex.confirmedBatchId(), 1, "batch1 confirmed");
-    assertEq(flex.withdrawQuota(), 299 ether, "299 parked for batch2");
-    assertEq(flex.totalConfirmedUnclaimed(), 600 ether, "batch1 payout awaiting claim");
-
-    // cancel batch2 -> nothing unconfirmed is left, so the 299 backs nothing. The wider
-    // predicate (299 > totalPendingWithdraw 600) was false here and stranded it.
-    vm.prank(userA);
-    flex.cancelWithdraw(1, 300 ether);
-    assertEq(flex.withdrawQuota(), 0, "orphan quota returned at cancellation");
-    assertEq(usdt.balanceOf(address(adapter)), adapterBefore - 600 ether, "only batch1's cash left the adapter");
-
-    // the claim then unwinds both counters to zero...
-    vm.prank(userA);
-    flex.claimWithdraw(userA, 0, 600 ether);
-    assertEq(flex.totalPendingWithdraw(), 0, "queue drained");
-    assertEq(flex.totalConfirmedUnclaimed(), 0, "confirmed-unclaimed drained");
-    assertEq(flex.withdrawQuota(), 0, "no residue");
-
-    // ...and the funding channel is still open. With the orphan stranded the pool held 299
-    // against pending 0, so every finishFlexWithdraw(amount > 0) reverted from here on. The
-    // new request reuses the emptied batch2 (same day, still unconfirmed).
-    vm.prank(userA);
-    flex.requestWithdraw(500 ether);
-    vm.prank(bot);
-    adapter.finishFlexWithdraw(500 ether);
-    assertEq(flex.confirmedBatchId(), 2, "funding still works after the sequence");
-    assertEq(flex.withdrawQuota(), 0, "fully consumed by the new batch");
-  }
-
   // ---- finishLockedWithdraw is BOT-gated (recall-late buffer cover) ----
 
   function test_finishLockedWithdraw_bot_ok() public {
@@ -283,6 +206,112 @@ contract SurfinAdapterGuard is Test {
     adapter.fundInterest(1);
   }
 
+  // ---- the interest reservation is clamped to what the queue can actually settle ----
+
+  function _wireDistributor() internal returns (MockDistributor dist) {
+    dist = new MockDistributor(address(usdt));
+    vm.prank(manager);
+    adapter.setInterestDistributor(address(dist));
+  }
+
+  /// (a) queue >= idle cash — the testnet shape: idle sat on the floor, 1 wei of interest
+  ///     reverted, the floor sat unspent. Old ceiling 0, new ceiling = floor.
+  function test_fundInterest_queueBeyondIdle_floorStaysReachable() public {
+    MockDistributor dist = _wireDistributor();
+    _depositFlex(userA, 100_000 ether); // idle 100k, principal 100k, floor 3k
+    vm.prank(manager);
+    adapter.deployToSurfin(97_000 ether); // idle 3k == floor
+    vm.prank(userA);
+    flex.requestWithdraw(100_000 ether); // queue 100k; floor base unchanged -> floor 3k
+
+    assertEq(adapter.freeIdle(), 3_000 ether);
+    assertEq(adapter.hardFloor(), 3_000 ether, "floor base is principal + unfunded");
+    assertEq(adapter.instantWithdrawable(), 0, "the queue can draw nothing from this cash");
+    assertEq(adapter.onDemandUnfunded(), 100_000 ether);
+
+    // freeIdle - queue was max(0, 3k - 100k) = 0, so this reverted before the clamp
+    vm.prank(manager);
+    adapter.fundInterest(3_000 ether);
+    assertEq(usdt.balanceOf(address(dist)), 3_000 ether, "the floor is spendable as interest");
+
+    // the documented cost: the floor is gone, so the queue waits for the next recall
+    assertEq(adapter.instantWithdrawable(), 0, "queue still waits on the recall");
+    vm.prank(manager);
+    vm.expectRevert("insufficient idle");
+    adapter.fundInterest(1);
+  }
+
+  /// (b) floor < queue < idle cash: fundable before, but the floor was out of reach.
+  ///     2_000 ether + 1 is one wei past the old ceiling (freeIdle - queue), which is what
+  ///     discriminates — at queue == freeIdle - floor exactly the two agree.
+  function test_fundInterest_queueBeyondWithdrawable_floorStaysReachable() public {
+    MockDistributor dist = _wireDistributor();
+    _depositFlex(userA, 100_000 ether); // idle 100k, floor 3k, withdrawable 97k
+    vm.prank(userA);
+    flex.requestWithdraw(98_000 ether); // 97k < queue 98k < idle 100k
+
+    assertEq(adapter.instantWithdrawable(), 97_000 ether);
+    assertEq(adapter.onDemandUnfunded(), 98_000 ether);
+
+    vm.prank(manager);
+    adapter.fundInterest(2_000 ether + 1); // one wei past the old ceiling
+    assertEq(usdt.balanceOf(address(dist)), 2_000 ether + 1);
+  }
+
+  /// (c) queue < withdrawable — clamp inert, full queue still reserved. Guards against
+  ///     the change loosening the normal-state ceiling.
+  function test_fundInterest_smallQueue_reservationUnchanged() public {
+    MockDistributor dist = _wireDistributor();
+    _depositFlex(userA, 100_000 ether); // idle 100k, floor 3k, withdrawable 97k
+    vm.prank(userA);
+    flex.requestWithdraw(50_000 ether); // queue 50k < withdrawable 97k
+
+    vm.prank(manager);
+    vm.expectRevert("insufficient idle");
+    adapter.fundInterest(50_000 ether + 1); // ceiling is still freeIdle - queue
+
+    vm.prank(manager);
+    adapter.fundInterest(50_000 ether);
+    assertEq(usdt.balanceOf(address(dist)), 50_000 ether, "full queue still reserved");
+    assertEq(adapter.instantWithdrawable(), 47_000 ether, "queue keeps its cash down to the floor");
+  }
+
+  /// (d) The residual, pinned deliberately: the ceiling is per-call, so repeated calls
+  ///     drain the balance — there is no on-chain total bound once the queue exceeds
+  ///     withdrawable. Not an approval of draining; recorded so it is not mistaken for a
+  ///     new defect later. Total draw is bounded procedurally (see _availableForInterest).
+  function test_fundInterest_ceilingRegenerates_totalBoundIsProcedural() public {
+    MockDistributor dist = _wireDistributor();
+    _depositFlex(userA, 100_000 ether);
+    vm.prank(userA);
+    flex.requestWithdraw(98_000 ether); // queue 98k > withdrawable 97k
+
+    uint256 floorAmt = adapter.hardFloor();
+    assertEq(floorAmt, 3_000 ether);
+
+    // three successive max-sized fundings each clear the floor amount
+    for (uint256 i = 0; i < 3; i++) {
+      vm.prank(manager);
+      adapter.fundInterest(floorAmt);
+    }
+    assertEq(usdt.balanceOf(address(dist)), 9_000 ether, "ceiling regenerated each call");
+    assertEq(adapter.hardFloor(), floorAmt, "the floor itself never moved");
+
+    // and it keeps regenerating until the cash is gone
+    while (adapter.freeIdle() > 0) {
+      uint256 c = adapter.freeIdle();
+      uint256 avail = adapter.instantWithdrawable();
+      uint256 q = adapter.onDemandUnfunded();
+      uint256 reserved = q < avail ? q : avail;
+      c = c > reserved ? c - reserved : 0;
+      if (c == 0) break;
+      vm.prank(manager);
+      adapter.fundInterest(c);
+    }
+    assertEq(adapter.freeIdle(), 0, "no on-chain total bound: interest can reach every unit");
+    assertEq(adapter.onDemandUnfunded(), 98_000 ether, "the queue is still owed all of it");
+  }
+
   // deposit into a cohort, warp past maturity, request maturity withdraw
   function _lockedMaturedRequest(address who, uint256 amount) internal {
     vm.warp(1_000_000);
@@ -311,6 +340,10 @@ contract MockDistributor {
 
   constructor(address _asset) {
     asset = _asset;
+  }
+
+  function token() external view returns (address) {
+    return asset;
   }
 
   function notifyReward(uint256 amount) external {

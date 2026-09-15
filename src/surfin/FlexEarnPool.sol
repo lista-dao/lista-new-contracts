@@ -12,8 +12,8 @@ import { CreditFundBase } from "./CreditFundBase.sol";
  *
  * Principal is tracked 1:1 as an LP balance (deposit mints, withdraw burns).
  * Interest is distributed off-pool via the cumulative Merkle InterestDistributor.
- * Withdrawals go through the shared daily batch queue; unconfirmed requests can
- * be cancelled in full, restoring the LP with no interest loss.
+ * Withdrawals go through the shared daily batch queue and are irreversible once
+ * submitted: the LP is burned at request time and there is no cancel path.
  */
 contract FlexEarnPool is CreditFundBase {
   using SafeERC20 for IERC20;
@@ -71,7 +71,7 @@ contract FlexEarnPool is CreditFundBase {
     require(balanceOf[msg.sender] >= amount, "insufficient balance");
 
     // min-withdraw floor with dust exit: a sub-min request must drain the balance
-    _checkMinWithdraw(amount, balanceOf[msg.sender]);
+    _checkMinWithdraw(msg.sender, amount, amount, balanceOf[msg.sender]);
 
     // enforce per-address daily submit limit
     _consumeDailyLimit(msg.sender, amount);
@@ -83,21 +83,9 @@ contract FlexEarnPool is CreditFundBase {
     emit RequestWithdraw(msg.sender, msg.sender, batchId, amount);
   }
 
-  /**
-   * @dev cancel an unconfirmed withdrawal request in full; restores the LP.
-   * @param idx the index of the caller's withdrawal request
-   * @param expectedAmount the expected request amount (M04 fix: prevents swap-and-pop mismatch)
-   */
-  function cancelWithdraw(uint256 idx, uint256 expectedAmount) external whenNotPaused nonReentrant {
-    uint256 amount = _removeWithdrawRequest(msg.sender, idx, expectedAmount);
-    _mint(msg.sender, amount);
-
-    emit CancelWithdrawal(msg.sender, idx, amount);
-  }
-
   /* VIEWS */
   /// @inheritdoc CreditFundBase
-  function totalPrincipal() external view override returns (uint256) {
+  function totalPrincipal() public view override returns (uint256) {
     return totalSupply;
   }
 

@@ -19,6 +19,12 @@ interface ICreditFundPool {
   /// @dev principal that has been requested for withdraw but not yet claimed
   function totalPendingWithdraw() external view returns (uint256);
 
+  /// @dev cash received from the adapter that is not yet assigned to a confirmed batch
+  function withdrawQuota() external view returns (uint256);
+
+  /// @dev principal of confirmed batches whose payout is funded and awaiting claims
+  function totalConfirmedUnclaimed() external view returns (uint256);
+
   /// @dev repay the batch withdraw queue; adapter transfers `amount` in first
   function finishWithdraw(uint256 amount) external;
 }
