@@ -24,22 +24,31 @@ MultiFeed registry. Deploy a separate instance per asset. The existing
 ## Deployment
 
 The new script targets BSC chain ID 56 and registry
-`0xEAcE519ebB14fB8404fA6DdD23C3b34abaDE44aa`. It requires open-read access,
-explicit decimal feed IDs, and a positive deployment price-age limit. It rejects
-duplicate IDs and values exceeding `uint32`, avoiding silent truncation.
+`0xEAcE519ebB14fB8404fA6DdD23C3b34abaDE44aa`. It requires open-read access and a
+positive heartbeat per feed, and it rejects duplicate feed IDs.
 
-Example dry run (933 = TSLAB, 934 = NVDAB in the supplied partner list):
+The batch is hardcoded in the script's `run()` as `Feed(symbol, feedId, heartbeat)`
+entries, following `deployAtlasOracleAdaptors.sol`: each deployment batch is
+reviewed in the diff rather than supplied at the shell. `feedId` is a `uint32`,
+so an out-of-range ID fails to compile instead of being silently truncated.
+`DEPLOYER_PRIVATE_KEY` remains the only environment input.
+
+The deployment preflight rejects a price older than the feed's heartbeat plus
+`MAX_AGE_BUFFER` (300 seconds), so a 60-second feed allows 360 seconds. This is
+a deployment sanity check, not a prescribed risk policy; the
+consuming ResilientOracle's `timeDeltaTolerance` is what enforces price age in
+production. Confirm the heartbeat against the partner feed list, and choose the
+approved production limit for the assets and market hours.
+
+Example dry run:
 
 ```sh
 # Supply DEPLOYER_PRIVATE_KEY through your existing secure environment setup.
-ATLAS_FEED_IDS=933,934 ATLAS_MAX_PRICE_AGE=300 \
-  forge script script/oracle/deployAtlasMultiFeedAdaptors.sol:DeployAtlasMultiFeedAdaptors \
+forge script script/oracle/deployAtlasMultiFeedAdaptors.sol:DeployAtlasMultiFeedAdaptors \
   --rpc-url bsc
 ```
 
-`300` seconds is an example deployment preflight limit, not a prescribed risk
-policy. Choose the approved limit for the assets and market hours. The script
-checks reads from the created adaptor addresses during simulation and logs the
+The script checks reads from the created adaptor addresses during simulation and logs the
 feed ID, adaptor address, price, and aggregation time. Add `--broadcast --slow`
 only when deploying; retain Foundry simulation. A batch comprises separate
 deployment transactions, so it is not atomic and source state may change after
@@ -87,3 +96,28 @@ References: [Atlas interface](https://github.com/oracle-atlas/push-oracle-interf
   aggregation timestamp `1789016629`.
 - This deployment did not register the adaptor in ResilientOracle or change
   existing asset configurations.
+
+## Batch 1 fork simulation: GPROB (1053), RDDTB (1054)
+
+Both feeds publish on a 60-second heartbeat, so the deployment preflight limit is
+60 + 300 = 360 seconds. Simulated on an Anvil fork of BSC at block `123106134`
+(2026-09-21), broadcasting with a public Anvil development key:
+
+```sh
+anvil --fork-url https://bsc-dataseed.binance.org --port 8546
+DEPLOYER_PRIVATE_KEY=<anvil key 0> \
+  forge script script/oracle/deployAtlasMultiFeedAdaptors.sol:DeployAtlasMultiFeedAdaptors \
+  --rpc-url http://127.0.0.1:8546 --broadcast --slow
+```
+
+Reads against the two adaptors deployed on that fork returned the registry
+address `0xEAcE519ebB14fB8404fA6DdD23C3b34abaDE44aa`, 8 decimals, version 1, and:
+
+| Symbol | Feed ID | `feedId()` | Source price | `latestAnswer()` | `updatedAt` |
+| --- | --- | --- | --- | --- | --- |
+| GPROB/USD | 1053 | `0x0000041d` | `1290675473883335005` | `129067547` | `1789959850` |
+| RDDTB/USD | 1054 | `0x0000041e` | `152584468985491087160` | `15258446898` | `1789959870` |
+
+Each answer matches the source price divided by `1e10`, rounded down, and each
+`updatedAt` matches the source aggregation timestamp. No transaction was sent to
+BSC mainnet.
