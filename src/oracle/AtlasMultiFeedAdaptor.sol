@@ -8,8 +8,9 @@ import { IAtlasMultiFeed } from "./interfaces/IAtlasMultiFeed.sol";
 /**
  * @title AtlasMultiFeedAdaptor
  * @notice Wraps one fixed Atlas MultiFeed entry for the existing ResilientOracle.
- * @dev Prices are converted from 18 to 8 decimals, rounding down. Source and feed
- * ID are immutable; deploy one adaptor per asset. No owner or upgrade mechanism.
+ * @dev Prices are converted from 18 to 8 decimals, rounding down. Source, feed ID
+ * and bStock symbol are set once at deployment; deploy one adaptor per asset. No
+ * owner or upgrade mechanism.
  *
  * updatedAt is the off-chain aggregation time, NOT the publication/read time.
  * ResilientOracle must configure a nonzero timeDeltaTolerance to enforce price
@@ -20,22 +21,28 @@ contract AtlasMultiFeedAdaptor is AggregatorV3Interface {
   IAtlasMultiFeed public immutable multiFeed;
   bytes4 public immutable feedId;
 
+  /// @notice bStock symbol this feed prices, e.g. "GPROB/USD". Constructor-only; strings cannot be immutable.
+  string public symbol;
+
   uint256 private constant SCALE_DIVISOR = 1e10;
 
   error InvalidSource();
   error InvalidContractType();
   error InvalidDecimals();
+  error InvalidSymbol();
   error InvalidPrice();
   error InvalidTimestamp();
   error HistoricalRoundsUnsupported();
 
-  constructor(address multiFeed_, bytes4 feedId_) {
+  constructor(address multiFeed_, bytes4 feedId_, string memory symbol_) {
     if (multiFeed_.code.length == 0) revert InvalidSource();
+    if (bytes(symbol_).length == 0) revert InvalidSymbol();
     IAtlasMultiFeed source = IAtlasMultiFeed(multiFeed_);
     if (source.contractType() != 2) revert InvalidContractType();
     if (source.decimals() != 18) revert InvalidDecimals();
     multiFeed = source;
     feedId = feedId_;
+    symbol = symbol_;
   }
 
   function decimals() external pure returns (uint8) {
@@ -43,7 +50,7 @@ contract AtlasMultiFeedAdaptor is AggregatorV3Interface {
   }
 
   function description() external view returns (string memory) {
-    return string.concat("Atlas MultiFeed ", Strings.toHexString(uint32(feedId), 4));
+    return string.concat("Atlas MultiFeed ", Strings.toHexString(uint32(feedId), 4), " ", symbol);
   }
 
   /// @notice Version of this adaptor, independent of the Atlas implementation.

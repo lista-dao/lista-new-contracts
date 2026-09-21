@@ -50,6 +50,7 @@ contract DeployAtlasMultiFeedAdaptors is Script {
 
     for (uint256 i; i < feeds.length; ++i) {
       require(feeds[i].heartbeat != 0, "AtlasMultiFeedDeploy/zero-heartbeat");
+      require(bytes(feeds[i].symbol).length != 0, "AtlasMultiFeedDeploy/empty-symbol");
       for (uint256 j; j < i; ++j) {
         require(feeds[i].feedId != feeds[j].feedId, "AtlasMultiFeedDeploy/duplicate-feed");
       }
@@ -58,7 +59,7 @@ contract DeployAtlasMultiFeedAdaptors is Script {
     adaptors = new AtlasMultiFeedAdaptor[](feeds.length);
     vm.startBroadcast(deployerPrivateKey);
     for (uint256 i; i < feeds.length; ++i) {
-      adaptors[i] = new AtlasMultiFeedAdaptor(ATLAS_MULTI_FEED, bytes4(feeds[i].feedId));
+      adaptors[i] = new AtlasMultiFeedAdaptor(ATLAS_MULTI_FEED, bytes4(feeds[i].feedId), feeds[i].symbol);
     }
     vm.stopBroadcast();
 
@@ -70,6 +71,7 @@ contract DeployAtlasMultiFeedAdaptors is Script {
       require(block.timestamp - updatedAt <= maxPriceAge, "AtlasMultiFeedDeploy/stale-price");
       console.log("Symbol:", feeds[i].symbol);
       console.log("Feed ID:", feeds[i].feedId);
+      console.log("Description:", adaptors[i].description());
       console.log("Adaptor:", address(adaptors[i]));
       console.log("USD price (8 decimals):", uint256(answer));
       console.log("Aggregated at:", updatedAt);

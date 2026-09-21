@@ -1,7 +1,8 @@
 # Atlas MultiFeed adaptor
 
 `AtlasMultiFeedAdaptor` wraps one immutable `bytes4` feed ID from an Atlas
-MultiFeed registry. Deploy a separate instance per asset. The existing
+MultiFeed registry, labelled with the bStock symbol it prices. Deploy a separate
+instance per asset. The existing
 `AtlasOracleAdaptor`, deployment script, and ResilientOracle remain unchanged.
 
 ## Price contract
@@ -20,12 +21,19 @@ MultiFeed registry. Deploy a separate instance per asset. The existing
   for ResilientOracle, not a complete historical Chainlink aggregator.
 - Read permissions, pause behavior, and future source upgrades remain controlled
   by Atlas. In whitelist mode, the adaptor itself must be authorized.
+- `symbol` is a constructor-only label (strings cannot be `immutable`) and
+  must be non-empty. `description()` returns
+  `Atlas MultiFeed <hex feed ID> <bStock symbol>`, for example
+  `Atlas MultiFeed 0x0000041d GPROB/USD`. Adaptors deployed before this change
+  (QQQB, feed 947) have no `symbol` and omit the suffix; the label is
+  metadata only and does not affect prices.
 
 ## Deployment
 
 The new script targets BSC chain ID 56 and registry
 `0xEAcE519ebB14fB8404fA6DdD23C3b34abaDE44aa`. It requires open-read access and a
-positive heartbeat per feed, and it rejects duplicate feed IDs.
+positive heartbeat and non-empty bStock symbol per feed, and it rejects duplicate
+feed IDs.
 
 The batch is hardcoded in the script's `run()` as `Feed(symbol, feedId, heartbeat)`
 entries, following `deployAtlasOracleAdaptors.sol`: each deployment batch is
@@ -49,7 +57,7 @@ forge script script/oracle/deployAtlasMultiFeedAdaptors.sol:DeployAtlasMultiFeed
 ```
 
 The script checks reads from the created adaptor addresses during simulation and logs the
-feed ID, adaptor address, price, and aggregation time. Add `--broadcast --slow`
+symbol, feed ID, description, adaptor address, price, and aggregation time. Add `--broadcast --slow`
 only when deploying; retain Foundry simulation. A batch comprises separate
 deployment transactions, so it is not atomic and source state may change after
 simulation. Verify all receipts and re-read each adaptor after deployment.

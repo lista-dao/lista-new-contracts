@@ -43,6 +43,7 @@ contract MockAtlasMultiFeed is IAtlasMultiFeed {
 
 contract AtlasMultiFeedAdaptorTest is Test {
   bytes4 private constant FEED_ID = bytes4(uint32(933));
+  string private constant SYMBOL = "TSLAB/USD";
   uint80 private constant RAW_PRICE = 369165197517953797760;
   MockAtlasMultiFeed private source;
   AtlasMultiFeedAdaptor private adaptor;
@@ -51,14 +52,15 @@ contract AtlasMultiFeedAdaptorTest is Test {
     vm.warp(1_800_000_000);
     source = new MockAtlasMultiFeed();
     source.setSnapshot(FEED_ID, RAW_PRICE, uint48(block.timestamp - 60), uint48(block.timestamp - 5));
-    adaptor = new AtlasMultiFeedAdaptor(address(source), FEED_ID);
+    adaptor = new AtlasMultiFeedAdaptor(address(source), FEED_ID, SYMBOL);
   }
 
   function test_metadataAndLatestRound() public view {
     assertEq(address(adaptor.multiFeed()), address(source));
     assertEq(adaptor.feedId(), FEED_ID);
     assertEq(adaptor.decimals(), 8);
-    assertEq(adaptor.description(), "Atlas MultiFeed 0x000003a5");
+    assertEq(adaptor.symbol(), SYMBOL);
+    assertEq(adaptor.description(), "Atlas MultiFeed 0x000003a5 TSLAB/USD");
     assertEq(adaptor.version(), 1);
     (uint80 round, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound) = adaptor
       .latestRoundData();
@@ -73,7 +75,7 @@ contract AtlasMultiFeedAdaptorTest is Test {
   function test_differentAdaptorsReadTheirFixedFeed() public {
     bytes4 otherId = bytes4(uint32(934));
     source.setSnapshot(otherId, 224e18, uint48(block.timestamp), uint48(block.timestamp));
-    AtlasMultiFeedAdaptor other = new AtlasMultiFeedAdaptor(address(source), otherId);
+    AtlasMultiFeedAdaptor other = new AtlasMultiFeedAdaptor(address(source), otherId, "NVDAB/USD");
     assertEq(other.latestAnswer(), 224e8);
     assertEq(adaptor.latestAnswer(), 36_916_519_751);
   }
@@ -86,26 +88,31 @@ contract AtlasMultiFeedAdaptorTest is Test {
 
   function test_rejectsZeroAddressAndEOA() public {
     vm.expectRevert(AtlasMultiFeedAdaptor.InvalidSource.selector);
-    new AtlasMultiFeedAdaptor(address(0), FEED_ID);
+    new AtlasMultiFeedAdaptor(address(0), FEED_ID, SYMBOL);
     vm.expectRevert(AtlasMultiFeedAdaptor.InvalidSource.selector);
-    new AtlasMultiFeedAdaptor(address(0x1234), FEED_ID);
+    new AtlasMultiFeedAdaptor(address(0x1234), FEED_ID, SYMBOL);
+  }
+
+  function test_rejectsEmptySymbol() public {
+    vm.expectRevert(AtlasMultiFeedAdaptor.InvalidSymbol.selector);
+    new AtlasMultiFeedAdaptor(address(source), FEED_ID, "");
   }
 
   function test_rejectsWrongContractType() public {
     source.setContractType(1);
     vm.expectRevert(AtlasMultiFeedAdaptor.InvalidContractType.selector);
-    new AtlasMultiFeedAdaptor(address(source), FEED_ID);
+    new AtlasMultiFeedAdaptor(address(source), FEED_ID, SYMBOL);
   }
 
   function test_rejectsWrongDecimalsAtDeploymentAndAfterSourceUpgrade() public {
     source.setDecimals(8);
     vm.expectRevert(AtlasMultiFeedAdaptor.InvalidDecimals.selector);
-    new AtlasMultiFeedAdaptor(address(source), FEED_ID);
+    new AtlasMultiFeedAdaptor(address(source), FEED_ID, SYMBOL);
     _expectInvalid(AtlasMultiFeedAdaptor.InvalidDecimals.selector);
   }
 
   function test_rejectsUnknownFeed() public {
-    AtlasMultiFeedAdaptor unknown = new AtlasMultiFeedAdaptor(address(source), bytes4(uint32(999)));
+    AtlasMultiFeedAdaptor unknown = new AtlasMultiFeedAdaptor(address(source), bytes4(uint32(999)), "UNKNB/USD");
     vm.expectRevert(AtlasMultiFeedAdaptor.InvalidPrice.selector);
     unknown.latestRoundData();
   }
