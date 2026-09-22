@@ -34,7 +34,7 @@ contract AtlasMultiFeedAdaptorForkTest is Test {
       vm.envOr("BSC_RPC", string("https://bsc-dataseed.binance.org")),
       vm.envOr("ATLAS_FORK_BLOCK", uint256(120911148))
     );
-    adaptor = new AtlasMultiFeedAdaptor(REGISTRY, bytes4(uint32(938)));
+    adaptor = new AtlasMultiFeedAdaptor(REGISTRY, bytes4(uint32(938)), "SPCXB/USD");
   }
 
   function testFork_liveSourceAndUnchangedResilientOracle() public {

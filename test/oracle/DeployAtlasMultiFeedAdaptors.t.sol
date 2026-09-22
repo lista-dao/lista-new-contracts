@@ -50,6 +50,16 @@ contract DeployAtlasMultiFeedAdaptorsTest is Test {
     assertEq(adaptors[1].feedId(), bytes4(uint32(934)));
     assertEq(adaptors[0].latestAnswer(), 369e8);
     assertEq(adaptors[1].latestAnswer(), 224e8);
+    assertEq(adaptors[0].symbol(), "TSLAB/USD");
+    assertEq(adaptors[0].description(), "Atlas MultiFeed 0x000003a5 TSLAB/USD");
+    assertEq(adaptors[1].description(), "Atlas MultiFeed 0x000003a6 NVDAB/USD");
+  }
+
+  function test_rejectsEmptySymbol() public {
+    DeployAtlasMultiFeedAdaptors.Feed[] memory feeds = _feeds();
+    feeds[0].symbol = "";
+    vm.expectRevert("AtlasMultiFeedDeploy/empty-symbol");
+    deployScript.deployForTest(feeds);
   }
 
   function test_rejectsWrongChain() public {
