@@ -37,9 +37,21 @@ contract DeployAtlasMultiFeedAdaptors is Script {
     // Feed("AGPUB/USD", 1066, 60)
     // Feed("AMCB/USD", 1067, 60)
     // Feed("CYPHB/USD", 1068, 60)
-    // ----- Batch 3 -----
-    Feed[] memory feeds = new Feed[](1);
-    feeds[0] = Feed("BNCB/USD", 1069, 60);
+    // ----- Batch 3 (already deployed) -----
+    // Feed("BNCB/USD", 1069, 60)
+    // ----- Batch 4 -----
+    Feed[] memory feeds = new Feed[](11);
+    feeds[0] = Feed("ADBEB/USD", 1070, 60);
+    feeds[1] = Feed("FWDIB/USD", 1071, 60);
+    feeds[2] = Feed("HPEB/USD", 1072, 60);
+    feeds[3] = Feed("PDDB/USD", 1073, 60);
+    feeds[4] = Feed("SHAZB/USD", 1074, 60);
+    feeds[5] = Feed("WENB/USD", 1075, 60);
+    feeds[6] = Feed("ZMB/USD", 1076, 60);
+    feeds[7] = Feed("JPMB/USD", 1077, 60);
+    feeds[8] = Feed("LLYB/USD", 1078, 60);
+    feeds[9] = Feed("SECZB/USD", 1079, 60);
+    feeds[10] = Feed("USDEB/USD", 1080, 60);
 
     return _deploy(feeds, vm.envUint("DEPLOYER_PRIVATE_KEY"));
   }
