@@ -50,7 +50,7 @@ contract AsterRewards is
   /// @notice Lista-operated EOA on Astherus / Aster Chain; the ASTER reward source pulled by
   ///         `notifyRewards`. Same entity/address as `AsterVault.lisAsterManager`. It must
   ///         `approve` ASTER to this contract before BOT calls `notifyRewards`.
-  ///         `notifyRewards(uint256)` ignores `_operators`; only `setOperator` changes this source.
+  ///         `notifyRewards(uint256)` ignores `_operators`; `removeOperator` clears this slot to 0.
   address public operator;
 
   /* MULTI-OPERATOR (appended; append-only storage) */
@@ -140,6 +140,10 @@ contract AsterRewards is
 
   function removeOperator(address op) external onlyRole(MANAGER) {
     require(_operators.remove(op), "not operator");
+    if (op == operator) {
+      operator = address(0);
+      emit SetOperator(op, address(0));
+    }
     emit OperatorRemoved(op);
   }
 

@@ -251,19 +251,60 @@ contract AsterRewardsMultiOperatorTest is LisAsterBase {
 
   /* ---------------- notifyRewards(uint256) vs whitelist ---------------- */
 
-  function test_legacyNotify_ignoresWhitelist() public {
-    // removeOperator does not stop the original path.
+  function test_removeOperator_clearsLegacyOperator() public {
+    vm.expectEmit(false, false, false, true, address(rewards));
+    emit IAsterRewards.SetOperator(operator, address(0));
+    vm.expectEmit(true, false, false, false, address(rewards));
+    emit IAsterRewards.OperatorRemoved(operator);
     vm.prank(manager);
     rewards.removeOperator(operator);
+
+    assertEq(rewards.operator(), address(0));
     assertFalse(rewards.isOperator(operator));
 
-    _managerNotify(2 ether);
-    assertEq(asterToken.balanceOf(address(rewards)), 2 ether);
-
+    // Both paths stop pulling from it.
     _fundApprove(operator, 1 ether);
-    vm.prank(bot);
+    vm.startPrank(bot);
+    vm.expectRevert(bytes("operator not set"));
+    rewards.notifyRewards(1 ether);
     vm.expectRevert(bytes("not operator"));
     rewards.notifyRewards(_addrs(operator), _amts(1 ether));
+    vm.stopPrank();
+  }
+
+  function test_removeOperator_otherKeepsLegacyOperator() public {
+    vm.startPrank(manager);
+    rewards.addOperator(opA);
+    rewards.removeOperator(opA);
+    vm.stopPrank();
+
+    assertEq(rewards.operator(), operator, "legacy slot untouched");
+    _managerNotify(1 ether);
+    assertEq(asterToken.balanceOf(address(rewards)), 1 ether);
+  }
+
+  function test_removeOperator_previousOperatorKeepsCurrent() public {
+    // After setOperator(opA), removing the previous operator leaves the current one in place.
+    vm.startPrank(manager);
+    rewards.setOperator(opA);
+    rewards.removeOperator(operator);
+    vm.stopPrank();
+
+    assertEq(rewards.operator(), opA);
+    assertTrue(rewards.isOperator(opA));
+  }
+
+  function test_removeOperator_thenSetOperatorRestores() public {
+    vm.startPrank(manager);
+    rewards.removeOperator(operator);
+    rewards.setOperator(opA);
+    vm.stopPrank();
+
+    assertEq(rewards.operator(), opA);
+    _fundApprove(opA, 1 ether);
+    vm.prank(bot);
+    rewards.notifyRewards(1 ether);
+    assertEq(asterToken.balanceOf(address(rewards)), 1 ether);
   }
 
   function test_legacyNotify_followsSetOperator() public {

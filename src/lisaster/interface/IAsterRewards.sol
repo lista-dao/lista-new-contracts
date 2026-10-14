@@ -35,7 +35,7 @@ interface IAsterRewards {
   ///         source also needs `removeOperator(old)`.
   function setOperator(address newOperator) external;
 
-  /// @notice Whitelist / remove an ASTER reward source.
+  /// @notice Whitelist / remove an ASTER reward source. Removing `operator` also clears it to 0.
   function addOperator(address op) external;
 
   function removeOperator(address op) external;
