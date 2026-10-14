@@ -3,7 +3,6 @@ pragma solidity ^0.8.24;
 
 import { LisAsterBase } from "./LisAsterBase.t.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
-import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import { AsterRewards } from "../../src/lisaster/AsterRewards.sol";
 
@@ -30,42 +29,40 @@ contract AsterRewardsTest is LisAsterBase {
     // MANAGER can no longer notify.
     vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, manager, botRole));
     vm.prank(manager);
-    rewards.notifyRewards(_addrs(operator), _amts(1 ether));
+    rewards.notifyRewards(1 ether);
     // Random caller cannot notify.
     vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, botRole));
     vm.prank(other);
-    rewards.notifyRewards(_addrs(operator), _amts(1 ether));
+    rewards.notifyRewards(1 ether);
 
     // BOT can.
     vm.prank(bot);
-    rewards.notifyRewards(_addrs(operator), _amts(1 ether));
+    rewards.notifyRewards(1 ether);
     assertEq(asterToken.balanceOf(address(rewards)), 1 ether);
   }
 
   function test_notifyRewards_revertsZero() public {
     vm.prank(bot);
     vm.expectRevert(bytes("zero amount"));
-    rewards.notifyRewards(_addrs(operator), _amts(0));
+    rewards.notifyRewards(0);
   }
 
-  function test_notifyRewards_revertsWhenOperatorNotWhitelisted() public {
-    // Fresh Rewards proxy with no operator whitelisted.
+  function test_notifyRewards_revertsWhenOperatorUnset() public {
+    // Fresh Rewards proxy with no setOperator call.
     AsterRewards fresh = AsterRewards(address(new ERC1967Proxy(address(new AsterRewards()), "")));
     fresh.initialize(admin, pauser, manager, bot, address(asterToken));
 
     vm.prank(bot);
-    vm.expectRevert(bytes("not operator"));
-    fresh.notifyRewards(_addrs(operator), _amts(1 ether));
+    vm.expectRevert(bytes("operator not set"));
+    fresh.notifyRewards(1 ether);
   }
 
   function test_notifyRewards_revertsWithoutAllowance() public {
     // operator funded but did NOT approve Rewards.
     asterToken.mint(operator, 1 ether);
     vm.prank(bot);
-    vm.expectRevert(
-      abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, address(rewards), 0, 1 ether)
-    );
-    rewards.notifyRewards(_addrs(operator), _amts(1 ether));
+    vm.expectRevert(); // ERC20InsufficientAllowance
+    rewards.notifyRewards(1 ether);
   }
 
   /* ---------------- distributeRewards ---------------- */

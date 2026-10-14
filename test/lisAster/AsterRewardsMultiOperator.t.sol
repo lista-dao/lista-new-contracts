@@ -5,6 +5,7 @@ import { Vm } from "forge-std/Vm.sol";
 import { LisAsterBase } from "./LisAsterBase.t.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import { PausableUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import { AsterRewards } from "../../src/lisaster/AsterRewards.sol";
 import { IAsterRewards } from "../../src/lisaster/interface/IAsterRewards.sol";
@@ -20,6 +21,42 @@ contract AsterRewardsMultiOperatorTest is LisAsterBase {
     asterToken.mint(src, amount);
     vm.prank(src);
     asterToken.approve(address(rewards), amount);
+  }
+
+  function _addrs(address a) internal pure returns (address[] memory r) {
+    r = new address[](1);
+    r[0] = a;
+  }
+
+  function _addrs(address a, address b) internal pure returns (address[] memory r) {
+    r = new address[](2);
+    r[0] = a;
+    r[1] = b;
+  }
+
+  function _addrs(address a, address b, address c) internal pure returns (address[] memory r) {
+    r = new address[](3);
+    r[0] = a;
+    r[1] = b;
+    r[2] = c;
+  }
+
+  function _amts(uint256 a) internal pure returns (uint256[] memory r) {
+    r = new uint256[](1);
+    r[0] = a;
+  }
+
+  function _amts(uint256 a, uint256 b) internal pure returns (uint256[] memory r) {
+    r = new uint256[](2);
+    r[0] = a;
+    r[1] = b;
+  }
+
+  function _amts(uint256 a, uint256 b, uint256 c) internal pure returns (uint256[] memory r) {
+    r = new uint256[](3);
+    r[0] = a;
+    r[1] = b;
+    r[2] = c;
   }
 
   /* ---------------- addOperator / removeOperator ---------------- */
@@ -129,6 +166,31 @@ contract AsterRewardsMultiOperatorTest is LisAsterBase {
     rewards.notifyRewards(new address[](0), new uint256[](0));
   }
 
+  function test_notifyRewards_array_onlyBot() public {
+    _fundApprove(operator, 1 ether);
+    bytes32 botRole = rewards.BOT();
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, manager, botRole));
+    vm.prank(manager);
+    rewards.notifyRewards(_addrs(operator), _amts(1 ether));
+    vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, other, botRole));
+    vm.prank(other);
+    rewards.notifyRewards(_addrs(operator), _amts(1 ether));
+
+    vm.prank(bot);
+    rewards.notifyRewards(_addrs(operator), _amts(1 ether));
+    assertEq(asterToken.balanceOf(address(rewards)), 1 ether);
+  }
+
+  function test_notifyRewards_array_revertsWhenPaused() public {
+    _fundApprove(operator, 1 ether);
+    vm.prank(pauser);
+    rewards.pause();
+
+    vm.prank(bot);
+    vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
+    rewards.notifyRewards(_addrs(operator), _amts(1 ether));
+  }
+
   function test_notifyRewards_revertsLengthMismatch() public {
     vm.prank(bot);
     vm.expectRevert(bytes("length mismatch"));
@@ -185,6 +247,48 @@ contract AsterRewardsMultiOperatorTest is LisAsterBase {
     assertEq(asterToken.balanceOf(operator), 2 ether, "rolled back");
     assertEq(asterToken.balanceOf(opA), 1 ether, "rolled back");
     assertEq(asterToken.balanceOf(address(rewards)), 0);
+  }
+
+  /* ---------------- notifyRewards(uint256) vs whitelist ---------------- */
+
+  function test_legacyNotify_ignoresWhitelist() public {
+    // removeOperator does not stop the original path.
+    vm.prank(manager);
+    rewards.removeOperator(operator);
+    assertFalse(rewards.isOperator(operator));
+
+    _managerNotify(2 ether);
+    assertEq(asterToken.balanceOf(address(rewards)), 2 ether);
+
+    _fundApprove(operator, 1 ether);
+    vm.prank(bot);
+    vm.expectRevert(bytes("not operator"));
+    rewards.notifyRewards(_addrs(operator), _amts(1 ether));
+  }
+
+  function test_legacyNotify_followsSetOperator() public {
+    vm.prank(manager);
+    rewards.setOperator(opA);
+    _fundApprove(operator, 5 ether);
+    _fundApprove(opA, 2 ether);
+
+    vm.prank(bot);
+    rewards.notifyRewards(2 ether);
+
+    assertEq(asterToken.balanceOf(opA), 0, "pulled from the new operator");
+    assertEq(asterToken.balanceOf(operator), 5 ether, "previous operator untouched");
+    assertEq(asterToken.balanceOf(address(rewards)), 2 ether);
+  }
+
+  function test_legacyAndArrayPaths_sameRound() public {
+    vm.prank(manager);
+    rewards.addOperator(opA);
+    _managerNotify(3 ether);
+    _fundApprove(opA, 4 ether);
+    vm.prank(bot);
+    rewards.notifyRewards(_addrs(opA), _amts(4 ether));
+
+    assertEq(asterToken.balanceOf(address(rewards)), 7 ether);
   }
 
   /* ---------------- fee on the total ---------------- */
@@ -325,6 +429,14 @@ contract AsterRewardsMultiOperatorTest is LisAsterBase {
     assertTrue(fresh.isOperator(opA));
     assertEq(fresh.operatorCount(), 2);
     assertEq(fresh.operator(), legacy, "legacy slot untouched");
+
+    // The original path is unaffected by the upgrade.
+    asterToken.mint(legacy, 1 ether);
+    vm.prank(legacy);
+    asterToken.approve(address(fresh), 1 ether);
+    vm.prank(bot);
+    fresh.notifyRewards(1 ether);
+    assertEq(asterToken.balanceOf(address(fresh)), 1 ether);
   }
 
   function test_initializeV2_onlyAdmin() public {

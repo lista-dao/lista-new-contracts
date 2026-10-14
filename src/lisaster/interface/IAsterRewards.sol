@@ -12,6 +12,10 @@ interface IAsterRewards {
   event OperatorRemoved(address indexed operator);
   event EmergencyWithdrawn(address indexed token, address indexed to, uint256 amount);
 
+  /// @notice BOT ingests ASTER pulled from `operator`; `feeRate` of it is forwarded to
+  ///         `feeReceiver` and the net stays in this contract as ASTER, awaiting `distributeRewards`.
+  function notifyRewards(uint256 amount) external;
+
   /// @notice BOT ingests `amounts[i]` ASTER from each whitelisted `operators[i]`; `feeRate` of the total
   ///         is forwarded to `feeReceiver` and the net stays here awaiting `distributeRewards`.
   function notifyRewards(address[] calldata operators, uint256[] calldata amounts) external;
