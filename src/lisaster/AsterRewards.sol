@@ -7,6 +7,7 @@ import { ReentrancyGuardUpgradeable } from "@openzeppelin/contracts-upgradeable/
 import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { ILisAsterDistributor } from "./interface/ILisAsterDistributor.sol";
 import { IAsterRewards } from "./interface/IAsterRewards.sol";
@@ -25,6 +26,7 @@ contract AsterRewards is
   UUPSUpgradeable
 {
   using SafeERC20 for IERC20;
+  using EnumerableSet for EnumerableSet.AddressSet;
 
   /* CONSTANTS */
   bytes32 public constant MANAGER = keccak256("MANAGER");
@@ -48,7 +50,11 @@ contract AsterRewards is
   /// @notice Lista-operated EOA on Astherus / Aster Chain; the ASTER reward source pulled by
   ///         `notifyRewards`. Same entity/address as `AsterVault.lisAsterManager`. It must
   ///         `approve` ASTER to this contract before BOT calls `notifyRewards`.
+  ///         `notifyRewards(uint256)` ignores `_operators`; `removeOperator` clears this slot to 0.
   address public operator;
+
+  /* MULTI-OPERATOR (appended; append-only storage) */
+  EnumerableSet.AddressSet private _operators; // whitelist of ASTER reward sources
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -83,6 +89,17 @@ contract AsterRewards is
     asterToken = asterToken_;
   }
 
+  /// @notice One-time migration: whitelist the legacy `operator` and `newOperator`. Call atomically
+  ///         via `upgradeToAndCall`.
+  function initializeV2(address newOperator) external reinitializer(2) onlyRole(DEFAULT_ADMIN_ROLE) {
+    if (operator != address(0) && _operators.add(operator)) {
+      emit OperatorAdded(operator);
+    }
+    if (newOperator != address(0) && _operators.add(newOperator)) {
+      emit OperatorAdded(newOperator);
+    }
+  }
+
   /* ONE-SHOT SETTER */
   function setDistributor(address d) external onlyRole(MANAGER) {
     require(distributor == address(0), "distributor already set");
@@ -104,12 +121,30 @@ contract AsterRewards is
     emit SetFeeRate(r);
   }
 
-  /* REWARD-SOURCE SETTER */
+  /* REWARD-SOURCE SETTERS */
   function setOperator(address newOperator) external onlyRole(MANAGER) {
     require(newOperator != address(0), "operator is zero");
     address oldOperator = operator;
     operator = newOperator;
+    if (_operators.add(newOperator)) {
+      emit OperatorAdded(newOperator);
+    }
     emit SetOperator(oldOperator, newOperator);
+  }
+
+  function addOperator(address op) external onlyRole(MANAGER) {
+    require(op != address(0), "operator is zero");
+    require(_operators.add(op), "already operator");
+    emit OperatorAdded(op);
+  }
+
+  function removeOperator(address op) external onlyRole(MANAGER) {
+    require(_operators.remove(op), "not operator");
+    if (op == operator) {
+      operator = address(0);
+      emit SetOperator(op, address(0));
+    }
+    emit OperatorRemoved(op);
   }
 
   /* EXTERNAL */
@@ -122,6 +157,37 @@ contract AsterRewards is
     // Take fee only when both knobs are configured. Either feeRate=0 or feeReceiver=0 means
     // no fee for this round -- MANAGER can stage the two settings in any order without
     // bricking notifyRewards in between.
+    uint256 fee = 0;
+    if (feeRate > 0 && feeReceiver != address(0)) {
+      fee = (amount * feeRate) / PRECISION;
+      if (fee > 0) {
+        IERC20(asterToken).safeTransfer(feeReceiver, fee);
+      }
+    }
+    uint256 net = amount - fee;
+    require(net > 0, "net is zero");
+
+    emit RewardsNotified(amount, fee, net);
+  }
+
+  /// @notice Pull `amounts[i]` ASTER from each whitelisted `operators[i]`. A fee of `feeRate` is then
+  ///         skimmed once on the total and the net stays here as ASTER.
+  function notifyRewards(
+    address[] calldata operators,
+    uint256[] calldata amounts
+  ) external override onlyRole(BOT) whenNotPaused nonReentrant {
+    require(operators.length > 0, "no operators");
+    require(operators.length == amounts.length, "length mismatch");
+
+    uint256 amount = 0;
+    for (uint256 i = 0; i < operators.length; i++) {
+      require(_operators.contains(operators[i]), "not operator");
+      require(amounts[i] > 0, "zero amount");
+      IERC20(asterToken).safeTransferFrom(operators[i], address(this), amounts[i]);
+      amount += amounts[i];
+    }
+
+    // Fee taken only when both knobs are set; either being 0 disables it for this round.
     uint256 fee = 0;
     if (feeRate > 0 && feeReceiver != address(0)) {
       fee = (amount * feeRate) / PRECISION;
@@ -149,6 +215,18 @@ contract AsterRewards is
   /* VIEW */
   function pendingAster() external view override returns (uint256) {
     return IERC20(asterToken).balanceOf(address(this));
+  }
+
+  function isOperator(address op) external view override returns (bool) {
+    return _operators.contains(op);
+  }
+
+  function getOperators() external view override returns (address[] memory) {
+    return _operators.values();
+  }
+
+  function operatorCount() external view override returns (uint256) {
+    return _operators.length();
   }
 
   /* ADMIN */
