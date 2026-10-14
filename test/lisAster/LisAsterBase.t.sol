@@ -106,7 +106,43 @@ abstract contract LisAsterBase is Test {
     vm.prank(operator);
     asterToken.approve(address(rewards), amount);
     vm.prank(bot);
-    rewards.notifyRewards(amount);
+    rewards.notifyRewards(_addrs(operator), _amts(amount));
+  }
+
+  function _addrs(address a) internal pure returns (address[] memory r) {
+    r = new address[](1);
+    r[0] = a;
+  }
+
+  function _addrs(address a, address b) internal pure returns (address[] memory r) {
+    r = new address[](2);
+    r[0] = a;
+    r[1] = b;
+  }
+
+  function _addrs(address a, address b, address c) internal pure returns (address[] memory r) {
+    r = new address[](3);
+    r[0] = a;
+    r[1] = b;
+    r[2] = c;
+  }
+
+  function _amts(uint256 a) internal pure returns (uint256[] memory r) {
+    r = new uint256[](1);
+    r[0] = a;
+  }
+
+  function _amts(uint256 a, uint256 b) internal pure returns (uint256[] memory r) {
+    r = new uint256[](2);
+    r[0] = a;
+    r[1] = b;
+  }
+
+  function _amts(uint256 a, uint256 b, uint256 c) internal pure returns (uint256[] memory r) {
+    r = new uint256[](3);
+    r[0] = a;
+    r[1] = b;
+    r[2] = c;
   }
 
   /// @dev BOT pushes ASTER from Rewards to Distributor and triggers notify.
