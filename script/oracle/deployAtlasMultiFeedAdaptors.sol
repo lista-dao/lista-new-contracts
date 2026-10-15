@@ -39,19 +39,24 @@ contract DeployAtlasMultiFeedAdaptors is Script {
     // Feed("CYPHB/USD", 1068, 60)
     // ----- Batch 3 (already deployed) -----
     // Feed("BNCB/USD", 1069, 60)
-    // ----- Batch 4 -----
-    Feed[] memory feeds = new Feed[](11);
-    feeds[0] = Feed("ADBEB/USD", 1070, 60);
-    feeds[1] = Feed("FWDIB/USD", 1071, 60);
-    feeds[2] = Feed("HPEB/USD", 1072, 60);
-    feeds[3] = Feed("PDDB/USD", 1073, 60);
-    feeds[4] = Feed("SHAZB/USD", 1074, 60);
-    feeds[5] = Feed("WENB/USD", 1075, 60);
-    feeds[6] = Feed("ZMB/USD", 1076, 60);
-    feeds[7] = Feed("JPMB/USD", 1077, 60);
-    feeds[8] = Feed("LLYB/USD", 1078, 60);
-    feeds[9] = Feed("SECZB/USD", 1079, 60);
-    feeds[10] = Feed("USDEB/USD", 1080, 60);
+    // ----- Batch 4 (already deployed) -----
+    // Feed("ADBEB/USD", 1070, 60)
+    // Feed("FWDIB/USD", 1071, 60)
+    // Feed("HPEB/USD", 1072, 60)
+    // Feed("PDDB/USD", 1073, 60)
+    // Feed("SHAZB/USD", 1074, 60)
+    // Feed("WENB/USD", 1075, 60)
+    // Feed("ZMB/USD", 1076, 60)
+    // Feed("JPMB/USD", 1077, 60)
+    // Feed("LLYB/USD", 1078, 60)
+    // Feed("SECZB/USD", 1079, 60)
+    // Feed("USDEB/USD", 1080, 60)
+    // ----- Batch 5 -----
+    Feed[] memory feeds = new Feed[](4);
+    feeds[0] = Feed("BBB/USD", 1092, 60);
+    feeds[1] = Feed("MDBB/USD", 1093, 60);
+    feeds[2] = Feed("PENGB/USD", 1094, 60);
+    feeds[3] = Feed("UVXYB/USD", 1095, 60);
 
     return _deploy(feeds, vm.envUint("DEPLOYER_PRIVATE_KEY"));
   }
