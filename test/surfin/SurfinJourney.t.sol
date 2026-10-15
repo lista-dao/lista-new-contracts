@@ -90,7 +90,7 @@ contract SurfinJourneyTest is SurfinTestBase {
 
     vm.warp(block.timestamp + 15 days); // inside the penalty window
     vm.prank(charlie);
-    locked.requestEarlyRedeem(0, 50_000 ether); // payout 49,600
+    locked.requestEarlyRedeem(0, 50_000 ether, 0, block.timestamp); // payout 49,600
 
     _fundAdapter(50_000 ether);
     vm.prank(bot);
