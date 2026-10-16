@@ -92,6 +92,10 @@ contract SurfinAdapterSettleRecall is Test {
     flex.setAdapter(address(adapter));
     locked.setAdapter(address(adapter));
     vm.stopPrank();
+
+    // the flex pool opens closed (cap 0); these suites exercise flows, not the cap
+    vm.prank(manager);
+    flex.setCap(type(uint256).max);
   }
 
   // set up a matured locked position of `amount`; leaves a 1-batch locked queue.

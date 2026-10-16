@@ -128,6 +128,8 @@ abstract contract SurfinTestBase is Test {
     vm.startPrank(manager);
     adapter.setInterestDistributor(address(distributor));
     adapter.setFeeReceiver(feeReceiver);
+    // the flex pool opens closed (cap 0); the shared suites exercise flows, not the cap
+    flex.setCap(type(uint256).max);
     vm.stopPrank();
   }
 
