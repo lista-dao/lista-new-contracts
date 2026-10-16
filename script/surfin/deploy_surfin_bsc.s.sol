@@ -46,6 +46,7 @@ contract DeploySurfinBsc is Script {
   uint256 constant FLOOR_RATE = 3e16; // 3% hard floor (= contract default)
   uint256 constant PENALTY_RATE = 0.008 ether; // 0.8% early-redeem penalty (= contract default)
   uint256 constant MIN_DEPOSIT = 50e18; // 50 USDT (18-dec)
+  uint256 constant FLEX_CAP = type(uint256).max; // the flex pool deploys closed (cap 0); Surfin flex is uncapped
   uint256 constant MIN_WITHDRAW = 50e18; // 50 USDT (18-dec); a sub-min request must drain the balance
   uint256 constant FLEX_DAILY_LIMIT = 200_000e18; // 200k per-address/day flex withdraw cap
   uint256 constant LOCKED_DAILY_LIMIT = 200_000e18; // 200k per-address/day locked early-redeem cap
@@ -137,6 +138,7 @@ contract DeploySurfinBsc is Script {
 
     LockedEarnPool(lockedProxy).setPenaltyRate(PENALTY_RATE);
 
+    FlexEarnPool(flexProxy).setCap(FLEX_CAP);
     if (MIN_DEPOSIT > 0) {
       FlexEarnPool(flexProxy).setMinDeposit(MIN_DEPOSIT);
       LockedEarnPool(lockedProxy).setMinDeposit(MIN_DEPOSIT);
@@ -162,6 +164,7 @@ contract DeploySurfinBsc is Script {
     require(adapter.interestDistributor() == distributorProxy, "adapter.interestDistributor mismatch");
     require(adapter.surfinWallet() == SURFIN_WALLET, "adapter.surfinWallet mismatch");
     require(FlexEarnPool(flexProxy).adapter() == adapterProxy, "flex.adapter mismatch");
+    require(FlexEarnPool(flexProxy).cap() == FLEX_CAP, "flex.cap mismatch");
     require(LockedEarnPool(lockedProxy).adapter() == adapterProxy, "locked.adapter mismatch");
     require(InterestDistributor(distributorProxy).token() == USDT, "distributor.token mismatch");
   }

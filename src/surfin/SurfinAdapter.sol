@@ -96,11 +96,11 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
     require(_manager != address(0), "manager is zero address");
     require(_pauser != address(0), "pauser is zero address");
     require(_bot != address(0), "bot is zero address");
-    require(_flexPool != address(0), "flexPool is zero address");
-    require(_lockedPool != address(0), "lockedPool is zero address");
+    // a single-product stack leaves the other slot empty; at least one pool is required
+    require(_flexPool != address(0) || _lockedPool != address(0), "both pools are zero address");
     require(_surfinWallet != address(0), "surfinWallet is zero address");
-    require(ICreditFundPool(_flexPool).asset() == asset, "flexPool asset mismatch");
-    require(ICreditFundPool(_lockedPool).asset() == asset, "lockedPool asset mismatch");
+    require(_flexPool == address(0) || ICreditFundPool(_flexPool).asset() == asset, "flexPool asset mismatch");
+    require(_lockedPool == address(0) || ICreditFundPool(_lockedPool).asset() == asset, "lockedPool asset mismatch");
 
     __AccessControlEnumerable_init();
     __Pausable_init();
@@ -175,6 +175,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
    *      only advance batches.
    */
   function finishFlexWithdraw(uint256 amount) external onlyRole(BOT) {
+    require(flexPool != address(0), "flexPool not set");
     require(amount <= _availableForWithdraw(), "exceeds available");
     if (amount > 0) {
       IERC20(asset).safeIncreaseAllowance(flexPool, amount);
@@ -204,10 +205,25 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   function fundInterest(uint256 amount) external onlyRole(MANAGER) {
     require(interestDistributor != address(0), "interestDistributor not set");
     require(amount > 0, "amount is zero");
-    // Reserved: the flex queue, clamped to what this cash can settle — see
-    // _availableForInterest. Not reserved: the hard floor (it doubles as the interest
-    // reserve) and the locked maturity queue — see onDemandUnfunded.
+    // Reserved: the on-demand queue (see onDemandUnfunded), clamped to what this cash can
+    // settle — see _availableForInterest. Not reserved: the hard floor (it doubles as the
+    // interest reserve).
     require(amount <= _availableForInterest(), "insufficient idle");
+    IERC20(asset).safeIncreaseAllowance(interestDistributor, amount);
+    IInterestDistributor(interestDistributor).notifyReward(amount);
+    emit FundInterest(amount);
+  }
+
+  /**
+   * @dev fund the interest distributor with cash the caller sends in for that purpose.
+   *      It never touches idle funds, so withdrawals still waiting for their payout day
+   *      cannot hold back interest that the partner has already paid.
+   * @param amount the interest amount to fund
+   */
+  function fundInterestFrom(uint256 amount) external onlyRole(MANAGER) {
+    require(interestDistributor != address(0), "interestDistributor not set");
+    require(amount > 0, "amount is zero");
+    IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
     IERC20(asset).safeIncreaseAllowance(interestDistributor, amount);
     IInterestDistributor(interestDistributor).notifyReward(amount);
     emit FundInterest(amount);
@@ -262,6 +278,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
    * and `hardFloor()` must not revert on an impaired fund.
    */
   function _poolFloorBase(address pool) internal view returns (uint256) {
+    if (pool == address(0)) return 0;
     return ICreditFundPool(pool).totalPrincipal() + _poolUnfunded(pool);
   }
 
@@ -270,6 +287,8 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
    *      ceiling and the interest cap; they differ only in which pools they aggregate.
    */
   function _poolUnfunded(address pool) internal view returns (uint256) {
+    // an unused product slot contributes nothing
+    if (pool == address(0)) return 0;
     ICreditFundPool p = ICreditFundPool(pool);
     uint256 pending = p.totalPendingWithdraw();
     uint256 funded = p.withdrawQuota() + p.totalConfirmedUnclaimed();
@@ -302,9 +321,13 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
    *      reservation equally. Early redemptions ride along, being indistinguishable
    *      on-chain. deployToSurfin stays MANAGER-gated, so holding back while maturities
    *      are outstanding remains an operating choice rather than a hard block.
+   *
+   *      A locked-only stack has no flex queue and no separate earmark, so its locked
+   *      queue is reserved instead: deploys and interest funding cannot spend principal
+   *      that queued holders are owed.
    */
   function onDemandUnfunded() public view returns (uint256) {
-    return _poolUnfunded(flexPool);
+    return flexPool != address(0) ? _poolUnfunded(flexPool) : _poolUnfunded(lockedPool);
   }
 
   /**
@@ -418,6 +441,7 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
    *      finishLockedWithdraw (BOT) and settleRecall.
    */
   function _finishLockedWithdraw(uint256 amount) internal {
+    require(lockedPool != address(0), "lockedPool not set");
     require(amount <= _availableForWithdraw(), "exceeds available");
     if (amount > 0) {
       IERC20(asset).safeIncreaseAllowance(lockedPool, amount);
