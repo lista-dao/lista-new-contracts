@@ -52,9 +52,10 @@ abstract contract CreditFundBase is
   address public asset;
   // adapter address (holds the funds, drives the pool)
   address public adapter;
-  // pool display name / symbol
-  string public name;
-  string public symbol;
+  // pool display name / symbol, read through name() / symbol() so an ERC20 share can
+  // override the getters
+  string internal _poolName;
+  string internal _poolSymbol;
 
   // user => withdrawal requests
   mapping(address => WithdrawalRequest[]) internal userWithdrawalRequests;
@@ -101,7 +102,6 @@ abstract contract CreditFundBase is
   uint256 public constant PRECISION = 1 ether;
 
   /* EVENTS */
-  event Transfer(address indexed from, address indexed to, uint256 value);
   event Deposit(address indexed user, uint256 amount);
   event RequestWithdraw(address indexed owner, address indexed receiver, uint256 batchId, uint256 amount);
   event FinishWithdraw(uint256 batchId, uint256 amount);
@@ -144,8 +144,8 @@ abstract contract CreditFundBase is
 
     asset = _asset;
     adapter = _adapter;
-    name = _name;
-    symbol = _symbol;
+    _poolName = _name;
+    _poolSymbol = _symbol;
   }
 
   /* MODIFIERS */
@@ -238,9 +238,17 @@ abstract contract CreditFundBase is
     return userWithdrawalRequests[user];
   }
 
+  function name() public view virtual returns (string memory) {
+    return _poolName;
+  }
+
+  function symbol() public view virtual returns (string memory) {
+    return _poolSymbol;
+  }
+
   /// @dev mirror the underlying asset's decimals so the 1:1 LP renders correctly
   ///      on each chain (BSC USDT 18, ETH USDT 6).
-  function decimals() external view returns (uint8) {
+  function decimals() public view virtual returns (uint8) {
     return IERC20Metadata(asset).decimals();
   }
 
@@ -304,6 +312,7 @@ abstract contract CreditFundBase is
    *      restrict to admin.
    */
   function emergencyWithdraw(address token, uint256 amount, address receiver) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    require(token != address(this), "cannot rescue own token");
     require(amount > 0, "amount is zero");
     require(receiver != address(0), "receiver is zero address");
     IERC20(token).safeTransfer(receiver, amount);
