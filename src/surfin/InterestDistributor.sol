@@ -67,6 +67,10 @@ contract InterestDistributor is
    */
   uint256 public pendingActivationTime;
 
+  /// @dev interest paid out by claims so far, the sum of every account's `claimed`.
+  ///      Declared last so no existing storage slot shifts; one slot is taken from __gap.
+  uint256 public totalClaimed;
+
   bytes32 public constant MANAGER = keccak256("MANAGER");
   bytes32 public constant BOT = keccak256("BOT");
   bytes32 public constant PAUSER = keccak256("PAUSER");
@@ -188,6 +192,7 @@ contract InterestDistributor is
     claimed[_account] = _totalAmount;
 
     uint256 amount = _totalAmount - claimedAmount;
+    totalClaimed += amount;
     IERC20(token).safeTransfer(_account, amount);
 
     emit Claimed(_account, amount, _totalAmount);
@@ -271,5 +276,5 @@ contract InterestDistributor is
 
   function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
-  uint256[49] private __gap;
+  uint256[48] private __gap;
 }
