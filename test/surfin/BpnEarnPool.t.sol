@@ -101,6 +101,13 @@ contract BpnEarnPoolTest is SurfinTestBase {
     vm.stopPrank();
   }
 
+  function _allow(address who) internal {
+    address[] memory users = new address[](1);
+    users[0] = who;
+    vm.prank(manager);
+    pool.setWhitelist(users, true);
+  }
+
   function _request(address who, uint256 shares) internal returns (uint256 id) {
     vm.prank(who);
     id = pool.requestRedeem(shares);
@@ -193,11 +200,11 @@ contract BpnEarnPoolTest is SurfinTestBase {
   ///      each request in as many parts as it takes and the rest stays queued.
   function test_proRataPartialSettlementRollsOver() public {
     vm.warp(OCT_01);
-    _deposit(anchor, 2 * PRINCIPAL);
+    _allow(custodian);
+    _deposit(anchor, 1_600_000 ether);
+    _deposit(custodian, 400_000 ether);
     vm.prank(manager);
     adapter.deployToSurfin(2 * PRINCIPAL);
-    vm.prank(anchor);
-    pool.transfer(custodian, 400_000 ether);
 
     vm.warp(NOV_05);
     uint256 a = _request(anchor, 600_000 ether);
@@ -396,24 +403,26 @@ contract BpnEarnPoolTest is SurfinTestBase {
     }
   }
 
-  /// @dev a dust transfer cannot block a full exit below the minimum: max means "all".
-  function test_redeemAllSentinelBeatsDustGrief() public {
+  /// @dev a balance below the minimum exits whole, through max or its exact amount; no
+  ///      one can dust it beforehand, since shares do not move between holders.
+  function test_redeemAllBelowMinimum() public {
     vm.warp(OCT_01);
-    _deposit(anchor, 1_500 ether);
-    vm.prank(anchor);
-    pool.transfer(custodian, 1_000 ether);
+    _allow(custodian);
+    _deposit(anchor, 500 ether);
+    _deposit(custodian, 1_000 ether);
     vm.prank(manager);
     pool.setMinWithdraw(1_000 ether);
 
     vm.prank(custodian);
-    pool.transfer(anchor, 1); // lands just before the exit
+    vm.expectRevert("non-transferable");
+    pool.transfer(anchor, 1);
     vm.prank(anchor);
     vm.expectRevert("below min withdraw");
-    pool.requestRedeem(500 ether);
+    pool.requestRedeem(400 ether);
     vm.prank(anchor);
     uint256 id = pool.requestRedeem(type(uint256).max);
     (, , uint256 shares, , ) = pool.requests(id);
-    assertEq(shares, 500 ether + 1);
+    assertEq(shares, 500 ether);
     assertEq(pool.balanceOf(anchor), 0);
   }
 
@@ -515,29 +524,36 @@ contract BpnEarnPoolTest is SurfinTestBase {
 
   /* ------------------------------ holders and gates ------------------------------ */
 
-  /// @dev shares moved to an address outside the whitelist keep every exit path.
-  function test_transfereeOutsideWhitelistExits() public {
+  /// @dev shares are bookkeeping: no transfer or transferFrom between holders, so the
+  ///      whitelist cannot be sidestepped and every position stays with its depositor.
+  function test_sharesAreNotTransferable() public {
     vm.warp(OCT_01);
     _deposit(anchor, PRINCIPAL);
 
-    vm.warp(NOV_05);
-    vm.prank(anchor);
-    pool.transfer(custodian, 200_000 ether);
-
-    usdt.mint(custodian, 1 ether);
-    vm.startPrank(custodian);
-    usdt.approve(address(pool), 1 ether);
-    vm.expectRevert("not whitelisted");
-    pool.deposit(1 ether, custodian);
-    uint256 id = pool.requestRedeem(200_000 ether);
+    vm.startPrank(anchor);
+    vm.expectRevert("non-transferable");
+    pool.transfer(custodian, 1);
+    vm.expectRevert("non-transferable");
+    pool.transfer(anchor, 1);
+    pool.approve(market, PRINCIPAL);
     vm.stopPrank();
+    vm.prank(market);
+    vm.expectRevert("non-transferable");
+    pool.transferFrom(anchor, market, 1);
 
+    assertEq(pool.balanceOf(anchor), PRINCIPAL);
+    assertEq(pool.balanceOf(custodian), 0);
+    assertEq(pool.balanceOf(market), 0);
+
+    // mint, escrow and burn still work
+    uint256 id = _request(anchor, 200_000 ether);
     vm.prank(bot);
-    adapter.finishFlexWithdraw(200_000 ether); // still idle on the adapter
+    adapter.finishFlexWithdraw(200_000 ether);
     _settle(_one(id), _one(200_000 ether));
-    vm.prank(custodian);
     pool.claimRedeem(_one(id));
-    assertEq(usdt.balanceOf(custodian), 200_000 ether + 1 ether);
+    assertEq(pool.balanceOf(anchor), PRINCIPAL - 200_000 ether);
+    assertEq(pool.totalSupply(), PRINCIPAL - 200_000 ether);
+    assertEq(usdt.balanceOf(anchor), 200_000 ether);
   }
 
   function test_request_rules() public {
@@ -570,7 +586,7 @@ contract BpnEarnPoolTest is SurfinTestBase {
     vm.startPrank(anchor);
     vm.expectRevert("invalid receiver");
     pool.transfer(address(pool), 1);
-    vm.expectRevert("invalid receiver");
+    vm.expectRevert("non-transferable");
     pool.transfer(address(adapter), 1);
     vm.stopPrank();
 
@@ -609,7 +625,7 @@ contract BpnEarnPoolTest is SurfinTestBase {
     assertEq(usdt.balanceOf(anchor), 100_000 ether + 1 ether);
   }
 
-  function test_pause_freezesRequestsAndClaimsNotTransfers() public {
+  function test_pause_freezesRequestsAndClaims() public {
     vm.warp(OCT_01);
     _deposit(anchor, PRINCIPAL);
     uint256 id = _request(anchor, 100_000 ether);
@@ -619,8 +635,6 @@ contract BpnEarnPoolTest is SurfinTestBase {
     vm.prank(pauser);
     pool.pause();
 
-    vm.prank(anchor);
-    pool.transfer(custodian, 1 ether);
     vm.prank(anchor);
     vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
     pool.requestRedeem(1 ether);

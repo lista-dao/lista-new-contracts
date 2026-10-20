@@ -6,7 +6,7 @@ import "../../src/surfin/BpnEarnPool.sol";
 
 /**
  * Stateful handler driving random BpnEarnPool + adapter lifecycles: deposits, share
- * transfers, escrowed requests, cash pushed by the adapter, partial settlements (duplicate
+ * transfer attempts (always rejected), escrowed requests, cash pushed by the adapter, partial settlements (duplicate
  * ids included), claims, deploys to the partner and recalls. Every action is bounded so it
  * never reverts spuriously. adminTopUp is left out: it may park quota above the escrow by
  * design.
@@ -25,6 +25,10 @@ contract BpnInvariantHandler is Test {
   uint256 public ghostRecalled;
   uint256 public ghostDeployed;
   uint256 public ghostClaimed;
+  // shares each actor should hold: deposits less requests (positions never move)
+  mapping(address => uint256) public ghostHeld;
+  // transfers between holders that went through; must stay 0
+  uint256 public ghostTransfers;
 
   constructor(
     MockERC20 _usdt,
@@ -45,6 +49,14 @@ contract BpnInvariantHandler is Test {
     actors.push(makeAddr("bpn_actor_3"));
   }
 
+  function actorsLength() external view returns (uint256) {
+    return actors.length;
+  }
+
+  function actorAt(uint256 i) external view returns (address) {
+    return actors[i];
+  }
+
   function idsLength() external view returns (uint256) {
     return ids.length;
   }
@@ -58,6 +70,7 @@ contract BpnInvariantHandler is Test {
     pool.deposit(amount, a);
     vm.stopPrank();
     ghostDeposited += amount;
+    ghostHeld[a] += amount;
   }
 
   function transfer(uint256 fromSeed, uint256 toSeed, uint256 amount) public {
@@ -67,7 +80,9 @@ contract BpnInvariantHandler is Test {
     if (bal == 0) return;
     amount = bound(amount, 1, bal);
     vm.prank(from);
-    pool.transfer(to, amount);
+    try pool.transfer(to, amount) {
+      ghostTransfers++;
+    } catch {}
   }
 
   function request(uint256 actorSeed, uint256 amount) public {
@@ -77,6 +92,7 @@ contract BpnInvariantHandler is Test {
     amount = bound(amount, 1, bal);
     vm.prank(a);
     ids.push(pool.requestRedeem(amount));
+    ghostHeld[a] -= amount;
   }
 
   function push(uint256 amount) public {
@@ -103,7 +119,9 @@ contract BpnInvariantHandler is Test {
     for (uint256 k = 0; k < 3 && budget > 0; k++) {
       uint256 id = ids[((seed % ids.length) + (k == 2 ? 0 : k)) % ids.length]; // k == 2 repeats the first id
       (, , , uint256 pending, ) = pool.requests(id);
-      for (uint256 m = 0; m < n; m++) if (sel[m] == id) pending -= amt[m];
+      for (uint256 m = 0; m < n; m++) {
+        if (sel[m] == id) pending -= amt[m];
+      }
       if (pending == 0) continue;
       uint256 cap = pending < budget ? pending : budget;
       uint256 s = bound(uint256(keccak256(abi.encode(amount, k))), 1, cap);
@@ -115,7 +133,9 @@ contract BpnInvariantHandler is Test {
     if (n == 0) return;
     uint256[] memory sIds = new uint256[](n);
     uint256[] memory sAmt = new uint256[](n);
-    for (uint256 m = 0; m < n; m++) (sIds[m], sAmt[m]) = (sel[m], amt[m]);
+    for (uint256 m = 0; m < n; m++) {
+      (sIds[m], sAmt[m]) = (sel[m], amt[m]);
+    }
     vm.prank(bot);
     pool.settleRedeem(sIds, sAmt);
   }
@@ -128,7 +148,9 @@ contract BpnInvariantHandler is Test {
     for (uint256 k = 0; k < count; k++) {
       c[k] = ids[((seed % ids.length) + k) % ids.length];
       bool dup;
-      for (uint256 m = 0; m < k; m++) if (c[m] == c[k]) dup = true;
+      for (uint256 m = 0; m < k; m++) {
+        if (c[m] == c[k]) dup = true;
+      }
       if (!dup) {
         (, , , , uint256 claimable) = pool.requests(c[k]);
         owed += claimable;
@@ -242,6 +264,16 @@ contract BpnEarnPoolInvariant is SurfinTestBase {
     assertEq(pool.totalEscrowed(), pending, "escrow == sum of pending");
     assertEq(pool.totalConfirmedUnclaimed(), claimable, "confirmed == sum of claimable");
     assertEq(pool.totalPendingWithdraw(), pool.totalEscrowed() + pool.totalConfirmedUnclaimed(), "pending split");
+  }
+
+  /// forge-config: default.invariant.runs = 64
+  /// forge-config: default.invariant.depth = 64
+  function invariant_sharesStayWithTheirDepositor() public view {
+    assertEq(handler.ghostTransfers(), 0, "a share moved between holders");
+    for (uint256 i = 0; i < handler.actorsLength(); i++) {
+      address a = handler.actorAt(i);
+      assertEq(pool.balanceOf(a), handler.ghostHeld(a), "position left its depositor");
+    }
   }
 
   /// forge-config: default.invariant.runs = 64

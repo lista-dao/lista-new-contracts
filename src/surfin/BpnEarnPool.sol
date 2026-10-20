@@ -12,6 +12,9 @@ import { CreditFundSharePool } from "./CreditFundSharePool.sol";
  * @notice Demand product on the Surfin template with a 1:1 share and escrowed redemption
  *         requests that are settled share by share, so a request can be paid in parts.
  *
+ *  - Shares: bookkeeping only, not transferable. They are minted on deposit, moved into
+ *    the pool's escrow on request and burned out of it at settlement; `transfer` and
+ *    `transferFrom` between holders revert.
  *  - Deposit: mints shares 1:1 and forwards the asset to the adapter.
  *  - Request: `requestRedeem` moves the shares into the pool's escrow; the request keeps
  *    them until they are settled. There is no cancel path.
@@ -203,6 +206,13 @@ contract BpnEarnPool is CreditFundSharePool {
   ///      is settled
   function _capUsage() internal view override returns (uint256) {
     return totalSupply();
+  }
+
+  /// @dev the only share moves are mint (deposit), into the pool (escrow; the base
+  ///      rejects it outside `_escrow`) and burn (settlement)
+  function _update(address from, address to, uint256 value) internal override {
+    require(from == address(0) || to == address(0) || to == address(this), "non-transferable");
+    super._update(from, to, value);
   }
 
   uint256[46] private __gap;
