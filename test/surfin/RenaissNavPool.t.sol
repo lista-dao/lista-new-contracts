@@ -22,6 +22,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
   address dave = makeAddr("dave");
   address frank = makeAddr("frank");
   address market = makeAddr("market");
+  address eve = makeAddr("eve");
 
   uint256 constant NAV1 = 1e18;
   uint256 constant CAP = 3_000_000 ether;
@@ -108,8 +109,18 @@ contract RenaissNavPoolTest is SurfinTestBase {
   /// @dev a week later, publish `nav_` and release it over `duration`
   function _publishOver(uint256 nav_, uint256 duration) internal {
     vm.warp(block.timestamp + 7 days);
-    vm.prank(manager);
+    _publishNow(nav_, duration);
+  }
+
+  /// @dev publish as operations does: a rise is published with deposits paused, and
+  ///      deposits reopen in the same batch (left paused if they already were)
+  function _publishNow(uint256 nav_, uint256 duration) internal {
+    bool reopen = nav_ > pool.publishedNav() && !pool.depositPaused();
+    vm.startPrank(manager);
+    if (reopen) pool.setDepositPaused(true);
     pool.publishNav(nav_, duration);
+    if (reopen) pool.setDepositPaused(false);
+    vm.stopPrank();
   }
 
   function _request(address who, uint256 shares) internal returns (uint256 id) {
@@ -547,6 +558,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     vm.startPrank(manager);
     vm.expectRevert("nav is zero");
     pool.publishNav(0, 0);
+    pool.setDepositPaused(true); // a rise needs deposits paused
     vm.expectEmit(false, false, false, true, address(pool));
     emit RenaissNavPool.NavPublished(1e18, 3e18, 1e18, 0);
     pool.publishNav(3e18, 0); // no bound
@@ -578,7 +590,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
 
     vm.warp(block.timestamp + 3.5 days);
     assertEq(pool.nav(), 1.05e18);
-    assertEq(_subscribe(alice, 105 ether), 100 ether, "minted at the current price");
+    assertEq(_subscribe(alice, 110 ether), 100 ether, "minted at the published NAV, not the displayed price");
 
     vm.warp(block.timestamp + 3.5 days);
     assertEq(pool.nav(), 1.1e18);
@@ -594,7 +606,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     assertEq(pool.currentLockedNav(), -0.1e18);
     vm.warp(block.timestamp + 3.5 days);
     assertEq(pool.nav(), 0.95e18);
-    assertEq(_subscribe(alice, 190 ether), 200 ether);
+    assertEq(_subscribe(alice, 180 ether), 200 ether, "minted at the published NAV, not the displayed price");
     vm.warp(block.timestamp + 3.5 days);
     assertEq(pool.nav(), 0.9e18);
   }
@@ -615,8 +627,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     _publishOver(1.1e18, 7 days);
     vm.warp(block.timestamp + 3.5 days); // price 1.05
 
-    vm.prank(manager);
-    pool.publishNav(1.2e18, 7 days);
+    _publishNow(1.2e18, 7 days);
     assertEq(pool.nav(), 1.05e18, "continuous across the publish");
     assertEq(pool.lockedNav(), 0.15e18, "remainder 0.05 + new rise 0.10");
     vm.warp(block.timestamp + 3.5 days);
@@ -625,12 +636,10 @@ contract RenaissNavPoolTest is SurfinTestBase {
     assertEq(pool.nav(), 1.2e18);
 
     // reversal mid-release: from 1.2 towards 1.0, then back up to 1.06 from wherever it is
-    vm.prank(manager);
-    pool.publishNav(1.0e18, 4 days);
+    _publishNow(1.0e18, 4 days);
     vm.warp(block.timestamp + 1 days);
     assertEq(pool.nav(), 1.15e18);
-    vm.prank(manager);
-    pool.publishNav(1.06e18, 2 days);
+    _publishNow(1.06e18, 2 days);
     assertEq(pool.nav(), 1.15e18, "no jump on a reversal either");
     vm.warp(block.timestamp + 2 days);
     assertEq(pool.nav(), 1.06e18);
@@ -641,14 +650,14 @@ contract RenaissNavPoolTest is SurfinTestBase {
     _seedPool();
     _publishOver(0.5e18, 7 days); // a wrong, too-low NAV being released
     vm.warp(block.timestamp + 1 days);
-    vm.prank(manager);
-    pool.publishNav(1.02e18, 0);
+    _publishNow(1.02e18, 0);
     assertEq(pool.nav(), 1.02e18);
     assertEq(pool.currentLockedNav(), 0);
   }
 
   function test_release_bounds() public {
     vm.startPrank(manager);
+    pool.setDepositPaused(true); // a rise needs deposits paused
     vm.expectRevert("release too long");
     pool.publishNav(1.1e18, 7 days + 1);
     vm.expectRevert("nav too large");
@@ -663,6 +672,8 @@ contract RenaissNavPoolTest is SurfinTestBase {
     _seedPool();
     _publishOver(1.1e18, 7 days);
     vm.warp(block.timestamp + 3.5 days);
+    vm.prank(manager);
+    pool.setDepositPaused(true); // a rise needs deposits paused
     vm.expectEmit(false, false, false, true, address(pool));
     emit RenaissNavPool.NavPublished(1.1e18, 1.2e18, 1.05e18, 2 days);
     vm.prank(manager);
@@ -693,38 +704,39 @@ contract RenaissNavPoolTest is SurfinTestBase {
   }
 
   /// @dev the cap is measured on the published value: it does not drift during a release,
-  ///      and a deposit below the published NAV is counted at what its shares are worth.
+  ///      and a deposit is counted at the published NAV it is priced at.
   function test_release_capOnPublishedValue() public {
     _subscribe(bob, 2_000_000 ether);
-    _publishOver(1.25e18, 7 days); // published value 2,500,000, price still 1.00
+    _publishOver(1.25e18, 7 days); // published value 2,500,000, displayed price still 1.00
     assertEq(pool.totalPrincipal(), 2_500_000 ether);
     vm.warp(block.timestamp + 3 days);
     assertEq(pool.totalPrincipal(), 2_500_000 ether, "no drift while the price moves");
     vm.warp(block.timestamp - 3 days);
 
-    usdt.mint(alice, 500_000 ether);
+    usdt.mint(alice, 500_001 ether);
     vm.startPrank(alice);
     usdt.approve(address(pool), type(uint256).max);
-    vm.expectRevert("exceeds cap"); // 450,000 shares are worth 562,500 at 1.25
-    pool.deposit(450_000 ether, alice);
-    pool.deposit(400_000 ether, alice); // 400,000 shares, worth exactly the 500,000 left
+    vm.expectRevert("exceeds cap");
+    pool.deposit(500_000 ether + 1, alice);
+    pool.deposit(500_000 ether, alice); // 400,000 shares at 1.25, exactly the 500,000 left
     vm.stopPrank();
+    assertEq(pool.balanceOf(alice), 400_000 ether);
     assertEq(pool.totalPrincipal(), CAP);
   }
 
-  /// @dev the request value check uses the current price, the one the holder sees.
-  function test_release_requestValueUsesCurrentPrice() public {
+  /// @dev the request value check uses the published NAV, the price the request settles at.
+  function test_release_requestValueUsesPublishedNav() public {
     _seedPool();
     vm.prank(manager);
     pool.setMinWithdraw(1_000 ether);
     vm.prank(manager);
     pool.openEpoch();
     _publishOver(0.5e18, 7 days);
-    vm.warp(block.timestamp + 3.5 days); // price 0.75, published 0.50
+    vm.warp(block.timestamp + 3.5 days); // displayed 0.75, published 0.50
     vm.prank(bob);
     vm.expectRevert("below min withdraw");
-    pool.requestRedeem(1_300 ether); // 975 at the current price
-    _request(bob, 1_400 ether); // 1,050 at the current price, 700 at the published NAV
+    pool.requestRedeem(1_400 ether); // 1,050 at the displayed price, 700 at the published NAV
+    _request(bob, 2_000 ether); // 1,000 at the published NAV
   }
 
   /// forge-config: default.fuzz.runs = 512
@@ -741,6 +753,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     t1 = bound(t1, 0, duration + 1 days);
     t2 = bound(t2, t1, duration + 1 days);
     vm.startPrank(manager);
+    pool.setDepositPaused(true); // rises need deposits paused
     pool.publishNav(fromNav, 0);
     pool.publishNav(toNav, duration);
     vm.stopPrank();
@@ -760,10 +773,11 @@ contract RenaissNavPoolTest is SurfinTestBase {
     if (t2 >= duration) assertEq(p2, toNav, "reaches the published NAV");
   }
 
-  /// @dev during a drop release the asset sent in is what binds the cap.
+  /// @dev during a drop release the cap still binds at the published value: the subscriber
+  ///      buys at the published NAV, so the asset sent in is exactly what the shares are worth.
   function test_release_capDuringDropBindsOnAmount() public {
     _subscribe(bob, 2_000_000 ether);
-    _publishOver(0.8e18, 7 days); // published value 1,600,000, price still 1.00
+    _publishOver(0.8e18, 7 days); // published value 1,600,000, displayed price still 1.00
     usdt.mint(alice, 1_500_000 ether);
     vm.startPrank(alice);
     usdt.approve(address(pool), type(uint256).max);
@@ -771,19 +785,20 @@ contract RenaissNavPoolTest is SurfinTestBase {
     pool.deposit(1_500_000 ether, alice);
     pool.deposit(1_400_000 ether, alice); // exactly the cap in asset terms
     vm.stopPrank();
-    assertEq(pool.totalPrincipal(), 2_720_000 ether, "3,400,000 shares at 0.80");
+    assertEq(pool.balanceOf(alice), 1_750_000 ether, "1,400,000 at 0.80");
+    assertEq(pool.totalPrincipal(), CAP, "3,750,000 shares at 0.80");
   }
 
-  /// @dev what a subscription made during a release is settled at: a rise release lets
-  ///      it capture the unreleased part, a drop release makes it pay that part.
-  function test_release_subscriptionCycleBothDirections() public {
+  /// @dev a subscription made during a release is priced and settled at the same published
+  ///      NAV: it neither captures an unreleased rise nor pays an unreleased drop.
+  function test_release_subscriptionCycleIsNeutralBothDirections() public {
     _seedPool();
     vm.prank(manager);
     pool.openEpoch();
 
-    _publishOver(1.1e18, 7 days); // rise, price still 1.00
-    uint256 up = _subscribe(alice, 100_000 ether);
-    assertEq(up, 100_000 ether);
+    _publishOver(1.1e18, 7 days); // rise, displayed price still 1.00
+    uint256 up = _subscribe(alice, 110_000 ether);
+    assertEq(up, 100_000 ether, "110,000 at the published 1.10");
     _request(alice, up);
     vm.prank(manager);
     pool.closeEpoch();
@@ -795,11 +810,11 @@ contract RenaissNavPoolTest is SurfinTestBase {
     pool.openEpoch();
     vm.stopPrank();
     _claimEpoch(1);
-    assertEq(usdt.balanceOf(alice), 110_000 ether, "the unreleased rise went to the subscriber");
+    assertEq(usdt.balanceOf(alice), 110_000 ether, "paid back exactly what was subscribed");
 
-    _publishOver(0.99e18, 7 days); // drop, price still 1.10
-    uint256 down = _subscribe(charlie, 110_000 ether);
-    assertEq(down, 100_000 ether);
+    _publishOver(0.99e18, 7 days); // drop, displayed price still 1.10
+    uint256 down = _subscribe(charlie, 99_000 ether);
+    assertEq(down, 100_000 ether, "99,000 at the published 0.99");
     _request(charlie, down);
     vm.prank(manager);
     pool.closeEpoch();
@@ -810,7 +825,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     pool.settleEpoch();
     vm.stopPrank();
     _claimEpoch(2);
-    assertEq(usdt.balanceOf(charlie), 99_000 ether, "the subscriber paid the unreleased drop");
+    assertEq(usdt.balanceOf(charlie), 99_000 ether, "paid back exactly what was subscribed");
   }
 
   /// @dev publishing the same value with the remaining time unlocks settlement and keeps
@@ -848,6 +863,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
   function test_release_extremes() public {
     uint256 top = type(uint128).max;
     vm.startPrank(manager);
+    pool.setDepositPaused(true); // rises need deposits paused
     pool.publishNav(top, 7 days);
     vm.warp(block.timestamp + 3 days);
     pool.publishNav(1, 7 days);
@@ -887,6 +903,8 @@ contract RenaissNavPoolTest is SurfinTestBase {
   /// @dev chained publishes (mid-release, same block, reversals, steps): the price never
   ///      jumps on a release publish, stays within each segment and reaches its target.
   function testFuzz_release_chainedPublishes(uint256 seed) public {
+    vm.prank(manager);
+    pool.setDepositPaused(true); // rises need deposits paused
     for (uint256 k = 0; k < 4; k++) {
       uint256 r = uint256(keccak256(abi.encode(seed, k)));
       uint256 newNav = bound(r, 1, type(uint128).max);
@@ -1082,5 +1100,68 @@ contract RenaissNavPoolTest is SurfinTestBase {
     (, , uint256 shares, , ) = pool.requests(id);
     assertEq(shares, 2_500 ether);
     assertEq(pool.balanceOf(alice), 0);
+  }
+
+  /* ------------------------------ audit regressions ------------------------------ */
+
+  /// @dev audit MEV-001: during a rise release a subscriber buys at the published NAV, the
+  ///      price it settles at, so it cannot take the unreleased part from existing holders.
+  function test_audit_MEV001_riseReleaseGivesSubscribersNothing() public {
+    _seedPool();
+    vm.prank(manager);
+    pool.openEpoch();
+    _publishOver(1.04e18, 7 days);
+    assertEq(pool.nav(), 1e18, "displayed price still 1.00");
+
+    uint256 headroom = CAP - pool.totalPrincipal(); // 1,960,000 at the published NAV
+    uint256 shares = _subscribe(eve, headroom);
+    _request(eve, shares);
+    _settle(1.04e18);
+    _claimEpoch(1);
+    assertLe(usdt.balanceOf(eve), headroom, "paid back at most what was subscribed");
+  }
+
+  /// @dev audit MEV-002: a rise cannot be published while subscriptions are open, so a
+  ///      pending rise (Safe queue, mempool) cannot be front-run with a subscription.
+  function test_audit_MEV002_riseCannotBePublishedWithDepositsOpen() public {
+    _seedPool();
+    vm.prank(manager);
+    pool.openEpoch();
+
+    vm.prank(manager);
+    vm.expectRevert("pause deposits before a rise");
+    pool.publishNav(1.04e18, 0);
+
+    // operations pause first, so whoever reads the pending rise cannot subscribe ahead of it
+    vm.prank(manager);
+    pool.setDepositPaused(true);
+    usdt.mint(eve, 1_000_000 ether);
+    vm.startPrank(eve);
+    usdt.approve(address(pool), type(uint256).max);
+    vm.expectRevert("deposit paused");
+    pool.deposit(1_000_000 ether, eve);
+    vm.stopPrank();
+
+    // publish and reopen in one batch: the next subscription buys at the new NAV
+    vm.startPrank(manager);
+    pool.publishNav(1.04e18, 0);
+    pool.setDepositPaused(false);
+    vm.stopPrank();
+    vm.prank(eve);
+    pool.deposit(1_000_000 ether, eve);
+    _request(eve, pool.balanceOf(eve));
+    _settle(1.04e18);
+    _claimEpoch(1);
+    assertLe(usdt.balanceOf(eve), 1_000_000 ether, "no profit from the ordering");
+  }
+
+  /// @dev a drop or a same-value republish can be published with deposits open.
+  function test_publish_dropAndRepublishNeedNoPause() public {
+    vm.startPrank(manager);
+    pool.publishNav(0.9e18, 0);
+    pool.publishNav(0.9e18, 7 days);
+    vm.expectRevert("pause deposits before a rise");
+    pool.publishNav(0.9e18 + 1, 0);
+    vm.stopPrank();
   }
 }
