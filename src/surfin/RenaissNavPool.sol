@@ -9,17 +9,28 @@ import { CreditFundSharePool } from "./CreditFundSharePool.sol";
 
 /**
  * @title RenaissNavPool
- * @notice Perpetual NAV product on the Surfin template: shares are minted at the latest
- *         published NAV and redeemed in epochs at the NAV published after the epoch
- *         closes (forward pricing). No interest is paid; every return is in the NAV.
+ * @notice Perpetual NAV product on the Surfin template: shares are minted at the current
+ *         price, which moves linearly to each published NAV, and redeemed in epochs at the
+ *         NAV published after the epoch closes (forward pricing). No interest is paid;
+ *         every return is in the NAV.
  *
- *  - NAV: MANAGER publishes it (weekly) after off-chain validation; the contract applies
- *    it as is. A stale NAV is an operations matter (depositPaused).
- *  - Subscription: continuous, `shares = amount * 1e18 / nav`, bounded by `cap` measured
- *    on the pool's value (`totalSupply * nav`).
+ *  - NAV: MANAGER publishes it (weekly) after off-chain validation, applied as is, and
+ *    chooses how long the price takes to reach it (`releaseDuration`: 0 = at once, at most
+ *    `MAX_NAV_RELEASE`). The move from the current price to the new NAV is released
+ *    linearly, lockBuffer-style: a publish during a release carries the unreleased
+ *    remainder into the new one, so the price never jumps unless the duration is 0.
+ *    Subscriptions, the request value check and `poolNav` use the current price `nav()`;
+ *    settlement, the cap and `totalPrincipal` use `publishedNav`. So while a move is being
+ *    released, subscribers buy at `nav()` and are later settled at a published NAV: during
+ *    a rise release they capture the part not yet released, during a drop release they pay
+ *    it. A stale NAV is an operations matter (depositPaused).
+ *  - Subscription: continuous, `shares = amount * 1e18 / nav()`. `cap` bounds both the
+ *    asset sent in and the published value of the resulting supply
+ *    (`totalSupply * publishedNav`): the first binds during a drop release, the second
+ *    during a rise release.
  *  - Redemption epoch, driven by MANAGER: openEpoch -> requests (cancellable, escrowed in
  *    the pool) -> closeEpoch (no more requests or cancels) -> settleEpoch once the partner
- *    has paid: MANAGER brings in `requestedShares * nav`, the escrowed shares are burned,
+ *    has paid: MANAGER brings in `requestedShares * publishedNav`, the escrowed shares are burned,
  *    and every request of the epoch is then claimed in one go through `claimRedeem`
  *    (permissionless, batched by ids so a large epoch can be paid over several calls).
  *    Every request of an epoch is priced at that one settlement NAV.
@@ -63,13 +74,21 @@ contract RenaissNavPool is CreditFundSharePool {
 
   /* CONSTANTS */
   uint256 public constant NAV_PRECISION = 1e18;
+  // longest linear release a publish can choose
+  uint256 public constant MAX_NAV_RELEASE = 7 days;
   // guardrail on Lista's cut of a payout (30%)
   uint256 internal constant MAX_FEE_RATE = 0.3 ether;
 
   /* VARIABLES */
-  // price per share, 1e18
-  uint256 public nav;
+  // latest published price per share, 1e18; settlement, the cap and totalPrincipal read it
+  uint256 public publishedNav;
   uint256 public navUpdatedAt;
+  // amount to release, fixed at publish: publishedNav minus the price at navReleaseStart,
+  // signed; 0 for a publish applied at once. It is not updated as time passes:
+  // currentLockedNav() is what is still unreleased now, nav() the current price
+  int256 public lockedNav;
+  uint64 public navReleaseStart;
+  uint64 public navReleaseDuration;
   // Lista's cut of each payout, 1e18; paid to feeReceiver
   uint256 public feeRate;
   address public feeReceiver;
@@ -87,7 +106,7 @@ contract RenaissNavPool is CreditFundSharePool {
 
   /* EVENTS */
   event Subscribed(address indexed user, address indexed receiver, uint256 amount, uint256 shares, uint256 nav);
-  event NavPublished(uint256 previousNav, uint256 nav);
+  event NavPublished(uint256 previousNav, uint256 nav, uint256 fromNav, uint256 releaseDuration);
   event EpochOpened(uint256 indexed epochId);
   event EpochClosed(uint256 indexed epochId, uint256 requestedShares);
   event EpochSettled(uint256 indexed epochId, uint256 nav, uint256 shares, uint256 payout);
@@ -105,7 +124,8 @@ contract RenaissNavPool is CreditFundSharePool {
 
   /* INITIALIZER */
   /**
-   * @param _initialNav opening price per share (1e18); the first subscriptions mint at it
+   * @param _initialNav opening price per share (1e18), at most type(uint128).max; the
+   *        first subscriptions mint at it
    */
   function initialize(
     address _admin,
@@ -119,28 +139,34 @@ contract RenaissNavPool is CreditFundSharePool {
     uint256 _initialNav
   ) external initializer {
     require(_initialNav > 0, "nav is zero");
+    require(_initialNav <= type(uint128).max, "nav too large");
     __CreditFundSharePool_init(_admin, _manager, _pauser, _bot, _asset, _adapter, _name, _symbol);
-    nav = _initialNav;
+    publishedNav = _initialNav;
     navUpdatedAt = block.timestamp;
-    emit NavPublished(0, _initialNav);
+    emit NavPublished(0, _initialNav, _initialNav, 0);
   }
 
   /* USER FUNCTIONS */
   /**
-   * @dev subscribe at the latest published NAV; funds go straight to the adapter.
+   * @dev subscribe at the current price `nav()`; funds go straight to the adapter. The cap
+   *      bounds both `amount` and the published value of the resulting supply.
    * @param amount the amount of asset to deposit
    * @param receiver the receiver of the shares
    */
   function deposit(uint256 amount, address receiver) external whenNotPaused whenDepositNotPaused nonReentrant {
     _checkDeposit(receiver, amount);
-    uint256 shares = (amount * NAV_PRECISION) / nav;
+    uint256 price = nav();
+    uint256 shares = (amount * NAV_PRECISION) / price;
     require(shares > 0, "shares is zero");
+    // while a rise is being released the price is below publishedNav, so the shares are
+    // worth more than `amount` at the published value the cap is measured on
+    require(((totalSupply() + shares) * publishedNav) / NAV_PRECISION <= cap, "exceeds cap");
 
     _mint(receiver, shares);
     IERC20(asset).safeTransferFrom(msg.sender, adapter, amount);
 
     emit Deposit(receiver, amount);
-    emit Subscribed(msg.sender, receiver, amount, shares, nav);
+    emit Subscribed(msg.sender, receiver, amount, shares, price);
   }
 
   /**
@@ -155,7 +181,7 @@ contract RenaissNavPool is CreditFundSharePool {
     require(c.state == EpochState.Open, "window closed");
     shares = _resolveAll(shares);
     require(shares > 0, "shares is zero");
-    uint256 value = (shares * nav) / NAV_PRECISION;
+    uint256 value = (shares * nav()) / NAV_PRECISION;
     require(value > 0, "request below 1 wei");
     _checkMinWithdraw(msg.sender, value, shares, balanceOf(msg.sender));
 
@@ -237,14 +263,31 @@ contract RenaissNavPool is CreditFundSharePool {
 
   /* MANAGER FUNCTIONS */
   /**
-   * @dev publish the NAV. The value is validated off-chain before the multisig submits it;
-   *      the contract only rejects zero.
+   * @dev publish the NAV and choose how long the price takes to reach it. The value is
+   *      validated off-chain before the multisig submits it; the contract only rejects zero
+   *      and values above type(uint128).max (which keeps the signed release math in range).
+   *      There is no bound on the move itself.
+   *      Combine-and-reset, as in lockBuffer: the whole distance from the current price to
+   *      `newNav` (including what a previous release had not released yet) is released
+   *      linearly from now over `releaseDuration`; 0 applies it at once, e.g. to correct a
+   *      wrong NAV. Settlement uses `newNav` straight away, so a release only affects who
+   *      subscribes during it (see the contract notice): publish a rise with 0 unless
+   *      subscribers during the release are meant to capture it.
    * @param newNav price per share, 1e18
+   * @param releaseDuration seconds for the price to reach `newNav`, at most MAX_NAV_RELEASE
    */
-  function publishNav(uint256 newNav) external onlyRole(MANAGER) {
+  function publishNav(uint256 newNav, uint256 releaseDuration) external onlyRole(MANAGER) {
     require(newNav > 0, "nav is zero");
-    emit NavPublished(nav, newNav);
-    nav = newNav;
+    require(newNav <= type(uint128).max, "nav too large");
+    require(releaseDuration <= MAX_NAV_RELEASE, "release too long");
+
+    uint256 fromNav = nav();
+    emit NavPublished(publishedNav, newNav, fromNav, releaseDuration);
+
+    lockedNav = releaseDuration == 0 ? int256(0) : int256(newNav) - int256(fromNav);
+    navReleaseStart = uint64(block.timestamp);
+    navReleaseDuration = uint64(releaseDuration);
+    publishedNav = newNav;
     navUpdatedAt = block.timestamp;
   }
 
@@ -268,9 +311,13 @@ contract RenaissNavPool is CreditFundSharePool {
   }
 
   /**
-   * @dev settle the closed epoch at the NAV published after it closed: the caller brings
-   *      in the whole payout (`requestedShares * nav`, approve first), the escrowed shares
-   *      are burned, and the requests become claimable through `claimRedeem`.
+   * @dev settle the closed epoch at the NAV published after it closed (`publishedNav`, not
+   *      the price still being released): the caller brings in the whole payout
+   *      (`requestedShares * publishedNav`, approve first), the escrowed shares are burned,
+   *      and the requests become claimable through `claimRedeem`. Settling needs a publish
+   *      after the close; to settle on an unchanged NAV without moving the price curve,
+   *      publish the same value with the remaining release time
+   *      (`navReleaseStart + navReleaseDuration - block.timestamp`, or 0 once it is over).
    */
   function settleEpoch() external onlyRole(MANAGER) nonReentrant {
     Epoch storage c = epochs[currentEpochId];
@@ -278,9 +325,10 @@ contract RenaissNavPool is CreditFundSharePool {
     require(navUpdatedAt > c.closedAt, "nav not published since close");
 
     uint256 shares = c.requestedShares;
-    uint256 payout = (shares * nav) / NAV_PRECISION;
+    uint256 settlementNav = publishedNav;
+    uint256 payout = (shares * settlementNav) / NAV_PRECISION;
     c.state = EpochState.Settled;
-    c.settlementNav = nav;
+    c.settlementNav = settlementNav;
     c.payout = payout;
     c.feeRate = feeRate;
 
@@ -293,7 +341,7 @@ contract RenaissNavPool is CreditFundSharePool {
       IERC20(asset).safeTransferFrom(msg.sender, address(this), payout);
     }
 
-    emit EpochSettled(currentEpochId, nav, shares, payout);
+    emit EpochSettled(currentEpochId, settlementNav, shares, payout);
   }
 
   function setFeeRate(uint256 _feeRate) external onlyRole(MANAGER) {
@@ -315,12 +363,30 @@ contract RenaissNavPool is CreditFundSharePool {
   /// @inheritdoc CreditFundBase
   /// @dev the outstanding shares valued at the published NAV
   function totalPrincipal() public view override returns (uint256) {
-    return poolNav();
+    return _publishedValue();
   }
 
-  /// @dev value of all outstanding shares, escrow included, in asset units
+  /// @dev current price per share, 1e18: the published NAV less the part of its move not
+  ///      released yet
+  function nav() public view returns (uint256) {
+    return uint256(int256(publishedNav) - currentLockedNav());
+  }
+
+  /// @dev part of the last move still to be released (signed: positive while a rise is
+  ///      released, negative while a drop is), lockBuffer's currentLocked()
+  function currentLockedNav() public view returns (int256) {
+    int256 locked = lockedNav;
+    if (locked == 0) return 0;
+    uint256 duration = navReleaseDuration;
+    uint256 elapsed = block.timestamp - navReleaseStart;
+    if (elapsed >= duration) return 0;
+    return (locked * int256(duration - elapsed)) / int256(duration);
+  }
+
+  /// @dev value of all outstanding shares at the current price, escrow included, in asset
+  ///      units
   function poolNav() public view returns (uint256) {
-    return (totalSupply() * nav) / NAV_PRECISION;
+    return (totalSupply() * nav()) / NAV_PRECISION;
   }
 
   /// @dev every request submitted to an epoch, in submission order (cancelled ones included)
@@ -329,10 +395,15 @@ contract RenaissNavPool is CreditFundSharePool {
   }
 
   /* INTERNAL FUNCTIONS */
-  /// @dev the pool's value is what the cap bounds
+  /// @dev the pool's published value is what the cap bounds, so it does not drift while a
+  ///      move is being released
   function _capUsage() internal view override returns (uint256) {
-    return poolNav();
+    return _publishedValue();
   }
 
-  uint256[39] private __gap;
+  function _publishedValue() internal view returns (uint256) {
+    return (totalSupply() * publishedNav) / NAV_PRECISION;
+  }
+
+  uint256[37] private __gap;
 }
