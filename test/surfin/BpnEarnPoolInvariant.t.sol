@@ -5,11 +5,13 @@ import "./SurfinTestBase.sol";
 import "../../src/surfin/BpnEarnPool.sol";
 
 /**
- * Stateful handler driving random BpnEarnPool + adapter lifecycles: deposits, share
- * transfer attempts (always rejected), escrowed requests, cash pushed by the adapter, partial settlements (duplicate
- * ids included), claims, deploys to the partner and recalls. Every action is bounded so it
- * never reverts spuriously. adminTopUp is left out: it may park quota above the escrow by
- * design.
+ * Stateful handler driving random BpnEarnPool + adapter lifecycles: deposits (forwarded to
+ * the partner wallet in the same call), share transfer attempts (always rejected), escrowed
+ * requests, cash pushed by the adapter, partial settlements (duplicate ids included),
+ * claims, manual deploys of recalled idle cash, recalls and adapter pauses. Every action is
+ * bounded so it never reverts: the campaign runs with fail-on-revert, so a revert is a
+ * finding, not a discarded step. adminTopUp is left out: it may park quota above the escrow
+ * by design.
  */
 contract BpnInvariantHandler is Test {
   MockERC20 usdt;
@@ -17,13 +19,19 @@ contract BpnInvariantHandler is Test {
   BpnEarnPool pool;
   address bot;
   address manager;
+  address pauser;
   address wallet;
   address[] internal actors;
   uint256[] public ids;
 
+  // cash minted into the system by deposits
   uint256 public ghostDeposited;
-  uint256 public ghostRecalled;
+  // the part of it the pool shipped to the partner at deposit; equal to ghostDeposited by
+  // construction, kept apart so the sink side of the cash equation names where it went
+  uint256 public ghostForwarded;
+  // recalled idle cash the manager re-deployed
   uint256 public ghostDeployed;
+  uint256 public ghostRecalled;
   uint256 public ghostClaimed;
   // shares each actor should hold: deposits less requests (positions never move)
   mapping(address => uint256) public ghostHeld;
@@ -36,6 +44,7 @@ contract BpnInvariantHandler is Test {
     BpnEarnPool _pool,
     address _bot,
     address _manager,
+    address _pauser,
     address _wallet
   ) {
     usdt = _usdt;
@@ -43,6 +52,7 @@ contract BpnInvariantHandler is Test {
     pool = _pool;
     bot = _bot;
     manager = _manager;
+    pauser = _pauser;
     wallet = _wallet;
     actors.push(makeAddr("bpn_actor_1"));
     actors.push(makeAddr("bpn_actor_2"));
@@ -61,7 +71,15 @@ contract BpnInvariantHandler is Test {
     return ids.length;
   }
 
+  /// @dev the pool forwards the deposit through `deployToSurfin`, so deposits are closed
+  ///      while the adapter is paused or while its ceiling would reject the amount. After
+  ///      the transfer the deployable is `freeIdle + amount - hardFloor - onDemandUnfunded`,
+  ///      so the amount fits iff idle cash already covers the reserve (floorRate is 0, so
+  ///      the pre-mint floor is exact). Both are accepted phase-1 constraints: skip, do not
+  ///      revert.
   function deposit(uint256 actorSeed, uint256 amount) public {
+    if (adapter.paused()) return;
+    if (adapter.freeIdle() < adapter.hardFloor() + adapter.onDemandUnfunded()) return;
     address a = actors[actorSeed % actors.length];
     amount = bound(amount, 1e18, 1_000_000e18);
     usdt.mint(a, amount);
@@ -70,6 +88,7 @@ contract BpnInvariantHandler is Test {
     pool.deposit(amount, a);
     vm.stopPrank();
     ghostDeposited += amount;
+    ghostForwarded += amount;
     ghostHeld[a] += amount;
   }
 
@@ -160,7 +179,10 @@ contract BpnInvariantHandler is Test {
     ghostClaimed += owed;
   }
 
+  /// @dev the manager re-deploys idle cash; only recalls leave any, since deposits are
+  ///      forwarded on arrival
   function deploy(uint256 amount) public {
+    if (adapter.paused()) return;
     uint256 max = adapter.maxDeployToSurfin();
     if (max == 0) return;
     amount = bound(amount, 1, max);
@@ -171,6 +193,7 @@ contract BpnInvariantHandler is Test {
 
   /// @dev the partner sends cash back; the book is reset to what it still holds
   function recall(uint256 amount) public {
+    if (adapter.paused()) return;
     uint256 held = usdt.balanceOf(wallet);
     if (held == 0) return;
     amount = bound(amount, 1, held);
@@ -181,6 +204,18 @@ contract BpnInvariantHandler is Test {
     adapter.settleRecall(amount, 0, 0, held - amount);
     vm.stopPrank();
     ghostRecalled += amount;
+  }
+
+  /// @dev the adapter's emergency stop; it closes deposits, deploys and recalls
+  function setPaused(bool on) public {
+    if (on == adapter.paused()) return;
+    if (on) {
+      vm.prank(pauser);
+      adapter.pause();
+    } else {
+      vm.prank(manager);
+      adapter.unpause();
+    }
   }
 }
 
@@ -226,16 +261,19 @@ contract BpnEarnPoolInvariant is SurfinTestBase {
         )
       )
     );
-    vm.prank(admin);
+    vm.startPrank(admin);
     pool.setAdapter(address(adapter));
+    // the pool forwards deposits through deployToSurfin, a MANAGER call on the adapter
+    adapter.grantRole(adapter.MANAGER(), address(pool));
+    vm.stopPrank();
     vm.startPrank(manager);
     adapter.setFloorRate(0);
     pool.setCap(type(uint256).max);
     vm.stopPrank();
 
-    handler = new BpnInvariantHandler(usdt, adapter, pool, bot, manager, surfinWallet);
+    handler = new BpnInvariantHandler(usdt, adapter, pool, bot, manager, pauser, surfinWallet);
     targetContract(address(handler));
-    bytes4[] memory actions = new bytes4[](8);
+    bytes4[] memory actions = new bytes4[](9);
     actions[0] = handler.deposit.selector;
     actions[1] = handler.transfer.selector;
     actions[2] = handler.request.selector;
@@ -244,6 +282,7 @@ contract BpnEarnPoolInvariant is SurfinTestBase {
     actions[5] = handler.claim.selector;
     actions[6] = handler.deploy.selector;
     actions[7] = handler.recall.selector;
+    actions[8] = handler.setPaused.selector;
     targetSelector(FuzzSelector({ addr: address(handler), selectors: actions }));
   }
 
@@ -258,6 +297,7 @@ contract BpnEarnPoolInvariant is SurfinTestBase {
 
   /// forge-config: default.invariant.runs = 64
   /// forge-config: default.invariant.depth = 64
+  /// forge-config: default.invariant.fail-on-revert = true
   function invariant_escrowMatchesRequests() public view {
     (uint256 pending, uint256 claimable) = _sums();
     assertEq(pool.balanceOf(address(pool)), pool.totalEscrowed(), "escrow balance");
@@ -268,6 +308,7 @@ contract BpnEarnPoolInvariant is SurfinTestBase {
 
   /// forge-config: default.invariant.runs = 64
   /// forge-config: default.invariant.depth = 64
+  /// forge-config: default.invariant.fail-on-revert = true
   function invariant_sharesStayWithTheirDepositor() public view {
     assertEq(handler.ghostTransfers(), 0, "a share moved between holders");
     for (uint256 i = 0; i < handler.actorsLength(); i++) {
@@ -278,6 +319,7 @@ contract BpnEarnPoolInvariant is SurfinTestBase {
 
   /// forge-config: default.invariant.runs = 64
   /// forge-config: default.invariant.depth = 64
+  /// forge-config: default.invariant.fail-on-revert = true
   function invariant_poolCashBacksQuotaAndClaims() public view {
     assertEq(usdt.balanceOf(address(pool)), pool.withdrawQuota() + pool.totalConfirmedUnclaimed(), "pool cash");
     assertLe(pool.withdrawQuota(), pool.totalEscrowed(), "quota above the escrow");
@@ -285,6 +327,7 @@ contract BpnEarnPoolInvariant is SurfinTestBase {
 
   /// forge-config: default.invariant.runs = 64
   /// forge-config: default.invariant.depth = 64
+  /// forge-config: default.invariant.fail-on-revert = true
   function invariant_adapterReadsTheUncoveredEscrow() public view {
     assertEq(adapter.onDemandUnfunded(), pool.totalEscrowed() - pool.withdrawQuota(), "unfunded queue");
     assertEq(pool.totalPrincipal(), pool.totalSupply() - pool.totalEscrowed(), "earning principal");
@@ -295,11 +338,88 @@ contract BpnEarnPoolInvariant is SurfinTestBase {
 
   /// forge-config: default.invariant.runs = 64
   /// forge-config: default.invariant.depth = 64
+  /// forge-config: default.invariant.fail-on-revert = true
   function invariant_cashIsConserved() public view {
     assertEq(
       handler.ghostDeposited() + handler.ghostRecalled(),
-      adapter.idleBalance() + usdt.balanceOf(address(pool)) + handler.ghostDeployed() + handler.ghostClaimed(),
+      adapter.idleBalance() +
+        usdt.balanceOf(address(pool)) +
+        handler.ghostForwarded() +
+        handler.ghostDeployed() +
+        handler.ghostClaimed(),
       "cash created or lost"
     );
+  }
+
+  /// forge-config: default.invariant.runs = 64
+  /// forge-config: default.invariant.depth = 64
+  /// forge-config: default.invariant.fail-on-revert = true
+  function invariant_deployedBookTracksThePartner() public view {
+    // every deposit and manual deploy raises the book by its amount; a recall of `x`
+    // resets it to `held - x`, i.e. lowers it by exactly `x`
+    uint256 book = handler.ghostForwarded() + handler.ghostDeployed() - handler.ghostRecalled();
+    assertEq(adapter.deployedToSurfin(), book, "deployed book");
+    assertEq(usdt.balanceOf(surfinWallet), book, "partner holds the book");
+    // deposits leave nothing idle: whatever sits on the adapter came back in a recall
+    assertLe(adapter.idleBalance(), handler.ghostRecalled(), "deposit left idle cash");
+  }
+
+  /* ---- the handler's deposit path really runs; the campaign cannot pass vacuously ---- */
+
+  function test_handlerDepositForwardsToPartner() public {
+    address a = handler.actorAt(0);
+    vm.expectEmit(false, false, false, true, address(adapter));
+    emit SurfinAdapter.DeployToSurfin(100 ether);
+    handler.deposit(0, 100 ether);
+    assertEq(handler.ghostDeposited(), 100 ether, "deposit skipped");
+    assertEq(handler.ghostForwarded(), 100 ether, "forward not booked");
+    assertEq(pool.balanceOf(a), 100 ether, "shares");
+    assertEq(usdt.balanceOf(surfinWallet), 100 ether, "partner wallet");
+    assertEq(adapter.deployedToSurfin(), 100 ether, "deployed book");
+    assertEq(adapter.idleBalance(), 0, "cash left idle");
+    assertEq(usdt.balanceOf(address(pool)), 0, "cash left on the pool");
+  }
+
+  /// @dev the skip mirrors the adapter's ceiling exactly: closed while the unfunded escrow
+  ///      exceeds idle cash, open again once a recall covers it
+  function test_handlerDepositSkipsWhileEscrowUnfunded() public {
+    address a = handler.actorAt(0);
+    handler.deposit(0, 100 ether);
+    handler.request(0, 40 ether);
+    assertEq(adapter.onDemandUnfunded(), 40 ether, "escrow unfunded");
+
+    handler.deposit(0, 50 ether);
+    assertEq(handler.ghostDeposited(), 100 ether, "deposit ran against the reserve");
+    usdt.mint(a, 50 ether);
+    vm.startPrank(a);
+    usdt.approve(address(pool), 50 ether);
+    vm.expectRevert("exceeds deployable");
+    pool.deposit(50 ether, a);
+    vm.stopPrank();
+
+    handler.recall(40 ether);
+    assertEq(adapter.freeIdle(), 40 ether, "recall idle");
+    handler.deposit(0, 50 ether);
+    assertEq(handler.ghostDeposited(), 150 ether, "deposit skipped with the reserve covered");
+    assertEq(adapter.deployedToSurfin(), 110 ether, "deployed book");
+    assertEq(usdt.balanceOf(surfinWallet), 110 ether, "partner wallet");
+    assertEq(adapter.idleBalance(), 40 ether, "recall idle spent");
+  }
+
+  function test_handlerDepositSkipsWhileAdapterPaused() public {
+    address a = handler.actorAt(0);
+    handler.setPaused(true);
+    handler.deposit(0, 100 ether);
+    assertEq(handler.ghostDeposited(), 0, "deposit ran while paused");
+    usdt.mint(a, 100 ether);
+    vm.startPrank(a);
+    usdt.approve(address(pool), 100 ether);
+    vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
+    pool.deposit(100 ether, a);
+    vm.stopPrank();
+
+    handler.setPaused(false);
+    handler.deposit(0, 100 ether);
+    assertEq(handler.ghostDeposited(), 100 ether, "deposit skipped after unpause");
   }
 }

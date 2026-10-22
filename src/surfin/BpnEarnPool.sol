@@ -6,6 +6,7 @@ import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 
 import { CreditFundBase } from "./CreditFundBase.sol";
 import { CreditFundSharePool } from "./CreditFundSharePool.sol";
+import { ISurfinAdapter } from "./interface/ISurfinAdapter.sol";
 
 /**
  * @title BpnEarnPool
@@ -15,7 +16,10 @@ import { CreditFundSharePool } from "./CreditFundSharePool.sol";
  *  - Shares: bookkeeping only, not transferable. They are minted on deposit, moved into
  *    the pool's escrow on request and burned out of it at settlement; `transfer` and
  *    `transferFrom` between holders revert.
- *  - Deposit: mints shares 1:1 and forwards the asset to the adapter.
+ *  - Deposit: mints shares 1:1 and sends the asset on to the partner in the same
+ *    transaction: it lands on the adapter and the pool calls `deployToSurfin` for it, so
+ *    nothing stays on the pool or the adapter. The pool holds MANAGER on the adapter for
+ *    that call.
  *  - Request: `requestRedeem` moves the shares into the pool's escrow; the request keeps
  *    them until they are settled. There is no cancel path.
  *  - Funding: the adapter pushes cash in through `finishWithdraw` (the template's rail),
@@ -29,10 +33,11 @@ import { CreditFundSharePool } from "./CreditFundSharePool.sol";
  *
  * Interest is paid off-pool through the cumulative Merkle InterestDistributor.
  *
- * Wire it into the adapter's FLEX slot (lockedPool = address(0)) with floorRate 0. The
- * template's batch queue is unused: `claimWithdraw` and `getUserWithdrawalRequests` are
- * inert on this pool. `dailyLimit` is not applied to requests; leave it at 0, since it
- * still bounds `setMinWithdraw`. `minWithdraw` applies to a request's shares.
+ * Wire it into the adapter's FLEX slot (lockedPool = address(0)) with floorRate 0. Phase 1
+ * runs with the whitelist enabled. The template's batch queue is unused: `claimWithdraw`
+ * and `getUserWithdrawalRequests` are inert on this pool. `dailyLimit` is not applied to
+ * requests; leave it at 0, since it still bounds `setMinWithdraw`. `minWithdraw` applies
+ * to a request's shares.
  *
  * Template accounting, in asset units (1 share = 1 unit):
  *   totalPendingWithdraw    = escrowed shares + settled, unclaimed amounts
@@ -87,7 +92,8 @@ contract BpnEarnPool is CreditFundSharePool {
 
   /* USER FUNCTIONS */
   /**
-   * @dev deposit asset; mints shares 1:1 and forwards the funds to the adapter.
+   * @dev deposit asset; mints shares 1:1 and sends the funds on to the partner wallet
+   *      through the adapter's `deployToSurfin`.
    * @param amount the amount of asset to deposit
    * @param receiver the receiver of the shares
    */
@@ -96,6 +102,7 @@ contract BpnEarnPool is CreditFundSharePool {
 
     _mint(receiver, amount);
     IERC20(asset).safeTransferFrom(msg.sender, adapter, amount);
+    ISurfinAdapter(adapter).deployToSurfin(amount);
 
     emit Deposit(receiver, amount);
   }
