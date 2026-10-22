@@ -64,6 +64,7 @@ contract InterestDistributorTest is SurfinTestBase {
 
     assertEq(usdt.balanceOf(bob), 2_000 ether, "bob was not held hostage by alice's row");
     assertEq(usdt.balanceOf(alice), 1_000 ether, "alice paid exactly once");
+    assertEq(distributor.totalClaimed(), 3_000 ether, "the skipped row adds nothing");
   }
 
   /// @dev only the already-claimed race is tolerated; a bad proof is still a hard error.
@@ -202,6 +203,27 @@ contract InterestDistributorTest is SurfinTestBase {
     distributor.claim(alice, 1_500 ether, emptyProof);
     assertEq(usdt.balanceOf(alice), 1_500 ether, "second claim pays only the 500 delta");
     assertEq(distributor.claimed(alice), 1_500 ether, "claimed is monotonic");
+  }
+
+  function test_D1_totalClaimedSumsTheDeltasAcrossAccountsAndRoots() public {
+    usdt.mint(address(distributor), 4_000 ether);
+    assertEq(distributor.totalClaimed(), 0);
+
+    (bytes32 root, bytes32[] memory proofA, bytes32[] memory proofB) = _pairTree(
+      _leaf(alice, 1_000 ether),
+      _leaf(bob, 2_000 ether)
+    );
+    _publishRoot(root);
+    distributor.claim(alice, 1_000 ether, proofA);
+    assertEq(distributor.totalClaimed(), 1_000 ether);
+    distributor.claim(bob, 2_000 ether, proofB);
+    assertEq(distributor.totalClaimed(), 3_000 ether, "summed across accounts");
+
+    _publishRoot(_leaf(alice, 1_500 ether)); // alice's cumulative total grows by 500
+    distributor.claim(alice, 1_500 ether, emptyProof);
+    assertEq(distributor.totalClaimed(), 3_500 ether, "only the delta is added");
+    assertEq(distributor.totalClaimed(), distributor.claimed(alice) + distributor.claimed(bob), "sum of claimed");
+    assertEq(usdt.balanceOf(address(distributor)), 4_000 ether - distributor.totalClaimed(), "funded less paid");
   }
 
   function test_D1_repeatClaimSameRootReverts() public {

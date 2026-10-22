@@ -48,6 +48,7 @@ contract DeploySurfinSepolia is Script {
   uint256 constant FLOOR_RATE = 3e16; // 3% hard floor (rate, precision-agnostic)
   uint256 constant PENALTY_RATE = 0.008 ether; // 0.8% early-redeem penalty (rate)
   uint256 constant MIN_DEPOSIT = 50e6; // 50 test-USDT (6-dec mock)
+  uint256 constant FLEX_CAP = type(uint256).max; // the flex pool deploys closed (cap 0); Surfin flex is uncapped
   uint256 constant MIN_WITHDRAW = 50e6; // 50 test-USDT (6-dec); a sub-min request must drain the balance
   uint256 constant DAILY_LIMIT = 200_000e6; // 200k per-address/day withdraw cap (6-dec)
   uint256 constant WAITING_PERIOD = 5 minutes; // shortened distributor time-lock (testnet only)
@@ -149,6 +150,7 @@ contract DeploySurfinSepolia is Script {
     adapter.setFloorRate(FLOOR_RATE);
 
     LockedEarnPool(lockedProxy).setPenaltyRate(PENALTY_RATE);
+    FlexEarnPool(flexProxy).setCap(FLEX_CAP);
     FlexEarnPool(flexProxy).setMinDeposit(MIN_DEPOSIT);
     LockedEarnPool(lockedProxy).setMinDeposit(MIN_DEPOSIT);
     FlexEarnPool(flexProxy).setMinWithdraw(MIN_WITHDRAW);
