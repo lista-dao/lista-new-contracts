@@ -53,7 +53,7 @@ contract FlexEarnPoolTest is SurfinTestBase {
 
   /// @dev the deploy-time rewire still works.
   function test_A8_setAdapterAllowedOnAFreshPool() public {
-    address newAdapter = address(new MockAssetHolder(address(usdt)));
+    address newAdapter = address(new MockAssetHolder(address(usdt), address(flex), address(0)));
     vm.prank(admin);
     flex.setAdapter(newAdapter);
     assertEq(flex.adapter(), newAdapter, "rewire on an empty pool is the supported path");
@@ -63,7 +63,7 @@ contract FlexEarnPoolTest is SurfinTestBase {
 
   function test_A9_setAdapterRejectsAForeignAsset() public {
     MockERC20 other = new MockERC20("OTHER", "OTHER");
-    address foreign = address(new MockAssetHolder(address(other)));
+    address foreign = address(new MockAssetHolder(address(other), address(flex), address(0)));
 
     vm.prank(admin);
     vm.expectRevert("adapter asset mismatch");
@@ -274,11 +274,15 @@ contract FlexEarnPoolTest is SurfinTestBase {
   }
 }
 
-/// minimal stand-in for the adapter: the pool only reads `asset()` off it
+/// minimal stand-in for the adapter: the pool only reads `asset()` and its slots off it
 contract MockAssetHolder {
   address public asset;
+  address public flexPool;
+  address public lockedPool;
 
-  constructor(address _asset) {
+  constructor(address _asset, address _flexPool, address _lockedPool) {
     asset = _asset;
+    flexPool = _flexPool;
+    lockedPool = _lockedPool;
   }
 }

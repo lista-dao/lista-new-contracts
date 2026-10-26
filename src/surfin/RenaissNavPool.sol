@@ -5,6 +5,7 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import { CreditFundBase } from "./CreditFundBase.sol";
+import { ISurfinAdapter } from "./interface/ISurfinAdapter.sol";
 import { CreditFundSharePool } from "./CreditFundSharePool.sol";
 
 /**
@@ -399,6 +400,11 @@ contract RenaissNavPool is CreditFundSharePool {
   ///      move is being released
   function _capUsage() internal view override returns (uint256) {
     return _publishedValue();
+  }
+
+  /// @dev the adapter serves this pool through its LOCKED slot
+  function _inAdapterSlot(address _adapter) internal view override returns (bool) {
+    return ISurfinAdapter(_adapter).lockedPool() == address(this);
   }
 
   function _publishedValue() internal view returns (uint256) {

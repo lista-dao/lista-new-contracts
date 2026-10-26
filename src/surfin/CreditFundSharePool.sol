@@ -99,7 +99,7 @@ abstract contract CreditFundSharePool is CreditFundBase, ERC20Upgradeable {
   }
 
   /* INTERNAL FUNCTIONS */
-  /// @dev the gates every deposit passes: receiver, minimum, cap and whitelist
+  /// @dev the gates every deposit passes: receiver, minimum, cap, whitelist and the adapter slot
   function _checkDeposit(address receiver, uint256 amount) internal view {
     require(amount > 0, "amount is zero");
     require(receiver != address(0), "receiver is zero address");
@@ -108,6 +108,7 @@ abstract contract CreditFundSharePool is CreditFundBase, ERC20Upgradeable {
     if (whitelistEnabled) {
       require(whitelist.contains(msg.sender) && whitelist.contains(receiver), "not whitelisted");
     }
+    _checkAdapterSlot();
   }
 
   /// @dev `type(uint256).max` stands for the caller's whole balance at execution, so a

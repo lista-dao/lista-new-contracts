@@ -5,6 +5,7 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import { CreditFundBase } from "./CreditFundBase.sol";
+import { ISurfinAdapter } from "./interface/ISurfinAdapter.sol";
 import { CreditFundSharePool } from "./CreditFundSharePool.sol";
 
 /**
@@ -89,6 +90,11 @@ contract FlexEarnPool is CreditFundSharePool {
   /// @dev the LP is 1:1, so the outstanding supply is the pool's size
   function _capUsage() internal view override returns (uint256) {
     return totalSupply();
+  }
+
+  /// @dev the adapter repays this pool's queue through its FLEX slot
+  function _inAdapterSlot(address _adapter) internal view override returns (bool) {
+    return ISurfinAdapter(_adapter).flexPool() == address(this);
   }
 
   uint256[50] private __gap;

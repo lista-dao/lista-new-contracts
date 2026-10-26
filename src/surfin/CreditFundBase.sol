@@ -159,6 +159,9 @@ abstract contract CreditFundBase is
   /// @dev total user principal booked in the pool
   function totalPrincipal() public view virtual returns (uint256);
 
+  /// @dev whether `_adapter` lists this pool in the slot that repays and reserves for it
+  function _inAdapterSlot(address _adapter) internal view virtual returns (bool);
+
   /* ADAPTER-DRIVEN FUNCTIONS */
   /**
    * @dev repay the batch withdraw queue. Only the adapter can call.
@@ -295,6 +298,7 @@ abstract contract CreditFundBase is
     require(_adapter != adapter, "same adapter");
     require(totalPrincipal() == 0 && totalPendingWithdraw == 0 && withdrawQuota == 0, "pool has live accounting");
     require(ISurfinAdapter(_adapter).asset() == asset, "adapter asset mismatch");
+    require(_inAdapterSlot(_adapter), "adapter slot mismatch");
     adapter = _adapter;
     emit SetAdapter(_adapter);
   }
@@ -332,6 +336,12 @@ abstract contract CreditFundBase is
   }
 
   /* INTERNAL HELPERS */
+  /// @dev deposits go to `adapter`, so it must be the one that repays and reserves for this
+  ///      pool; also covers an adapter set at initialize, which `setAdapter` never saw
+  function _checkAdapterSlot() internal view {
+    require(_inAdapterSlot(adapter), "adapter slot mismatch");
+  }
+
   /**
    * @dev enqueue a withdrawal request into the current/open batch.
    * @param receiver the receiver of the payout

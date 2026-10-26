@@ -215,6 +215,11 @@ contract BpnEarnPool is CreditFundSharePool {
     return totalSupply();
   }
 
+  /// @dev the adapter funds and reserves for this pool's requests through its FLEX slot
+  function _inAdapterSlot(address _adapter) internal view override returns (bool) {
+    return ISurfinAdapter(_adapter).flexPool() == address(this);
+  }
+
   /// @dev the only share moves are mint (deposit), into the pool (escrow; the base
   ///      rejects it outside `_escrow`) and burn (settlement)
   function _update(address from, address to, uint256 value) internal override {
