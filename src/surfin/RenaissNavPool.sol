@@ -37,11 +37,15 @@ import { CreditFundSharePool } from "./CreditFundSharePool.sol";
  *    Every request of an epoch is priced at that one settlement NAV.
  *  - Lista's cut (`feeRate`, frozen per epoch at settlement) is taken from each payout.
  *
- * Wire it into the adapter's LOCKED slot with flexPool = address(0) and floorRate 0; the
- * adapter only forwards subscriptions. Payouts never go through the template's batch
- * queue, so `claimWithdraw` and `getUserWithdrawalRequests` are inert on this pool.
+ * Wire it into the adapter's LOCKED slot with flexPool = address(0), floorRate 0 and no
+ * interest distributor; the adapter only forwards subscriptions (its settleRecall, fee and
+ * interest paths are unused). Payouts never go through the template's batch queue, so
+ * `claimWithdraw` and `getUserWithdrawalRequests` are inert on this pool, and
+ * `finishWithdraw` and `adminTopUp` have no use on it: a top-up only parks cash here and
+ * blocks `setAdapter`.
  * `dailyLimit` is not applied to requests; leave it at 0, since it still bounds
  * `setMinWithdraw`. `minWithdraw` applies to the asset value of a redemption request.
+ * The BOT role granted at initialize has no use on this pool.
  */
 contract RenaissNavPool is CreditFundSharePool {
   using SafeERC20 for IERC20;
@@ -189,9 +193,11 @@ contract RenaissNavPool is CreditFundSharePool {
     require(c.state == EpochState.Open, "window closed");
     shares = _resolveAll(shares);
     require(shares > 0, "shares is zero");
+    uint256 balance = balanceOf(msg.sender);
+    require(balance >= shares, "insufficient balance");
     uint256 value = (shares * nav()) / NAV_PRECISION;
     require(value > 0, "request below 1 wei");
-    _checkMinWithdraw(msg.sender, value, shares, balanceOf(msg.sender));
+    _checkMinWithdraw(msg.sender, value, shares, balance);
 
     c.requestedShares += shares;
     totalEscrowed += shares;
@@ -309,7 +315,8 @@ contract RenaissNavPool is CreditFundSharePool {
   }
 
   /// @dev close the window: no more requests or cancels; the list is final. Pause-gated so
-  ///      a pause cannot swallow the cancel window.
+  ///      a pause cannot swallow the cancel window. publishNav, openEpoch and settleEpoch
+  ///      are not, so a NAV can be corrected and an epoch settled while pool flows are held.
   function closeEpoch() external onlyRole(MANAGER) whenNotPaused {
     Epoch storage c = epochs[currentEpochId];
     require(c.state == EpochState.Open, "epoch not open");
@@ -326,11 +333,14 @@ contract RenaissNavPool is CreditFundSharePool {
    *      after the close; to settle on an unchanged NAV without moving the price curve,
    *      publish the same value with the remaining release time
    *      (`navReleaseStart + navReleaseDuration - block.timestamp`, or 0 once it is over).
+   * @param expectedNav the NAV the payout was computed at; settling reverts if a publish
+   *        has changed it since
    */
-  function settleEpoch() external onlyRole(MANAGER) nonReentrant {
+  function settleEpoch(uint256 expectedNav) external onlyRole(MANAGER) nonReentrant {
     Epoch storage c = epochs[currentEpochId];
     require(c.state == EpochState.Closed, "epoch not closed");
     require(navUpdatedAt > c.closedAt, "nav not published since close");
+    require(publishedNav == expectedNav, "nav changed");
 
     uint256 shares = c.requestedShares;
     uint256 settlementNav = publishedNav;

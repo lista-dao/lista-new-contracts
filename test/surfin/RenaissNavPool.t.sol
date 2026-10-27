@@ -133,7 +133,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     usdt.mint(manager, payout);
     vm.startPrank(manager);
     usdt.approve(address(pool), payout);
-    pool.settleEpoch();
+    pool.settleEpoch(settlementNav);
     vm.stopPrank();
     (, , , , uint256 settled, uint256 booked, , ) = pool.epochs(epochId);
     assertEq(settled, settlementNav, "settlement NAV recorded");
@@ -232,7 +232,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     usdt.mint(manager, 30_000 ether);
     vm.startPrank(manager);
     usdt.approve(address(pool), 30_000 ether);
-    pool.settleEpoch();
+    pool.settleEpoch(1.0e18);
     vm.stopPrank();
     _claimEpoch(1);
     assertEq(usdt.balanceOf(frank), 30_000 ether, "paid once, for the live request");
@@ -264,14 +264,14 @@ contract RenaissNavPoolTest is SurfinTestBase {
     vm.startPrank(manager);
     pool.closeEpoch();
     vm.expectRevert("nav not published since close");
-    pool.settleEpoch();
+    pool.settleEpoch(1.05e18);
     vm.stopPrank();
 
     _publish(1.06e18);
     usdt.mint(manager, 1_060 ether);
     vm.startPrank(manager);
     usdt.approve(address(pool), 1_060 ether);
-    pool.settleEpoch();
+    pool.settleEpoch(1.06e18);
     vm.stopPrank();
     (, , , , uint256 settlementNav, , , ) = pool.epochs(1);
     assertEq(settlementNav, 1.06e18);
@@ -283,7 +283,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     vm.expectRevert("epoch not open");
     pool.closeEpoch();
     vm.expectRevert("epoch not closed");
-    pool.settleEpoch();
+    pool.settleEpoch(1e18);
 
     pool.openEpoch();
     assertEq(pool.currentEpochId(), 1);
@@ -297,7 +297,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     _publish(1.01e18);
     uint256 managerBefore = usdt.balanceOf(manager);
     vm.startPrank(manager);
-    pool.settleEpoch(); // empty epoch: nothing to bring in
+    pool.settleEpoch(1.01e18); // empty epoch: nothing to bring in
     assertEq(usdt.balanceOf(manager), managerBefore);
     pool.openEpoch();
     assertEq(pool.currentEpochId(), 2);
@@ -350,18 +350,50 @@ contract RenaissNavPoolTest is SurfinTestBase {
     vm.expectRevert(
       abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, address(pool), 0, 100_000 ether)
     );
-    pool.settleEpoch();
+    pool.settleEpoch(1.0e18);
 
     usdt.mint(manager, 150_000 ether);
     vm.startPrank(manager);
     usdt.approve(address(pool), 150_000 ether);
-    pool.settleEpoch();
+    pool.settleEpoch(1.0e18);
     vm.stopPrank();
     assertEq(usdt.balanceOf(manager), 50_000 ether, "exactly 100,000 pulled");
     assertEq(usdt.balanceOf(address(pool)), 100_000 ether);
     assertEq(pool.totalOwed(), 100_000 ether);
     assertEq(pool.totalEscrowed(), 0, "escrow burned");
     assertEq(pool.totalSupply(), 900_000 ether);
+  }
+
+  /// @dev a publish landing between the payout quote and the settlement makes it revert,
+  ///      whichever way the NAV moved, before any cash is pulled.
+  function test_settle_revertsIfNavChangedSinceQuote() public {
+    _seedPool();
+    vm.prank(manager);
+    pool.openEpoch();
+    _request(bob, 100_000 ether);
+    vm.prank(manager);
+    pool.closeEpoch();
+    _publish(1.1e18);
+    usdt.mint(manager, 110_000 ether);
+    vm.prank(manager);
+    usdt.approve(address(pool), 110_000 ether);
+
+    _publish(1.05e18); // a drop lands before the settlement batch
+    vm.prank(manager);
+    vm.expectRevert("nav changed");
+    pool.settleEpoch(1.1e18);
+
+    _publish(1.08e18); // and a rise
+    vm.prank(manager);
+    vm.expectRevert("nav changed");
+    pool.settleEpoch(1.05e18);
+    assertEq(usdt.balanceOf(manager), 110_000 ether, "nothing pulled");
+
+    vm.prank(manager);
+    pool.settleEpoch(1.08e18);
+    (, , , , uint256 settled, uint256 payout, , ) = pool.epochs(1);
+    assertEq(settled, 1.08e18);
+    assertEq(payout, 108_000 ether);
   }
 
   function test_settle_doesNotTouchTheAdapter() public {
@@ -683,7 +715,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     usdt.mint(manager, 120_000 ether);
     vm.startPrank(manager);
     usdt.approve(address(pool), 120_000 ether);
-    pool.settleEpoch();
+    pool.settleEpoch(1.2e18);
     vm.stopPrank();
     (, , , , uint256 settlementNav, uint256 payout, , ) = pool.epochs(1);
     assertEq(settlementNav, 1.2e18);
@@ -791,7 +823,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     usdt.mint(manager, 110_000 ether);
     vm.startPrank(manager);
     usdt.approve(address(pool), 110_000 ether);
-    pool.settleEpoch();
+    pool.settleEpoch(1.1e18);
     pool.openEpoch();
     vm.stopPrank();
     _claimEpoch(1);
@@ -807,7 +839,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     usdt.mint(manager, 99_000 ether);
     vm.startPrank(manager);
     usdt.approve(address(pool), 99_000 ether);
-    pool.settleEpoch();
+    pool.settleEpoch(0.99e18);
     vm.stopPrank();
     _claimEpoch(2);
     assertEq(usdt.balanceOf(charlie), 99_000 ether, "the subscriber paid the unreleased drop");
@@ -840,7 +872,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     usdt.mint(manager, 1_100 ether);
     vm.startPrank(manager);
     usdt.approve(address(pool), 1_100 ether);
-    pool.settleEpoch();
+    pool.settleEpoch(1.1e18);
     vm.stopPrank();
   }
 
@@ -1037,6 +1069,20 @@ contract RenaissNavPoolTest is SurfinTestBase {
     pool.requestRedeem(500 ether); // dust exit: alice's whole balance
   }
 
+  function test_request_rejectsMoreThanTheBalance() public {
+    _seedPool();
+    vm.prank(manager);
+    pool.openEpoch();
+    vm.prank(bob);
+    vm.expectRevert("insufficient balance");
+    pool.requestRedeem(1_000_000 ether + 1);
+    vm.prank(manager);
+    pool.setMinWithdraw(1_000 ether);
+    vm.prank(alice);
+    vm.expectRevert("insufficient balance");
+    pool.requestRedeem(1 ether); // checked before the floor
+  }
+
   /* ------------------------------ states and pause ------------------------------ */
 
   /// @dev 限制: subscriptions stop; requests, cancels, settlement and payouts continue.
@@ -1093,6 +1139,28 @@ contract RenaissNavPoolTest is SurfinTestBase {
     vm.prank(manager);
     vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
     pool.closeEpoch();
+  }
+
+  /// @dev pricing and settlement stay with MANAGER while pool flows are held
+  function test_pause_keepsPublishSettleAndOpen() public {
+    _seedPool();
+    vm.prank(manager);
+    pool.openEpoch();
+    _request(bob, 100_000 ether);
+    vm.prank(manager);
+    pool.closeEpoch();
+    vm.prank(pauser);
+    pool.pause();
+
+    _publish(1.1e18);
+    usdt.mint(manager, 110_000 ether);
+    vm.startPrank(manager);
+    usdt.approve(address(pool), 110_000 ether);
+    pool.settleEpoch(1.1e18);
+    pool.openEpoch();
+    vm.stopPrank();
+    assertEq(pool.currentEpochId(), 2);
+    assertEq(usdt.balanceOf(address(pool)), 110_000 ether);
   }
 
   /* ------------------------------ share token ------------------------------ */
