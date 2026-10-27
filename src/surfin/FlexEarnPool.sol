@@ -16,7 +16,8 @@ import { CreditFundSharePool } from "./CreditFundSharePool.sol";
  * Interest is distributed off-pool via the cumulative Merkle InterestDistributor.
  * Withdrawals go through the shared daily batch queue and are irreversible once
  * submitted: the LP is burned at request time and there is no cancel path.
- * The cap bounds the outstanding LP supply.
+ * The cap bounds the outstanding LP supply only: a request burns its LP and frees capacity
+ * at once, while its payout is still owed through the batch queue (totalPendingWithdraw).
  */
 contract FlexEarnPool is CreditFundSharePool {
   using SafeERC20 for IERC20;
