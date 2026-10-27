@@ -138,6 +138,25 @@ contract SurfinAdapter is AccessControlEnumerableUpgradeable, PausableUpgradeabl
   }
 
   /**
+   * @dev forward a deposit the flex pool has just paid in, capped at maxDeployToSurfin():
+   *      what free idle must keep for the hard floor and the unfunded queue stays on the
+   *      adapter, so the deposit never reverts on the reservation.
+   * @param amount the amount the pool paid in
+   */
+  function deployFromPool(uint256 amount) external whenNotPaused {
+    require(msg.sender == flexPool, "only flex pool");
+    uint256 deployable = maxDeployToSurfin();
+    uint256 toDeploy = amount < deployable ? amount : deployable;
+    if (toDeploy == 0) return;
+
+    deployedToSurfin += toDeploy;
+
+    IERC20(asset).safeTransfer(surfinWallet, toDeploy);
+
+    emit DeployToSurfin(toDeploy);
+  }
+
+  /**
    * @dev weekly recall settlement (multisig). The manager transfers the recalled
    *      USDT into the adapter and, in one call: resets the Surfin book value,
    *      sets the platform fee earmark, covers the locked withdrawal queue, and

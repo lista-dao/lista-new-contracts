@@ -26,9 +26,10 @@ contract BpnInvariantHandler is Test {
 
   // cash minted into the system by deposits
   uint256 public ghostDeposited;
-  // the part of it the pool shipped to the partner at deposit; equal to ghostDeposited by
-  // construction, kept apart so the sink side of the cash equation names where it went
+  // the part of it the pool shipped to the partner at deposit
   uint256 public ghostForwarded;
+  // the part the adapter kept back for the unfunded escrow
+  uint256 public ghostHeldBack;
   // recalled idle cash the manager re-deployed
   uint256 public ghostDeployed;
   uint256 public ghostRecalled;
@@ -71,24 +72,23 @@ contract BpnInvariantHandler is Test {
     return ids.length;
   }
 
-  /// @dev the pool forwards the deposit through `deployToSurfin`, so deposits are closed
-  ///      while the adapter is paused or while its ceiling would reject the amount. After
-  ///      the transfer the deployable is `freeIdle + amount - hardFloor - onDemandUnfunded`,
-  ///      so the amount fits iff idle cash already covers the reserve (floorRate is 0, so
-  ///      the pre-mint floor is exact). Both are accepted phase-1 constraints: skip, do not
-  ///      revert.
+  /// @dev the pool forwards the deposit through the adapter's `deployFromPool`, which keeps
+  ///      back what the unfunded escrow still needs, so deposits are closed only while the
+  ///      adapter is paused: skip, do not revert.
   function deposit(uint256 actorSeed, uint256 amount) public {
     if (adapter.paused()) return;
-    if (adapter.freeIdle() < adapter.hardFloor() + adapter.onDemandUnfunded()) return;
     address a = actors[actorSeed % actors.length];
     amount = bound(amount, 1e18, 1_000_000e18);
     usdt.mint(a, amount);
     vm.startPrank(a);
     usdt.approve(address(pool), amount);
+    uint256 bookBefore = adapter.deployedToSurfin();
     pool.deposit(amount, a);
     vm.stopPrank();
+    uint256 forwarded = adapter.deployedToSurfin() - bookBefore;
     ghostDeposited += amount;
-    ghostForwarded += amount;
+    ghostForwarded += forwarded;
+    ghostHeldBack += amount - forwarded;
     ghostHeld[a] += amount;
   }
 
@@ -179,8 +179,8 @@ contract BpnInvariantHandler is Test {
     ghostClaimed += owed;
   }
 
-  /// @dev the manager re-deploys idle cash; only recalls leave any, since deposits are
-  ///      forwarded on arrival
+  /// @dev the manager re-deploys idle cash: a recall, or what a deposit kept back once the
+  ///      escrow no longer needs it
   function deploy(uint256 amount) public {
     if (adapter.paused()) return;
     uint256 max = adapter.maxDeployToSurfin();
@@ -263,8 +263,6 @@ contract BpnEarnPoolInvariant is SurfinTestBase {
     );
     vm.startPrank(admin);
     pool.setAdapter(address(adapter));
-    // the pool forwards deposits through deployToSurfin, a MANAGER call on the adapter
-    adapter.grantRole(adapter.MANAGER(), address(pool));
     vm.stopPrank();
     vm.startPrank(manager);
     adapter.setFloorRate(0);
@@ -360,8 +358,8 @@ contract BpnEarnPoolInvariant is SurfinTestBase {
     uint256 book = handler.ghostForwarded() + handler.ghostDeployed() - handler.ghostRecalled();
     assertEq(adapter.deployedToSurfin(), book, "deployed book");
     assertEq(usdt.balanceOf(surfinWallet), book, "partner holds the book");
-    // deposits leave nothing idle: whatever sits on the adapter came back in a recall
-    assertLe(adapter.idleBalance(), handler.ghostRecalled(), "deposit left idle cash");
+    // whatever sits on the adapter came back in a recall or was kept back for the escrow
+    assertLe(adapter.idleBalance(), handler.ghostRecalled() + handler.ghostHeldBack(), "deposit left idle cash");
   }
 
   /* ---- the handler's deposit path really runs; the campaign cannot pass vacuously ---- */
@@ -380,30 +378,21 @@ contract BpnEarnPoolInvariant is SurfinTestBase {
     assertEq(usdt.balanceOf(address(pool)), 0, "cash left on the pool");
   }
 
-  /// @dev the skip mirrors the adapter's ceiling exactly: closed while the unfunded escrow
-  ///      exceeds idle cash, open again once a recall covers it
-  function test_handlerDepositSkipsWhileEscrowUnfunded() public {
-    address a = handler.actorAt(0);
+  /// @dev with the escrow unfunded the deposit runs: what the escrow still needs stays
+  ///      on the adapter, the rest is forwarded
+  function test_handlerDepositHoldsBackWhileEscrowUnfunded() public {
     handler.deposit(0, 100 ether);
     handler.request(0, 40 ether);
     assertEq(adapter.onDemandUnfunded(), 40 ether, "escrow unfunded");
 
     handler.deposit(0, 50 ether);
-    assertEq(handler.ghostDeposited(), 100 ether, "deposit ran against the reserve");
-    usdt.mint(a, 50 ether);
-    vm.startPrank(a);
-    usdt.approve(address(pool), 50 ether);
-    vm.expectRevert("exceeds deployable");
-    pool.deposit(50 ether, a);
-    vm.stopPrank();
-
-    handler.recall(40 ether);
-    assertEq(adapter.freeIdle(), 40 ether, "recall idle");
-    handler.deposit(0, 50 ether);
-    assertEq(handler.ghostDeposited(), 150 ether, "deposit skipped with the reserve covered");
+    assertEq(handler.ghostDeposited(), 150 ether, "deposit skipped");
+    assertEq(handler.ghostForwarded(), 110 ether, "forwarded");
+    assertEq(handler.ghostHeldBack(), 40 ether, "held back");
+    assertEq(adapter.idleBalance(), 40 ether, "idle covers the escrow");
     assertEq(adapter.deployedToSurfin(), 110 ether, "deployed book");
     assertEq(usdt.balanceOf(surfinWallet), 110 ether, "partner wallet");
-    assertEq(adapter.idleBalance(), 40 ether, "recall idle spent");
+    assertEq(adapter.maxDeployToSurfin(), 0);
   }
 
   function test_handlerDepositSkipsWhileAdapterPaused() public {

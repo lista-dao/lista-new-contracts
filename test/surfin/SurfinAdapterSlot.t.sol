@@ -184,11 +184,8 @@ contract SurfinAdapterSlotTest is SurfinTestBase {
   function test_bpn_deposit_rejectsAnInitAdapterWhoseFlexSlotIsAnotherPool() public {
     BpnEarnPool bpn = _freshBpn(address(adapter));
     _fund(alice, address(bpn), 1_000 ether);
-    // the pool holds MANAGER on its adapter, so only the slot check stops the forward
-    bytes32 role = adapter.MANAGER();
-    vm.prank(admin);
-    adapter.grantRole(role, address(bpn));
 
+    // the pool's own check fires before the adapter's deployFromPool would refuse it
     vm.prank(alice);
     vm.expectRevert("adapter slot mismatch");
     bpn.deposit(1_000 ether, alice);

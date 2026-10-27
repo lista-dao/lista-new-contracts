@@ -17,9 +17,10 @@ import { ISurfinAdapter } from "./interface/ISurfinAdapter.sol";
  *    the pool's escrow on request and burned out of it at settlement; `transfer` and
  *    `transferFrom` between holders revert.
  *  - Deposit: mints shares 1:1 and sends the asset on to the partner in the same
- *    transaction: it lands on the adapter and the pool calls `deployToSurfin` for it, so
- *    nothing stays on the pool or the adapter. The pool holds MANAGER on the adapter for
- *    that call.
+ *    transaction: it lands on the adapter and the pool calls `deployFromPool` for it.
+ *    While requests wait for funding, the part the adapter reserves for them stays on
+ *    the adapter; otherwise nothing stays on the pool or the adapter. The pool needs no
+ *    role on the adapter.
  *  - Request: `requestRedeem` moves the shares into the pool's escrow; the request keeps
  *    them until they are settled. There is no cancel path.
  *  - Funding: the adapter pushes cash in through `finishWithdraw` (the template's rail),
@@ -93,7 +94,7 @@ contract BpnEarnPool is CreditFundSharePool {
   /* USER FUNCTIONS */
   /**
    * @dev deposit asset; mints shares 1:1 and sends the funds on to the partner wallet
-   *      through the adapter's `deployToSurfin`.
+   *      through the adapter's `deployFromPool`.
    * @param amount the amount of asset to deposit
    * @param receiver the receiver of the shares
    */
@@ -102,7 +103,7 @@ contract BpnEarnPool is CreditFundSharePool {
 
     _mint(receiver, amount);
     IERC20(asset).safeTransferFrom(msg.sender, adapter, amount);
-    ISurfinAdapter(adapter).deployToSurfin(amount);
+    ISurfinAdapter(adapter).deployFromPool(amount);
 
     emit Deposit(receiver, amount);
   }

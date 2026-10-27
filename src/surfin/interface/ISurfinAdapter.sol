@@ -11,6 +11,7 @@ interface ISurfinAdapter {
 
   function lockedPool() external view returns (address);
 
-  /// @dev send `amount` of idle asset to the partner wallet; MANAGER-gated on the adapter
-  function deployToSurfin(uint256 amount) external;
+  /// @dev forward a deposit just paid in, capped at the adapter's maxDeployToSurfin() (the
+  ///      rest stays on the adapter); callable only by the flex-slot pool
+  function deployFromPool(uint256 amount) external;
 }

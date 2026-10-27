@@ -8,16 +8,16 @@ import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.so
 /**
  * BPN vault on the Surfin template: BpnEarnPool in the adapter's flex slot, no locked
  * pool, whitelist on for phase 1, cap 3,000,000, floorRate 0 since every deposit is
- * forwarded to BPN in the same transaction (the pool holds MANAGER on the adapter and
- * calls `deployToSurfin` for it, so no deposit cash ever idles). Interest is computed
+ * forwarded to BPN in the same transaction (the pool calls the adapter's `deployFromPool`
+ * for it, which needs no adapter role). Interest is computed
  * off-chain and paid through the cumulative merkle distributor. Redemptions are escrowed
  * at request and settled off-chain-sized, in parts if need be (the weekly cap and
  * pro-rata split are computed off-chain); their cash comes back from BPN as a recall that
  * the BOT pushes into the pool.
  *
- * Phase 1 has no redemptions. Once requests exist the adapter reserves its idle cash for
- * the unfunded escrow, so a deposit reverts "exceeds deployable" until the recall for
- * them has landed on the adapter (test_deposit_phase1_revertsWhileEscrowUnfunded).
+ * While requests wait for their recall, the adapter keeps the part of a deposit it
+ * reserves for the unfunded escrow and forwards the rest, so deposits stay open
+ * (test_deposit_holdsBackForUnfundedEscrow).
  *
  * Worked example: 1,000,000 U at 6.75% simple, Actual/360 -> 187.5 U per day.
  *  - 10-01 deposit, accrues from 10-02;
@@ -84,8 +84,6 @@ contract BpnEarnPoolTest is SurfinTestBase {
     );
     vm.startPrank(admin);
     pool.setAdapter(address(adapter));
-    // the pool forwards every deposit through deployToSurfin (ops step, not adapter code)
-    adapter.grantRole(adapter.MANAGER(), address(pool));
     distributor.grantRole(distributor.FUNDER(), address(adapter));
     vm.stopPrank();
 
@@ -133,8 +131,7 @@ contract BpnEarnPoolTest is SurfinTestBase {
   }
 
   /// @dev BPN returns `amount` of principal: the Safe books it on the adapter, the BOT
-  ///      pushes it into the pool. The only way cash reaches the pool, since deposits are
-  ///      forwarded whole.
+  ///      pushes it into the pool.
   function _fundPayout(uint256 amount, uint256 bookAfter) internal {
     _settleRecall(amount, 0, 0, bookAfter);
     vm.prank(bot);
@@ -255,16 +252,16 @@ contract BpnEarnPoolTest is SurfinTestBase {
     assertEq(pool.balanceOf(custodian), 200_000 ether);
   }
 
-  /// @dev the pool's MANAGER role on the adapter is spent on one call per deposit,
-  ///      deployToSurfin for the deposited amount; no other manager-set state moves.
-  function test_deposit_callsOnlyDeployToSurfinOnTheAdapter() public {
+  /// @dev a deposit makes one call on the adapter, deployFromPool for the deposited
+  ///      amount; no manager-set state moves.
+  function test_deposit_callsOnlyDeployFromPoolOnTheAdapter() public {
     vm.warp(OCT_01);
     bytes memory before = _adapterManagerState();
     usdt.mint(anchor, PRINCIPAL);
     vm.startPrank(anchor);
     usdt.approve(address(pool), PRINCIPAL);
     vm.recordLogs();
-    vm.expectCall(address(adapter), abi.encodeWithSelector(adapter.deployToSurfin.selector, PRINCIPAL), 1);
+    vm.expectCall(address(adapter), abi.encodeWithSelector(adapter.deployFromPool.selector, PRINCIPAL), 1);
     pool.deposit(PRINCIPAL, anchor);
     vm.stopPrank();
 
@@ -306,82 +303,132 @@ contract BpnEarnPoolTest is SurfinTestBase {
     assertEq(adapter.deployedToSurfin(), 1_000 ether);
   }
 
-  /// @dev phase-1 constraint. The forward goes through deployToSurfin, which keeps the
-  ///      adapter's idle cash reserved for the unfunded escrow, so a deposit goes through
-  ///      only while that cash already covers the escrow: with a request waiting for its
-  ///      recall it reverts "exceeds deployable" and nothing is minted. Phase 1 has no
-  ///      redemptions, so the reservation is never hit; once BPN's recall for the request
-  ///      has landed on the adapter deposits reopen, and the BOT pushes the recall in.
-  function test_deposit_phase1_revertsWhileEscrowUnfunded() public {
+  /// @dev while a request waits for its recall, deposits stay open: the adapter keeps the
+  ///      part it reserves for the unfunded escrow and forwards the rest, and the cash it
+  ///      kept can pay the request before BPN's recall arrives.
+  function test_deposit_holdsBackForUnfundedEscrow() public {
     vm.warp(OCT_01);
     _deposit(anchor, PRINCIPAL);
     uint256 id = _request(anchor, 300_000 ether);
     assertEq(adapter.onDemandUnfunded(), 300_000 ether);
-    assertEq(adapter.maxDeployToSurfin(), 0);
 
+    // below the reservation: all of it stays on the adapter
+    vm.recordLogs();
+    _deposit(anchor, 100_000 ether);
+    Vm.Log[] memory logs = vm.getRecordedLogs();
+    for (uint256 i = 0; i < logs.length; i++) {
+      assertTrue(logs[i].emitter != address(adapter), "nothing deployed");
+    }
+    assertEq(adapter.idleBalance(), 100_000 ether);
+    assertEq(adapter.deployedToSurfin(), PRINCIPAL);
+
+    // above what is still uncovered: the rest goes to BPN
     usdt.mint(anchor, 500_000 ether);
     vm.startPrank(anchor);
     usdt.approve(address(pool), 500_000 ether);
-    vm.expectRevert("exceeds deployable");
+    vm.expectEmit(false, false, false, true, address(adapter));
+    emit SurfinAdapter.DeployToSurfin(300_000 ether);
     pool.deposit(500_000 ether, anchor);
     vm.stopPrank();
-    assertEq(pool.balanceOf(anchor), PRINCIPAL - 300_000 ether, "nothing minted");
-    assertEq(usdt.balanceOf(anchor), 500_000 ether, "nothing taken");
-    assertEq(adapter.idleBalance(), 0);
-
-    // a part-funded escrow still blocks: the pushed cash is in the pool, the rest is owed
-    _fundPayout(100_000 ether, PRINCIPAL - 100_000 ether);
-    assertEq(adapter.onDemandUnfunded(), 200_000 ether);
-    vm.prank(anchor);
-    vm.expectRevert("exceeds deployable");
-    pool.deposit(500_000 ether, anchor);
-
-    // the rest of the recall lands: it covers the reservation, so the deposit's own cash
-    // is deployable again, even before the BOT pushes the recall in
-    _settleRecall(200_000 ether, 0, 0, PRINCIPAL - 300_000 ether);
-    assertEq(adapter.maxDeployToSurfin(), 0, "the recall itself stays reserved");
-    vm.prank(anchor);
-    pool.deposit(500_000 ether, anchor);
-    assertEq(pool.balanceOf(anchor), PRINCIPAL - 300_000 ether + 500_000 ether);
-    assertEq(adapter.idleBalance(), 200_000 ether, "the recall is still there for the escrow");
-    assertEq(adapter.deployedToSurfin(), PRINCIPAL - 300_000 ether + 500_000 ether);
+    assertEq(pool.balanceOf(anchor), PRINCIPAL + 300_000 ether, "minted in full");
+    assertEq(adapter.idleBalance(), 300_000 ether, "the reservation");
+    assertEq(adapter.deployedToSurfin(), PRINCIPAL + 300_000 ether);
+    assertEq(usdt.balanceOf(surfinWallet), PRINCIPAL + 300_000 ether, "BPN holds the book");
+    assertEq(adapter.maxDeployToSurfin(), 0);
 
     vm.prank(bot);
-    adapter.finishFlexWithdraw(200_000 ether);
-    assertEq(adapter.onDemandUnfunded(), 0);
+    adapter.finishFlexWithdraw(300_000 ether);
     _settle(_one(id), _one(300_000 ether));
     pool.claimRedeem(_one(id));
     assertEq(usdt.balanceOf(anchor), 300_000 ether);
     assertEq(adapter.idleBalance(), 0);
+    assertEq(adapter.onDemandUnfunded(), 0);
+
+    // nothing owed: deposits are forwarded whole again
+    _deposit(anchor, 50_000 ether);
+    assertEq(adapter.idleBalance(), 0);
+    assertEq(adapter.deployedToSurfin(), PRINCIPAL + 350_000 ether);
   }
 
-  /// @dev the pool holds MANAGER on the adapter for the forward; nobody else gains the
-  ///      deploy path through it, and the ops manager keeps it for redeploying idle
-  ///      recalls by hand.
-  function test_deployToSurfin_poolIsManagerOthersAreNot() public {
+  /// @dev the forward is the adapter's deployFromPool, open only to the pool in its flex
+  ///      slot; the pool holds no adapter role, and the ops manager keeps deployToSurfin
+  ///      for redeploying idle recalls by hand.
+  function test_deployFromPool_onlyTheFlexSlotPool() public {
     bytes32 managerRole = adapter.MANAGER();
-    assertTrue(adapter.hasRole(managerRole, address(pool)));
-    assertTrue(adapter.hasRole(managerRole, manager));
+    assertFalse(adapter.hasRole(managerRole, address(pool)));
 
     vm.warp(OCT_01);
     _deposit(anchor, PRINCIPAL);
     _settleRecall(100_000 ether, 0, 0, PRINCIPAL - 100_000 ether); // idle, nothing owed
     assertEq(adapter.maxDeployToSurfin(), 100_000 ether);
 
-    address[5] memory callers = [anchor, bot, pauser, admin, outsider];
-    for (uint256 i = 0; i < 5; i++) {
+    address[6] memory callers = [anchor, bot, pauser, manager, admin, outsider];
+    for (uint256 i = 0; i < 6; i++) {
       vm.prank(callers[i]);
-      vm.expectRevert(
-        abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, callers[i], managerRole)
-      );
-      adapter.deployToSurfin(100_000 ether);
+      vm.expectRevert("only flex pool");
+      adapter.deployFromPool(100_000 ether);
     }
+    vm.prank(address(pool));
+    vm.expectRevert(
+      abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(pool), managerRole)
+    );
+    adapter.deployToSurfin(100_000 ether);
     assertEq(adapter.idleBalance(), 100_000 ether);
 
     vm.prank(manager); // the manual path
     adapter.deployToSurfin(100_000 ether);
     assertEq(adapter.idleBalance(), 0);
     assertEq(adapter.deployedToSurfin(), PRINCIPAL);
+  }
+
+  /// @dev a booked fee earmark is kept back along with the unfunded escrow, and both stay
+  ///      payable for what they were kept for
+  function test_deposit_holdsBackTheFeeEarmark() public {
+    vm.warp(OCT_01);
+    _deposit(anchor, PRINCIPAL);
+    _settleRecall(100_000 ether, 0, 20_000 ether, PRINCIPAL - 100_000 ether);
+    _request(anchor, 300_000 ether);
+    assertEq(adapter.maxDeployToSurfin(), 0);
+
+    usdt.mint(anchor, 400_000 ether);
+    vm.startPrank(anchor);
+    usdt.approve(address(pool), 400_000 ether);
+    vm.expectEmit(false, false, false, true, address(adapter));
+    emit SurfinAdapter.DeployToSurfin(180_000 ether); // 500k idle - 20k fee - 300k owed
+    pool.deposit(400_000 ether, anchor);
+    vm.stopPrank();
+    assertEq(adapter.idleBalance(), 320_000 ether, "fee and escrow kept");
+    assertEq(adapter.deployedToSurfin(), PRINCIPAL - 100_000 ether + 180_000 ether);
+
+    vm.prank(bot);
+    adapter.finishFlexWithdraw(300_000 ether);
+    vm.prank(manager);
+    adapter.setFeeReceiver(makeAddr("fee"));
+    vm.prank(bot);
+    adapter.claimFee(20_000 ether);
+    assertEq(adapter.idleBalance(), 0);
+  }
+
+  /// @dev floorRate must be 0 for BPN: otherwise a deposit keeps the hard floor back
+  ///      instead of reverting
+  function test_deposit_holdsBackTheHardFloor() public {
+    vm.prank(manager);
+    adapter.setFloorRate(3e16);
+    vm.warp(OCT_01);
+    _deposit(anchor, PRINCIPAL); // 3% of the book, minted before the forward
+    assertEq(adapter.idleBalance(), 30_000 ether, "floor kept");
+    assertEq(adapter.deployedToSurfin(), 970_000 ether);
+
+    _request(anchor, 300_000 ether);
+    usdt.mint(anchor, 400_000 ether);
+    vm.startPrank(anchor);
+    usdt.approve(address(pool), 400_000 ether);
+    vm.expectEmit(false, false, false, true, address(adapter));
+    emit SurfinAdapter.DeployToSurfin(88_000 ether); // 430k idle - 42k floor - 300k owed
+    pool.deposit(400_000 ether, anchor);
+    vm.stopPrank();
+    assertEq(adapter.idleBalance(), 342_000 ether);
+    assertEq(adapter.deployedToSurfin(), 970_000 ether + 88_000 ether);
   }
 
   /* --------------------------- partial, pro-rata payouts --------------------------- */
@@ -496,8 +543,7 @@ contract BpnEarnPoolTest is SurfinTestBase {
   }
 
   /// @dev while a request waits, recalled cash on the adapter is held for it: the manager
-  ///      can only redeploy the surplus. Deposits are forwarded whole, so they never add
-  ///      to that cash; what pays a request comes back from BPN.
+  ///      can only redeploy the surplus.
   function test_queuedRequestsReserveRecalledIdleCash() public {
     vm.warp(OCT_01);
     _deposit(anchor, PRINCIPAL);
