@@ -87,7 +87,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     vm.startPrank(who);
     usdt.approve(address(pool), amount);
     uint256 before = pool.balanceOf(who);
-    pool.deposit(amount, who);
+    pool.deposit(amount, who, 0);
     vm.stopPrank();
     shares = pool.balanceOf(who) - before;
   }
@@ -706,8 +706,8 @@ contract RenaissNavPoolTest is SurfinTestBase {
     vm.startPrank(alice);
     usdt.approve(address(pool), type(uint256).max);
     vm.expectRevert("exceeds cap"); // 450,000 shares are worth 562,500 at 1.25
-    pool.deposit(450_000 ether, alice);
-    pool.deposit(400_000 ether, alice); // 400,000 shares, worth exactly the 500,000 left
+    pool.deposit(450_000 ether, alice, 0);
+    pool.deposit(400_000 ether, alice, 0); // 400,000 shares, worth exactly the 500,000 left
     vm.stopPrank();
     assertEq(pool.totalPrincipal(), CAP);
   }
@@ -768,8 +768,8 @@ contract RenaissNavPoolTest is SurfinTestBase {
     vm.startPrank(alice);
     usdt.approve(address(pool), type(uint256).max);
     vm.expectRevert("exceeds cap"); // 1,600,000 + 1,500,000 sent in > 3,000,000
-    pool.deposit(1_500_000 ether, alice);
-    pool.deposit(1_400_000 ether, alice); // exactly the cap in asset terms
+    pool.deposit(1_500_000 ether, alice, 0);
+    pool.deposit(1_400_000 ether, alice, 0); // exactly the cap in asset terms
     vm.stopPrank();
     assertEq(pool.totalPrincipal(), 2_720_000 ether, "3,400,000 shares at 0.80");
   }
@@ -923,8 +923,8 @@ contract RenaissNavPoolTest is SurfinTestBase {
     vm.startPrank(alice);
     usdt.approve(address(pool), type(uint256).max);
     vm.expectRevert("exceeds cap");
-    pool.deposit(MIN_DEPOSIT + 1, alice);
-    pool.deposit(MIN_DEPOSIT, alice);
+    pool.deposit(MIN_DEPOSIT + 1, alice, 0);
+    pool.deposit(MIN_DEPOSIT, alice, 0);
     vm.stopPrank();
     assertEq(pool.totalPrincipal(), CAP, "the cap measure");
 
@@ -933,7 +933,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     usdt.mint(alice, MIN_DEPOSIT);
     vm.prank(alice);
     vm.expectRevert("exceeds cap");
-    pool.deposit(MIN_DEPOSIT, alice);
+    pool.deposit(MIN_DEPOSIT, alice, 0);
   }
 
   function test_deposit_minimum() public {
@@ -941,9 +941,80 @@ contract RenaissNavPoolTest is SurfinTestBase {
     vm.startPrank(alice);
     usdt.approve(address(pool), MIN_DEPOSIT);
     vm.expectRevert("deposit below minimum");
-    pool.deposit(MIN_DEPOSIT - 1, alice);
-    pool.deposit(MIN_DEPOSIT, alice);
+    pool.deposit(MIN_DEPOSIT - 1, alice, 0);
+    pool.deposit(MIN_DEPOSIT, alice, 0);
     vm.stopPrank();
+  }
+
+  /* -------------------------- deposit slippage (minShares) -------------------------- */
+
+  /// @dev the quote a front end would take: shares at the current `nav()`
+  function _quote(uint256 amount) internal view returns (uint256) {
+    return (amount * 1e18) / pool.nav();
+  }
+
+  function _fundAlice(uint256 amount) internal {
+    usdt.mint(alice, amount);
+    vm.prank(alice);
+    usdt.approve(address(pool), type(uint256).max);
+  }
+
+  /// @dev a NAV published between the quote and the execution is caught; the exact quote passes
+  function test_deposit_minShares_revertsWhenNavRisesBeforeExecution() public {
+    _fundAlice(20_000 ether);
+    uint256 quote = _quote(10_000 ether);
+    assertEq(quote, 10_000 ether);
+
+    vm.prank(manager);
+    pool.publishNav(1.1e18, 0);
+
+    vm.prank(alice);
+    vm.expectRevert("shares below minimum");
+    pool.deposit(10_000 ether, alice, quote);
+
+    uint256 requote = _quote(10_000 ether);
+    vm.prank(alice);
+    vm.expectRevert("shares below minimum");
+    pool.deposit(10_000 ether, alice, requote + 1);
+    vm.prank(alice);
+    pool.deposit(10_000 ether, alice, requote);
+    assertEq(pool.balanceOf(alice), requote, "minted exactly the quote");
+  }
+
+  /// @dev a release keeps raising `nav()` after the quote; the floor bounds the drift
+  function test_deposit_minShares_boundsTheReleaseGlide() public {
+    _fundAlice(20_000 ether);
+    vm.prank(manager);
+    pool.publishNav(1.1e18, 7 days);
+    uint256 quote = _quote(10_000 ether);
+
+    vm.warp(block.timestamp + 1 days);
+    assertLt(_quote(10_000 ether), quote, "the price kept rising");
+    vm.prank(alice);
+    vm.expectRevert("shares below minimum");
+    pool.deposit(10_000 ether, alice, quote);
+
+    // a day of a 10% rise over 7 days is about 1.43%; a 2% tolerance absorbs it
+    vm.prank(alice);
+    pool.deposit(10_000 ether, alice, (quote * 98) / 100);
+    assertEq(pool.balanceOf(alice), _quote(10_000 ether), "minted at the execution-time nav");
+  }
+
+  /// @dev a NAV pushed up just before the deposit would otherwise mint dust
+  function test_deposit_minShares_stopsADustMint() public {
+    _fundAlice(10_000 ether);
+    uint256 quote = _quote(1_000 ether);
+    vm.prank(manager);
+    pool.publishNav(1e30, 0);
+
+    vm.prank(alice);
+    vm.expectRevert("shares below minimum");
+    pool.deposit(1_000 ether, alice, quote);
+
+    // without a floor the same deposit goes through for almost nothing
+    vm.prank(alice);
+    pool.deposit(1_000 ether, alice, 0);
+    assertEq(pool.balanceOf(alice), (1_000 ether * 1e18) / 1e30, "dust: 1e9 shares-wei");
   }
 
   function test_request_rejectsWorthlessAndHonoursMinWithdraw() public {
@@ -980,7 +1051,7 @@ contract RenaissNavPoolTest is SurfinTestBase {
     vm.startPrank(alice);
     usdt.approve(address(pool), MIN_DEPOSIT);
     vm.expectRevert("deposit paused");
-    pool.deposit(MIN_DEPOSIT, alice);
+    pool.deposit(MIN_DEPOSIT, alice, 0);
     vm.stopPrank();
 
     vm.prank(manager);

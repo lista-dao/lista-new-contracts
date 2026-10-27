@@ -342,7 +342,7 @@ contract SurfinAdapterSlotTest is SurfinTestBase {
 
     vm.prank(alice);
     vm.expectRevert("adapter slot mismatch");
-    r.deposit(1_000 ether, alice);
+    r.deposit(1_000 ether, alice, 0);
   }
 
   function test_renaiss_deposit_failsClosedOnThePlaceholder() public {
@@ -353,7 +353,7 @@ contract SurfinAdapterSlotTest is SurfinTestBase {
     vm.expectCall(address(usdt), abi.encodeWithSelector(IERC20.transferFrom.selector), 0);
     vm.expectRevert(bytes(""));
     vm.prank(alice);
-    r.deposit(1_000 ether, alice);
+    r.deposit(1_000 ether, alice, 0);
   }
 
   /* --------------------------------- cross-stack --------------------------------- */

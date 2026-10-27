@@ -153,12 +153,19 @@ contract RenaissNavPool is CreditFundSharePool {
    *      bounds both `amount` and the published value of the resulting supply.
    * @param amount the amount of asset to deposit
    * @param receiver the receiver of the shares
+   * @param minShares lowest acceptable number of shares, quoted from `nav()` less a
+   *        tolerance; guards against the price moving before the deposit executes
    */
-  function deposit(uint256 amount, address receiver) external whenNotPaused whenDepositNotPaused nonReentrant {
+  function deposit(
+    uint256 amount,
+    address receiver,
+    uint256 minShares
+  ) external whenNotPaused whenDepositNotPaused nonReentrant {
     _checkDeposit(receiver, amount);
     uint256 price = nav();
     uint256 shares = (amount * NAV_PRECISION) / price;
     require(shares > 0, "shares is zero");
+    require(shares >= minShares, "shares below minimum");
     // while a rise is being released the price is below publishedNav, so the shares are
     // worth more than `amount` at the published value the cap is measured on
     require(((totalSupply() + shares) * publishedNav) / NAV_PRECISION <= cap, "exceeds cap");
