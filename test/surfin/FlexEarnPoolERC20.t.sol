@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 import "./SurfinTestBase.sol";
-import { IERC20Errors } from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 
 /// @dev 6-decimal asset, to check the LP mirrors the asset's decimals.
 contract MockUSDT6Dec is MockERC20 {
@@ -14,10 +13,9 @@ contract MockUSDT6Dec is MockERC20 {
 }
 
 /**
- * The flex LP as a standard, freely transferable ERC20 (OZ ERC20Upgradeable):
+ * The flex LP as an ERC20 (OZ ERC20Upgradeable) that only moves by mint and burn:
  *  - metadata comes from the pool's own name/symbol and the asset's decimals;
- *  - transfer / approve / transferFrom move the principal claim, ungated by pause,
- *    depositPaused or any whitelist;
+ *  - transfer / transferFrom between holders revert;
  *  - requestWithdraw still burns at request time.
  */
 contract FlexEarnPoolERC20Test is SurfinTestBase {
@@ -74,61 +72,32 @@ contract FlexEarnPoolERC20Test is SurfinTestBase {
     assertEq(flex.totalPrincipal(), 600 ether);
   }
 
-  /// @dev a transferred LP is a transferred principal claim: the receiver exits with it.
-  function test_transferMovesThePrincipalClaim() public {
+  /// @dev the LP cannot change hands, whatever the pause state
+  function test_lpIsNotTransferable() public {
     _depositFlex(alice, 10_000 ether);
-    vm.prank(alice);
-    assertTrue(flex.transfer(dave, 4_000 ether));
-    assertEq(flex.totalPrincipal(), 10_000 ether, "transfers do not change the book");
+    vm.startPrank(alice);
+    vm.expectRevert("non-transferable");
+    flex.transfer(dave, 1);
+    vm.expectRevert("non-transferable");
+    flex.transfer(alice, 1);
+    flex.approve(bob, 1_000 ether);
+    vm.stopPrank();
 
-    vm.prank(dave);
-    flex.requestWithdraw(4_000 ether);
-    vm.prank(bot);
-    adapter.finishFlexWithdraw(4_000 ether);
-    vm.prank(dave);
-    flex.claimWithdraw(dave, 0, 4_000 ether);
-
-    assertEq(usdt.balanceOf(dave), 4_000 ether);
-    assertEq(flex.balanceOf(alice), 6_000 ether);
-    vm.prank(alice);
-    vm.expectRevert("insufficient balance");
-    flex.requestWithdraw(6_000 ether + 1);
-  }
-
-  function test_approveAndTransferFrom() public {
-    _depositFlex(alice, 10_000 ether);
-    vm.prank(alice);
-    flex.approve(bob, 3_000 ether);
-
-    vm.prank(bob);
-    flex.transferFrom(alice, dave, 3_000 ether);
-    assertEq(flex.balanceOf(dave), 3_000 ether);
-    assertEq(flex.allowance(alice, bob), 0);
-
-    vm.prank(bob);
-    vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientAllowance.selector, bob, 0, 1));
+    vm.startPrank(bob);
+    vm.expectRevert("non-transferable");
     flex.transferFrom(alice, dave, 1);
-  }
+    vm.expectRevert("non-transferable");
+    flex.transferFrom(alice, alice, 1);
+    vm.stopPrank();
+    assertEq(flex.allowance(alice, bob), 1_000 ether);
 
-  /// @dev pause and depositPaused stop pool flows only; the token keeps moving.
-  function test_transfersAreNotPauseGated() public {
-    _depositFlex(alice, 10_000 ether);
-    vm.prank(manager);
-    flex.setDepositPaused(true);
     vm.prank(pauser);
     flex.pause();
-
     vm.prank(alice);
-    flex.transfer(dave, 1_000 ether);
-    vm.prank(alice);
-    flex.approve(bob, 1_000 ether);
-    vm.prank(bob);
-    flex.transferFrom(alice, dave, 1_000 ether);
-    assertEq(flex.balanceOf(dave), 2_000 ether);
-
-    vm.prank(dave);
-    vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
-    flex.requestWithdraw(2_000 ether);
+    vm.expectRevert("non-transferable");
+    flex.transfer(dave, 1);
+    assertEq(flex.balanceOf(alice), 10_000 ether);
+    assertEq(flex.balanceOf(dave), 0);
   }
 
   /// @dev `type(uint256).max` withdraws the whole balance at execution.

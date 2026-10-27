@@ -8,10 +8,10 @@ import { CreditFundBase } from "./CreditFundBase.sol";
 
 /**
  * @title CreditFundSharePool
- * @notice Shared base for pools whose position is a standard ERC20 share: the flex pool
- *         (1:1 LP) and the NAV pool (shares priced at a published NAV).
+ * @notice Shared base for pools whose position is an ERC20 share: the flex and BPN pools
+ *         (1:1, not transferable) and the NAV pool (shares priced at a published NAV).
  *
- *  - transfer / approve / transferFrom are neither pause- nor whitelist-gated: pause
+ *  - where a pool allows transfers, they are neither pause- nor whitelist-gated: pause
  *    stops pool flows, not the token, and the whitelist only decides who may deposit;
  *  - `cap` bounds the pool's size in asset units (what counts is `_capUsage()`, defined
  *    by the product); it is 0 (closed) until MANAGER sets it;

@@ -12,7 +12,8 @@ import { CreditFundSharePool } from "./CreditFundSharePool.sol";
  * @title FlexEarnPool
  * @notice Flexible (demand) product of the Surfin Credit Fund.
  *
- * Principal is tracked 1:1 as an ERC20 LP (deposit mints, withdraw burns).
+ * Principal is tracked 1:1 as an ERC20 LP (deposit mints, withdraw burns). The LP is not
+ * transferable: a balance only changes by deposit and request.
  * Interest is distributed off-pool via the cumulative Merkle InterestDistributor.
  * Withdrawals go through the shared daily batch queue and are irreversible once
  * submitted: the LP is burned at request time and there is no cancel path.
@@ -96,6 +97,12 @@ contract FlexEarnPool is CreditFundSharePool {
   /// @dev the adapter repays this pool's queue through its FLEX slot
   function _inAdapterSlot(address _adapter) internal view override returns (bool) {
     return ISurfinAdapter(_adapter).flexPool() == address(this);
+  }
+
+  /// @dev the LP only moves by mint (deposit) and burn (request)
+  function _update(address from, address to, uint256 value) internal override {
+    require(from == address(0) || to == address(0), "non-transferable");
+    super._update(from, to, value);
   }
 
   uint256[50] private __gap;

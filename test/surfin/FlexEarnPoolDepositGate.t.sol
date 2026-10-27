@@ -6,9 +6,9 @@ import "./SurfinTestBase.sol";
 /**
  * Deposit gates on the ERC20 flex pool:
  *  - `cap` bounds the outstanding supply and is 0 (closed) on a fresh pool;
- *  - the optional whitelist gates deposits only (depositor and receiver), never transfers,
- *    payout requests or claims;
- *  - LP can never be parked on the pool or the adapter.
+ *  - the optional whitelist gates deposits only (depositor and receiver), never payout
+ *    requests or claims;
+ *  - LP cannot be transferred, so it can never be parked on the pool or the adapter.
  */
 contract FlexEarnPoolDepositGateTest is SurfinTestBase {
   address outsider = makeAddr("outsider");
@@ -123,7 +123,7 @@ contract FlexEarnPoolDepositGateTest is SurfinTestBase {
     flex.deposit(100 ether, alice); // unlisted depositor, listed receiver
   }
 
-  /// @dev removal and transfers never touch exits: a delisted or never-listed holder exits normally.
+  /// @dev removal never touches exits: a delisted holder exits normally.
   function test_whitelist_onlyGatesDeposits() public {
     vm.prank(manager);
     flex.setWhitelistEnabled(true);
@@ -139,11 +139,7 @@ contract FlexEarnPoolDepositGateTest is SurfinTestBase {
     assertFalse(flex.isWhitelisted(alice));
 
     vm.prank(alice);
-    flex.transfer(outsider, 400 ether); // to an address that was never listed
-    vm.prank(alice);
-    flex.requestWithdraw(600 ether);
-    vm.prank(outsider);
-    flex.requestWithdraw(400 ether);
+    flex.requestWithdraw(1_000 ether);
 
     vm.prank(manager);
     adapter.setFloorRate(0);
@@ -151,10 +147,8 @@ contract FlexEarnPoolDepositGateTest is SurfinTestBase {
     adapter.finishFlexWithdraw(1_000 ether);
 
     vm.prank(alice);
-    flex.claimWithdraw(alice, 0, 600 ether);
-    vm.prank(outsider);
-    flex.claimWithdraw(outsider, 0, 400 ether);
-    assertEq(usdt.balanceOf(outsider), 400 ether);
+    flex.claimWithdraw(alice, 0, 1_000 ether);
+    assertEq(usdt.balanceOf(alice), 1_000 ether);
   }
 
   function test_whitelist_setters() public {
@@ -199,15 +193,15 @@ contract FlexEarnPoolDepositGateTest is SurfinTestBase {
     flex.deposit(100 ether, address(adapter));
 
     flex.deposit(500 ether, alice);
-    vm.expectRevert("invalid receiver");
+    vm.expectRevert("non-transferable");
     flex.transfer(address(flex), 1);
-    vm.expectRevert("invalid receiver");
+    vm.expectRevert("non-transferable");
     flex.transfer(address(adapter), 1);
     flex.approve(bob, 1);
     vm.stopPrank();
 
     vm.prank(bob);
-    vm.expectRevert("invalid receiver");
+    vm.expectRevert("non-transferable");
     flex.transferFrom(alice, address(flex), 1);
   }
 }
