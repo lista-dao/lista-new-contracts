@@ -5,6 +5,7 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import { CreditFundBase } from "./CreditFundBase.sol";
+import { ISurfinAdapter } from "./interface/ISurfinAdapter.sol";
 
 /**
  * @title LockedEarnPool
@@ -129,6 +130,7 @@ contract LockedEarnPool is CreditFundBase {
     require(amount > 0, "amount is zero");
     require(receiver != address(0), "receiver is zero address");
     require(amount >= minDeposit, "deposit below minimum");
+    _checkAdapterSlot();
 
     userPositions[receiver].push(
       Position({
@@ -367,6 +369,7 @@ contract LockedEarnPool is CreditFundBase {
     Cohort memory c = cohorts[newCohortId];
     require(c.enabled, "cohort not enabled");
     require(block.timestamp <= c.depositDeadline, "deposit window closed");
+    _checkAdapterSlot();
 
     // consume the funded payout (same gate as claimWithdraw); its cash was pushed
     // into the pool by finishWithdraw and is sitting here now
@@ -493,6 +496,11 @@ contract LockedEarnPool is CreditFundBase {
   }
 
   /* INTERNAL FUNCTIONS */
+  /// @dev the adapter repays this pool's queue through its LOCKED slot
+  function _inAdapterSlot(address _adapter) internal view override returns (bool) {
+    return ISurfinAdapter(_adapter).lockedPool() == address(this);
+  }
+
   /**
    * @dev early-redeem payout on `amount` principal. Within PENALTY_WINDOW of the
    *      position's deposit time a flat `penaltyRate` is charged on the redeemed
