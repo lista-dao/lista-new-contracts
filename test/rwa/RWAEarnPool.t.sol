@@ -609,4 +609,61 @@ contract RWAEarnPoolTest is Test {
 
     assertEq(earnPool.balanceOf(feeReceiver), 0.1 ether, "fee shares reached a non-whitelisted feeReceiver");
   }
+
+  /* ---------------- wind-down: deposit switch ---------------- */
+
+  function test_setDepositPaused_onlyManager() public {
+    vm.expectRevert();
+    earnPool.setDepositPaused(true);
+
+    vm.startPrank(manager);
+    vm.expectEmit(false, false, false, true);
+    emit RWAEarnPool.SetDepositPaused(true);
+    earnPool.setDepositPaused(true);
+    assertTrue(earnPool.depositPaused(), "depositPaused");
+
+    vm.expectRevert("same status");
+    earnPool.setDepositPaused(true);
+
+    earnPool.setDepositPaused(false);
+    assertFalse(earnPool.depositPaused(), "depositPaused reopened");
+    vm.stopPrank();
+  }
+
+  function test_depositPaused_blocksDeposit_butUsersCanStillExit() public {
+    address other = makeAddr("other");
+    USD1.mint(user, 2 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.prank(manager);
+    earnPool.setDepositPaused(true);
+
+    // deposits are closed, by amount and by shares
+    vm.startPrank(user);
+    vm.expectRevert("deposit paused");
+    earnPool.deposit(1 ether, 0, user);
+    vm.expectRevert("deposit paused");
+    earnPool.deposit(0, 1 ether, user);
+
+    // ...but the exit path is untouched: transfer, requestWithdraw, claimWithdraw
+    earnPool.transfer(other, 0.2 ether);
+    earnPool.requestWithdraw(0, 0.8 ether, user);
+    vm.stopPrank();
+    assertEq(earnPool.balanceOf(user), 0, "user shares after exit");
+    assertEq(earnPool.balanceOf(other), 0.2 ether, "other shares after transfer");
+
+    vm.startPrank(adapter);
+    USD1.approve(address(earnPool), type(uint256).max);
+    earnPool.finishWithdraw(0.8 ether);
+    vm.stopPrank();
+
+    earnPool.claimWithdraw(user, 0);
+    assertEq(USD1.balanceOf(user), 1.8 ether, "user USD1 after claim (1 unspent + 0.8 withdrawn)");
+
+    // reopening lets deposits through again
+    vm.prank(manager);
+    earnPool.setDepositPaused(false);
+    depositToEarnPool(user, 1 ether);
+    assertEq(earnPool.balanceOf(user), 1 ether, "user shares after redeposit");
+  }
 }

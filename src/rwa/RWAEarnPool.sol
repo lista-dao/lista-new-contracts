@@ -74,6 +74,8 @@ contract RWAEarnPool is
   uint256 public minDeposit;
   // owner => spender => allowance. Appended last: the proxies are live, new slots go at the end.
   mapping(address => mapping(address => uint256)) public override allowance;
+  // when true, `deposit` is closed; withdrawals and claims keep working (wind-down mode)
+  bool public depositPaused;
 
   /* constants */
   bytes32 public constant MANAGER = keccak256("MANAGER"); // manager role
@@ -101,6 +103,7 @@ contract RWAEarnPool is
   event EmergencyWithdraw(address token, uint256 amount);
   event WhiteListChanged(address user, bool ok);
   event SetMinDeposit(uint256 minDeposit);
+  event SetDepositPaused(bool paused);
 
   /* CONSTRUCTOR */
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -161,6 +164,7 @@ contract RWAEarnPool is
    * @param receiver The address of the receiver
    */
   function deposit(uint256 amount, uint256 shares, address receiver) external whenNotPaused nonReentrant {
+    require(!depositPaused, "deposit paused");
     require(amount > 0 || shares > 0, "amount and shares is zero");
     require(receiver != address(0), "receiver is zero address");
     require(isInWhitelist(receiver), "receiver not in whitelist");
@@ -491,6 +495,17 @@ contract RWAEarnPool is
     require(minDeposit != _minDeposit, "same minDeposit");
     minDeposit = _minDeposit;
     emit SetMinDeposit(_minDeposit);
+  }
+
+  /**
+   * @dev open or close deposits. Closing only blocks `deposit`; `requestWithdraw`, `claimWithdraw`
+   *      and share transfers keep working, so users can always exit. Used to wind the pool down.
+   * @param _paused True to close deposits, false to reopen
+   */
+  function setDepositPaused(bool _paused) external onlyRole(MANAGER) {
+    require(depositPaused != _paused, "same status");
+    depositPaused = _paused;
+    emit SetDepositPaused(_paused);
   }
 
   /**
