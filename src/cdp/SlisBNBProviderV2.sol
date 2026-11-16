@@ -75,7 +75,8 @@ contract SlisBNBProviderV2 is SlisBNBProvider {
         for (uint256 i = 0; i < accounts.length; i++) {
             address account = accounts[i];
             uint256 amount = dao.locked(token, account);
-            require(amount > 0, "nothing to migrate");
+            // skip, not revert: an integrator that fully exits during the TimeLock delay must not block execute
+            if (amount == 0) continue;
             uint256 before = IERC20(token).balanceOf(address(this));
             dao.withdraw(account, token, amount);
             require(IERC20(token).balanceOf(address(this)) - before == amount, "migrate amount mismatch");
@@ -139,7 +140,10 @@ contract SlisBNBProviderV2 is SlisBNBProvider {
     }
 
     /// @notice permissionless re-sync of an account's slisBNBx with its balance here
+    /// @dev only for accounts holding a balance here: on a CDP dust account it would burn the legacy clisBNB
+    ///      while the slisBNB is still in the CDP, and V1 syncUserLp would mint it back
     function syncSlisBNBx(address account) external {
+        require(userBalance[account] > 0, "no balance here");
         _sync(account, address(0));
     }
 

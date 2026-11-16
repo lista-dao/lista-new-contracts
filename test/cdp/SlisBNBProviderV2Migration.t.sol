@@ -261,6 +261,31 @@ contract ProviderV2Migration is Test {
         assertEq(up + fp, 0, "slisBNBx cleared on full exit");
     }
 
+    // An integrator that fully exits during the TimeLock delay is skipped, not a revert.
+    function test_cutoverSkipsEmptyAccount() public {
+        vm.prank(MANAGER_SAFE);
+        IMinterM(MINTER).addModule(PROVIDER, ModuleConfig(0, 30000, PROVIDER));
+        SlisBNBProviderV2 impl = new SlisBNBProviderV2(MINTER, STAKE_MANAGER);
+        address[] memory acc = new address[](4);
+        address[] memory wl = new address[](0);
+        (acc[0], acc[1], acc[2], acc[3]) = (ASTER, PENDLE, SIGMA, makeAddr("exited"));
+        vm.prank(TIMELOCK);
+        IProvV1(PROVIDER).upgradeToAndCall(address(impl), abi.encodeCall(SlisBNBProviderV2.migrateFromCdp, (acc, wl)));
+        assertEq(SlisBNBProviderV2(PROVIDER).userBalance(acc[3]), 0, "empty account skipped");
+        for (uint256 i; i < 3; i++) assertEq(SlisBNBProviderV2(PROVIDER).userBalance(users[i]), locked0[i], "others migrated");
+    }
+
+    // syncSlisBNBx must not touch a CDP dust account (its slisBNB is still in the CDP).
+    function test_syncSlisBNBxRejectsCdpDust() public {
+        address dust = 0x2b334c9207BbEf33aE4495d3F0f32751118202eA; // ~0.01 slisBNB still locked in the CDP
+        require(I.locked(SLISBNB, dust) > 0, "dust account no longer in CDP; pick another");
+        _cutover();
+        uint256 lp0 = IProvV1(PROVIDER).userLp(dust);
+        vm.expectRevert(bytes("no balance here"));
+        SlisBNBProviderV2(PROVIDER).syncSlisBNBx(dust);
+        assertEq(IProvV1(PROVIDER).userLp(dust), lp0, "legacy clisBNB untouched");
+    }
+
     function test_cutoverOnlyOnce() public {
         _cutover();
         address[] memory acc = new address[](0);

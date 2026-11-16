@@ -59,10 +59,10 @@ Context remappings in `remappings.txt` point `lib/lista-dao-contracts/` and `src
   4. Writes the legacy delegatee into the minter.
   5. Calls `SlisBNBxMinter.rebalance`.
 
-  It reverts if an account has nothing locked, or if the slisBNB received differs from `locked`.
+  It skips an account with nothing locked, so an integrator that fully exits during the TimeLock delay does not block execution. It reverts if the slisBNB received differs from `locked`.
 - `getUserBalanceInBnb(account)`: the module callback for the minter. It returns `ListaStakeManager.convertSnBnbToBnb(userBalance)`.
 - `setDepositWhitelist(accounts, allowed)`, restricted to `MANAGER`. It replaces the CDP Interaction whitelist.
-- `syncSlisBNBx(account)`: a permissionless re-sync.
+- `syncSlisBNBx(account)`: a permissionless re-sync. It reverts for an account with no balance here, so it cannot burn the legacy clisBNB of a CDP dust account.
 
 **Disabled.** These now revert:
 
@@ -156,7 +156,7 @@ The whitelist argument carries over today's CDP whitelist. Sigma is not whitelis
 
 The amounts are read at execution time from `Interaction.locked`. Deposits and withdrawals by the integrators in the 24 h window are therefore fine.
 
-If any account is down to zero by then, execute reverts. In that case, re-schedule with an updated account list.
+If any account is down to zero by then, it is skipped and the rest are migrated.
 
 ### 5. Post-checks
 
