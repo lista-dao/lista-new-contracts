@@ -18,9 +18,6 @@ contract DeploySlisBNBProviderV2 is Script {
   address constant MINTER = 0x2959c423bfe5Cc6E41516599D982A29C0773F11a; // SlisBNBxMinter
   address constant STAKE_MANAGER = 0x1adB950d8bB3dA4bE104211D5AB038628e477fE6; // ListaStakeManager
   address constant TIMELOCK = 0x07D274a68393E8b8a2CCf19A2ce4Ba3518735253;
-  address constant ASTER = 0xE861dd4b0AB6f3a42943e6EF441c3C611CD1bec2; // Aster YieldProxy
-  address constant PENDLE = 0x27FaF900007B4cBa7803000251ec96Bc69ff1BEa; // PendleClisBNBSY
-  address constant SIGMA = 0x8B98563d66B74e5a644BFf78fC72c86bbA847a29; // SigmaClisBNBSY
   uint256 constant DELAY = 86400;
 
   function run() public {
@@ -31,11 +28,6 @@ contract DeploySlisBNBProviderV2 is Script {
     SlisBNBProviderV2 impl = new SlisBNBProviderV2(MINTER, STAKE_MANAGER);
     vm.stopBroadcast();
     console.log("SlisBNBProviderV2 impl:", address(impl));
-
-    address[] memory accounts = new address[](3);
-    (accounts[0], accounts[1], accounts[2]) = (ASTER, PENDLE, SIGMA);
-    address[] memory whitelist = new address[](2); // current CDP whitelist: Aster and Pendle; Sigma is not
-    (whitelist[0], whitelist[1]) = (ASTER, PENDLE);
 
     // step 1 (Manager Safe -> SlisBNBxMinter): addModule(provider, {discount 0, feeRate 3%, provider})
     bytes memory addModule = abi.encodeWithSignature(
@@ -48,11 +40,11 @@ contract DeploySlisBNBProviderV2 is Script {
     console.log("step 1 to SlisBNBxMinter, data:");
     console.logBytes(addModule);
 
-    // steps 2-3 (Proposer Safe -> TimeLock): schedule / execute provider.upgradeToAndCall(impl, migrateFromCdp(...))
+    // steps 2-3 (Proposer Safe -> TimeLock): schedule / execute provider.upgradeToAndCall(impl, migrateFromCdp())
     bytes memory upgrade = abi.encodeWithSignature(
       "upgradeToAndCall(address,bytes)",
       address(impl),
-      abi.encodeCall(SlisBNBProviderV2.migrateFromCdp, (accounts, whitelist))
+      abi.encodeCall(SlisBNBProviderV2.migrateFromCdp, ())
     );
     bytes memory schedule = abi.encodeWithSignature(
       "schedule(address,uint256,bytes,bytes32,bytes32,uint256)",

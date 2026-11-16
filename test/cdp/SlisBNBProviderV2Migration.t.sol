@@ -3,7 +3,7 @@ pragma solidity ^0.8.10;
 
 // Fork simulation of the SlisBNBProvider V2 cut-over (draft impl, not audited).
 //   0. Manager Safe: SlisBNBxMinter.addModule(provider, {discount 0, feeRate 3%})       (same as Moolah slisBNB module)
-//   1. TimeLock:     provider.upgradeToAndCall(V2, migrateFromCdp([Aster, Pendle, Sigma], [Aster, Pendle]))
+//   1. TimeLock:     provider.upgradeToAndCall(V2, migrateFromCdp())   (Aster / Pendle / Sigma hardcoded in V2)
 // Then: balances moved, legacy clisBNB replaced by minter slisBNBx, integrator flows still work,
 // CDP PROXY / migrator paths can no longer move funds, and flows still work with a stale CDP oracle.
 // Run: BSC_RPC=<rpc> forge test --mc ProviderV2Migration -vv
@@ -41,7 +41,6 @@ interface IProvV1 {
     function liquidation(address, uint256) external;
     function releaseFor(address, uint256) external returns (uint256);
     function release(address, uint256) external returns (uint256);
-    function setDepositWhitelist(address[] calldata, bool) external;
 }
 interface IStakeManagerM { function convertSnBnbToBnb(uint256) external view returns (uint256); }
 interface IAsBnbMinterM {
@@ -85,6 +84,7 @@ contract ProviderV2Migration is Test {
         for (uint256 i; i < 3; i++) {
             locked0[i] = I.locked(SLISBNB, users[i]);
             (dele[i],) = IProvV1(PROVIDER).delegation(users[i]);
+            require(locked0[i] > 0, "served account has nothing in the CDP");
         }
         user = makeAddr("user");
         deal(SLISBNB, user, 10 ether);
@@ -95,12 +95,9 @@ contract ProviderV2Migration is Test {
         vm.prank(MANAGER_SAFE);
         IMinterM(MINTER).addModule(PROVIDER, ModuleConfig(0, 30000, PROVIDER));
         SlisBNBProviderV2 impl = new SlisBNBProviderV2(MINTER, STAKE_MANAGER);
-        address[] memory acc = new address[](3);
-        address[] memory wl = new address[](2);
-        (acc[0], acc[1], acc[2]) = (ASTER, PENDLE, SIGMA);
-        (wl[0], wl[1]) = (ASTER, PENDLE);
+        assertEq(impl.ASTER(), ASTER); assertEq(impl.PENDLE(), PENDLE); assertEq(impl.SIGMA(), SIGMA);
         vm.prank(TIMELOCK);
-        IProvV1(PROVIDER).upgradeToAndCall(address(impl), abi.encodeCall(SlisBNBProviderV2.migrateFromCdp, (acc, wl)));
+        IProvV1(PROVIDER).upgradeToAndCall(address(impl), abi.encodeCall(SlisBNBProviderV2.migrateFromCdp, ()));
     }
 
     function _ink(address a) internal view returns (uint256 ink) { (ink,) = VAT.urns(ilk, a); }
@@ -207,23 +204,19 @@ contract ProviderV2Migration is Test {
         _syRoundTrip(PENDLE);
     }
 
-    function test_sigmaWhitelistThenDeposit() public {
+    function test_sigmaAfterCutover() public {
         _cutover();
-        // existing holder can still redeem
-        deal(SIGMA, user, 1 ether);
-        vm.prank(user);
-        assertEq(ISYM(SIGMA).redeem(user, 1 ether, SLISBNB, 0, false), 1 ether, "Sigma redeem");
-        // deposit refused until MANAGER allows it (same outcome as the CDP whitelist today)
-        vm.startPrank(user);
-        IERC20M(SLISBNB).approve(SIGMA, 1 ether);
-        vm.expectRevert(bytes("not in deposit whitelist"));
-        ISYM(SIGMA).deposit(user, SLISBNB, 1 ether, 0);
-        vm.stopPrank();
-        address[] memory a = new address[](1);
-        a[0] = SIGMA;
-        vm.prank(MANAGER_SAFE);
-        IProvV1(PROVIDER).setDepositWhitelist(a, true);
         _syRoundTrip(SIGMA);
+    }
+
+    // only the three hardcoded accounts can deposit
+    function test_otherAccountCannotProvide() public {
+        _cutover();
+        vm.startPrank(user);
+        IERC20M(SLISBNB).approve(PROVIDER, 1 ether);
+        vm.expectRevert(bytes("not a served account"));
+        SlisBNBProviderV2(PROVIDER).provide(1 ether);
+        vm.stopPrank();
     }
 
     function test_cdpPathsCannotMoveFunds() public {
@@ -263,16 +256,12 @@ contract ProviderV2Migration is Test {
 
     // An integrator that fully exits during the TimeLock delay is skipped, not a revert.
     function test_cutoverSkipsEmptyAccount() public {
-        vm.prank(MANAGER_SAFE);
-        IMinterM(MINTER).addModule(PROVIDER, ModuleConfig(0, 30000, PROVIDER));
-        SlisBNBProviderV2 impl = new SlisBNBProviderV2(MINTER, STAKE_MANAGER);
-        address[] memory acc = new address[](4);
-        address[] memory wl = new address[](0);
-        (acc[0], acc[1], acc[2], acc[3]) = (ASTER, PENDLE, SIGMA, makeAddr("exited"));
-        vm.prank(TIMELOCK);
-        IProvV1(PROVIDER).upgradeToAndCall(address(impl), abi.encodeCall(SlisBNBProviderV2.migrateFromCdp, (acc, wl)));
-        assertEq(SlisBNBProviderV2(PROVIDER).userBalance(acc[3]), 0, "empty account skipped");
-        for (uint256 i; i < 3; i++) assertEq(SlisBNBProviderV2(PROVIDER).userBalance(users[i]), locked0[i], "others migrated");
+        vm.mockCall(address(I), abi.encodeCall(IInteractionM.locked, (SLISBNB, SIGMA)), abi.encode(uint256(0)));
+        _cutover();
+        vm.clearMockedCalls();
+        assertEq(SlisBNBProviderV2(PROVIDER).userBalance(SIGMA), 0, "empty account skipped");
+        assertEq(I.locked(SLISBNB, SIGMA), locked0[2], "Sigma left in CDP untouched");
+        for (uint256 i; i < 2; i++) assertEq(SlisBNBProviderV2(PROVIDER).userBalance(users[i]), locked0[i], "others migrated");
     }
 
     // syncSlisBNBx must not touch a CDP dust account (its slisBNB is still in the CDP).
@@ -288,9 +277,8 @@ contract ProviderV2Migration is Test {
 
     function test_cutoverOnlyOnce() public {
         _cutover();
-        address[] memory acc = new address[](0);
         vm.prank(TIMELOCK);
         vm.expectRevert(bytes("Initializable: contract is already initialized"));
-        SlisBNBProviderV2(PROVIDER).migrateFromCdp(acc, acc);
+        SlisBNBProviderV2(PROVIDER).migrateFromCdp();
     }
 }

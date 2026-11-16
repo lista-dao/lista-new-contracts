@@ -23,9 +23,12 @@ interface IStakeManagerLike {
  *         slisBNB is held by this contract instead of being deposited into the CDP Interaction contract, and
  *         clisBNB (= slisBNBx) is minted through SlisBNBxMinter, with this contract registered as a module.
  *
+ * Serves exactly three accounts, hardcoded: Aster YieldProxy, Pendle clisBNB SY, Sigma clisBNB SY.
+ * Changing that set needs a new implementation through the TimeLock.
+ *
  * Storage: inherits the CDP SlisBNBProvider layout unchanged and only appends new variables.
  *
- * Cut-over: TimeLock calls upgradeToAndCall(V2, migrateFromCdp(users)) in one tx:
+ * Cut-over: TimeLock calls upgradeToAndCall(V2, migrateFromCdp()) in one tx:
  *   per user: Interaction.withdraw(user, slisBNB, locked) pays the slisBNB to this contract (we are the
  *   registered helio provider), the user's balance is credited here, the legacy clisBNB (user / delegatee /
  *   lpReserve parts) is burned, the delegatee is written to the minter and the minter mints slisBNBx.
@@ -37,16 +40,17 @@ contract SlisBNBProviderV2 is SlisBNBProvider {
     ISlisBNBxMinterLike public immutable SLISBNBX_MINTER;
     IStakeManagerLike public immutable STAKE_MANAGER;
 
+    address public constant ASTER = 0xE861dd4b0AB6f3a42943e6EF441c3C611CD1bec2; // Aster YieldProxy
+    address public constant PENDLE = 0x27FaF900007B4cBa7803000251ec96Bc69ff1BEa; // PendleClisBNBSY
+    address public constant SIGMA = 0x8B98563d66B74e5a644BFf78fC72c86bbA847a29; // SigmaClisBNBSY
+
     /* ---------------- appended storage (after SlisBNBProvider.totalReservedLp) ---------------- */
     /// @dev slisBNB held by this contract for each account
     mapping(address => uint256) public userBalance;
     /// @dev sum of userBalance
     uint256 public totalBalance;
-    /// @dev deposit allow-list (the CDP Interaction whitelist no longer applies)
-    mapping(address => bool) public depositWhitelist;
 
     event MigratedFromCdp(address indexed account, uint256 amount);
-    event DepositWhitelistSet(address indexed account, bool allowed);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor(address _minter, address _stakeManager) SlisBNBProvider() {
@@ -58,21 +62,14 @@ contract SlisBNBProviderV2 is SlisBNBProvider {
     /* ----------------------------------- cut-over ----------------------------------- */
 
     /**
-     * @notice One-time move of the given accounts' slisBNB out of the CDP into this contract.
+     * @notice One-time move of the three served accounts' slisBNB out of the CDP into this contract.
      * @dev Called through upgradeToAndCall by DEFAULT_ADMIN (TimeLock). Each account's whole CDP `locked`
      *      balance is withdrawn; the account must have no CDP debt (Interaction enforces it).
      *      The SlisBNBxMinter must already list this contract as a module.
      */
-    function migrateFromCdp(address[] calldata accounts, address[] calldata whitelist)
-        external
-        reinitializer(2)
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        for (uint256 i = 0; i < whitelist.length; i++) {
-            depositWhitelist[whitelist[i]] = true;
-            emit DepositWhitelistSet(whitelist[i], true);
-        }
-        for (uint256 i = 0; i < accounts.length; i++) {
+    function migrateFromCdp() external reinitializer(2) onlyRole(DEFAULT_ADMIN_ROLE) {
+        address[3] memory accounts = [ASTER, PENDLE, SIGMA];
+        for (uint256 i = 0; i < 3; i++) {
             address account = accounts[i];
             uint256 amount = dao.locked(token, account);
             // skip, not revert: an integrator that fully exits during the TimeLock delay must not block execute
@@ -152,13 +149,6 @@ contract SlisBNBProviderV2 is SlisBNBProvider {
         return STAKE_MANAGER.convertSnBnbToBnb(userBalance[account]);
     }
 
-    function setDepositWhitelist(address[] calldata accounts, bool allowed) external onlyRole(MANAGER) {
-        for (uint256 i = 0; i < accounts.length; i++) {
-            depositWhitelist[accounts[i]] = allowed;
-            emit DepositWhitelistSet(accounts[i], allowed);
-        }
-    }
-
     /* ------------------------ CDP paths disabled after the cut-over ------------------------ */
 
     /// @dev PROXY holders (Interaction, CDP Core Admin Safe) could otherwise move the slisBNB now held here
@@ -179,7 +169,7 @@ contract SlisBNBProviderV2 is SlisBNBProvider {
 
     function _deposit(address account, uint256 amount, address delegateTo) internal {
         require(amount > 0, "zero deposit amount");
-        require(depositWhitelist[account], "not in deposit whitelist");
+        require(account == ASTER || account == PENDLE || account == SIGMA, "not a served account");
         IERC20(token).safeTransferFrom(account, address(this), amount);
         userBalance[account] += amount;
         totalBalance += amount;

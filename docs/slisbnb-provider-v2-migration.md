@@ -37,11 +37,12 @@ Today every `release` calls `Interaction._withdraw`, which calls `poke()`. That 
 
 Context remappings in `remappings.txt` point `lib/lista-dao-contracts/` and `src/cdp/` at the 4.8.3 copies. The rest of the repo keeps OpenZeppelin v5.
 
-**Storage.** The 23 V1 variables keep their slot, offset and type. V2 appends three variables, in this order:
+**Storage.** The 23 V1 variables keep their slot, offset and type. V2 appends two variables, in this order:
 
 1. `userBalance`
 2. `totalBalance`
-3. `depositWhitelist`
+
+**Served accounts.** V2 serves exactly three accounts, hardcoded as `constant`: `ASTER`, `PENDLE` and `SIGMA` (the addresses above). They are in the bytecode, not in storage. `provide` reverts with `not a served account` for anyone else. Changing the set needs a new implementation through the TimeLock.
 
 **Interface.** It is unchanged for integrators:
 
@@ -52,7 +53,7 @@ Context remappings in `remappings.txt` point `lib/lista-dao-contracts/` and `src
 
 **New functions.**
 
-- `migrateFromCdp(accounts, whitelist)`, guarded by `reinitializer(2)` and `DEFAULT_ADMIN`. For each account it:
+- `migrateFromCdp()`, guarded by `reinitializer(2)` and `DEFAULT_ADMIN`. It takes no arguments. For each of the three served accounts it:
   1. Calls `Interaction.withdraw(account, slisBNB, locked)`. The provider is the registered helio provider, so the slisBNB is paid to the provider.
   2. Credits `userBalance`.
   3. Burns the legacy clisBNB: the user part, the delegatee part and the `lpReserveAddress` part.
@@ -61,7 +62,6 @@ Context remappings in `remappings.txt` point `lib/lista-dao-contracts/` and `src
 
   It skips an account with nothing locked, so an integrator that fully exits during the TimeLock delay does not block execution. It reverts if the slisBNB received differs from `locked`.
 - `getUserBalanceInBnb(account)`: the module callback for the minter. It returns `ListaStakeManager.convertSnBnbToBnb(userBalance)`.
-- `setDepositWhitelist(accounts, allowed)`, restricted to `MANAGER`. It replaces the CDP Interaction whitelist.
 - `syncSlisBNBx(account)`: a permissionless re-sync. It reverts for an account with no balance here, so it cannot burn the legacy clisBNB of a CDP dust account.
 
 **Disabled.** These now revert:
@@ -143,14 +143,14 @@ Schedule:
 ```
 TimeLock.schedule(
   provider, 0,
-  upgradeToAndCall(impl, migrateFromCdp([Aster, Pendle, Sigma], [Aster, Pendle])),
+  upgradeToAndCall(impl, migrateFromCdp()),
   0x0, salt, 86400
 )
 ```
 
 The upgrade and the migration run in one transaction, so the provider is never live on V2 with the slisBNB still in the CDP.
 
-The whitelist argument carries over today's CDP whitelist. Sigma is not whitelisted today; see the open decisions below.
+The calldata carries no account list; the three accounts are fixed in the implementation.
 
 ### 4. Execute (Proposer Safe → TimeLock, after 24 h)
 
@@ -183,7 +183,7 @@ If any account is down to zero by then, it is skipped and the rest are migrated.
 
 ## Open decisions
 
-- **Sigma deposits.** Add Sigma to `depositWhitelist`, at cut-over or later via `setDepositWhitelist`, or keep it redeem-only as today.
+- **Sigma deposits.** V2 lets Sigma deposit again. Today the CDP whitelist keeps it redeem-only. Business to confirm.
 - **Compiler.**
   - V1 was built with 0.8.10 / london. This repo builds with 0.8.24 (cancun is the default for that compiler, and BSC supports it). The storage layout does not depend on the compiler.
   - The fork test needs cancun anyway, because the live minter uses newer opcodes.
@@ -196,7 +196,8 @@ If any account is down to zero by then, it is skipped and the rest are migrated.
 
 - Balances move out of the CDP. The legacy clisBNB is replaced by minter slisBNBx. The delegatee and the reserve/MPC0 balances are exact.
 - The Aster asBNB mint/burn and the Pendle / Sigma SY deposit/redeem round trips work.
-- Sigma deposits are refused until whitelisted.
+- Any account other than the three served ones cannot `provide`.
+- If a served account has nothing in the CDP at execution, it is skipped and the other two are migrated.
 - `liquidation` and `releaseFor` from the PROXY holders and the migrator revert.
 - Pendle and Sigma still work after 7 days with no oracle update.
 - `migrateFromCdp` cannot run twice.
