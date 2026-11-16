@@ -9,7 +9,7 @@ pragma solidity ^0.8.10;
 // Run: BSC_RPC=<rpc> forge test --mc ProviderV2Migration -vv
 
 import "forge-std/Test.sol";
-import {SlisBNBProviderV2} from "../../src/cdp/contracts/ceros/provider/SlisBNBProviderV2.sol";
+import {SlisBNBProviderV2} from "../../src/cdp/SlisBNBProviderV2.sol";
 
 interface IERC20M {
     function balanceOf(address) external view returns (uint256);

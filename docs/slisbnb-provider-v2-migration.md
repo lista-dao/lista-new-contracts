@@ -27,7 +27,15 @@ Today every `release` calls `Interaction._withdraw`, which calls `poke()`. That 
 
 ## Contract
 
-`src/cdp/contracts/ceros/provider/SlisBNBProviderV2.sol` inherits the verified on-chain `SlisBNBProvider`. That source is vendored unchanged under `src/cdp/contracts`, with OpenZeppelin 4.8 under `src/cdp/vendor`, remapped by context in `remappings.txt`.
+`src/cdp/SlisBNBProviderV2.sol` inherits `SlisBNBProvider` from three pinned submodules:
+
+| Submodule | Pinned at | Why |
+|---|---|---|
+| `lib/lista-dao-contracts` | `3e120da` (master; the repo is archived) | Its `SlisBNBProvider.sol` and `BaseTokenProvider.sol` are byte-identical to the verified source of the live implementation `0x9498e35f36058f80cf15d12cadfd4d6af8c6e890`. |
+| `lib/openzeppelin-contracts-upgradeable-v4` | `v4.8.3` | V1 uses the OpenZeppelin 4.x storage layout. This repo's OpenZeppelin v5 uses a different layout and cannot be used. |
+| `lib/openzeppelin-contracts-v4` | `v4.8.3` | Provides the non-upgradeable OpenZeppelin imports that V1 and V2 use. |
+
+Context remappings in `remappings.txt` point `lib/lista-dao-contracts/` and `src/cdp/` at the 4.8.3 copies. The rest of the repo keeps OpenZeppelin v5.
 
 **Storage.** The 23 V1 variables keep their slot, offset and type. V2 appends three variables, in this order:
 
@@ -118,8 +126,8 @@ The script prints the calldata for steps 2–4.
 Compare the storage layout before proposing:
 
 ```
-forge inspect src/cdp/contracts/ceros/provider/SlisBNBProvider.sol:SlisBNBProvider storageLayout
-forge inspect src/cdp/contracts/ceros/provider/SlisBNBProviderV2.sol:SlisBNBProviderV2 storageLayout
+forge inspect lib/lista-dao-contracts/contracts/ceros/provider/SlisBNBProvider.sol:SlisBNBProvider storageLayout
+forge inspect src/cdp/SlisBNBProviderV2.sol:SlisBNBProviderV2 storageLayout
 ```
 
 ### 2. Register the provider as a minter module (Manager Safe)
@@ -179,7 +187,7 @@ If any account is down to zero by then, execute reverts. In that case, re-schedu
 - **Compiler.**
   - V1 was built with 0.8.10 / london. This repo builds with 0.8.24 (cancun is the default for that compiler, and BSC supports it). The storage layout does not depend on the compiler.
   - The fork test needs cancun anyway, because the live minter uses newer opcodes.
-- **Licence.** The vendored V1 source is GPL-3.0-only, while this repo is MIT.
+- **Licence.** V1 is GPL-3.0-only and V2 inherits it, so `SlisBNBProviderV2.sol` keeps the GPL-3.0-only header. The rest of this repo is MIT.
 - **Audit** before scheduling.
 
 ## Tests

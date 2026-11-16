@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import { Script, console } from "forge-std/Script.sol";
-import { SlisBNBProviderV2 } from "../../src/cdp/contracts/ceros/provider/SlisBNBProviderV2.sol";
+import { SlisBNBProviderV2 } from "../../src/cdp/SlisBNBProviderV2.sol";
 
 /**
  * Deploys the SlisBNBProviderV2 implementation and prints the calldata for the cut-over

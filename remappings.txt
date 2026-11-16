@@ -1,5 +1,7 @@
 @src/=src
 @openzeppelin/contracts/=lib/openzeppelin-contracts-upgradeable/lib/openzeppelin-contracts/contracts/
 @openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/
-
-src/cdp/:@openzeppelin/=src/cdp/vendor/@openzeppelin/
+lista-dao-contracts/=lib/lista-dao-contracts/
+lib/lista-dao-contracts/:@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable-v4/contracts/
+lib/lista-dao-contracts/:@openzeppelin/contracts/=lib/openzeppelin-contracts-v4/contracts/
+src/cdp/:@openzeppelin/contracts/=lib/openzeppelin-contracts-v4/contracts/

@@ -12,3 +12,12 @@
 [submodule "lib/openzeppelin-contracts"]
 	path = lib/openzeppelin-contracts
 	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+[submodule "lib/lista-dao-contracts"]
+	path = lib/lista-dao-contracts
+	url = https://github.com/lista-dao/lista-dao-contracts
+[submodule "lib/openzeppelin-contracts-upgradeable-v4"]
+	path = lib/openzeppelin-contracts-upgradeable-v4
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable
+[submodule "lib/openzeppelin-contracts-v4"]
+	path = lib/openzeppelin-contracts-v4
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
