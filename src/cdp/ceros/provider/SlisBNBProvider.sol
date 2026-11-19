@@ -243,6 +243,7 @@ contract SlisBNBProvider is BaseTokenProvider {
      * @param _account lp token owner
      */
     function isUserLpSynced(address _account) external view returns (bool) {
+        if (!_isServed(_account)) return true; // v2: CDP dust clisBNB is left as is
         uint256 totalTokenBalance = userDeposit[_account];
         uint256 userTotalLp = totalTokenBalance * exchangeRate / RATE_DENOMINATOR;
         uint256 expectUserPart = userTotalLp * userLpRate / RATE_DENOMINATOR;
@@ -257,6 +258,7 @@ contract SlisBNBProvider is BaseTokenProvider {
      * @param _account user address to sync
      */
     function _syncLp(address _account) internal override returns (bool) {
+        if (!_isServed(_account)) return false; // v2: CDP dust clisBNB is left as is
         uint256 expectAllLp = userDeposit[_account] * exchangeRate / RATE_DENOMINATOR;
         uint256 expectUserLp = expectAllLp * userLpRate / RATE_DENOMINATOR;
         uint256 expectReserveLp = expectAllLp - expectUserLp;

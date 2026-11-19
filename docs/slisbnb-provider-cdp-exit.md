@@ -41,7 +41,7 @@ Files under `src/cdp/` compile against OpenZeppelin 4.8.3 (`lib/openzeppelin-con
 |---|---|---|
 | `_provideCollateral` | `dao.deposit` | Requires a served account; records `userDeposit` / `totalDeposit`; the slisBNB stays in the provider. clisBNB minting is unchanged. |
 | `_withdrawLp` (used by `release`) | `dao.withdraw` | Deducts `userDeposit` / `totalDeposit`; reverts `insufficient deposit` if short. clisBNB burning is unchanged. |
-| `_syncLp`, `isUserLpSynced` | Reconcile against `dao.locked` | Reconcile against `userDeposit[account]` (0 for any account other than the three) |
+| `_syncLp`, `isUserLpSynced` | Reconcile against `dao.locked` | Reconcile against `userDeposit[account]`. Any account other than the three is left as is: `_syncLp` returns early and `isUserLpSynced` reads true |
 | `liquidation` (both overloads), `daoBurn`, `releaseFor`, `withdrawLeftover` | Callable by PROXY / the CDP migrator | Revert |
 | `migrateFromCdp()` | none | One-time cut-over, see below |
 
@@ -60,7 +60,7 @@ Files under `src/cdp/` compile against OpenZeppelin 4.8.3 (`lib/openzeppelin-con
 - **Aster, Pendle, Sigma:** `Interaction.locked` and `Vat.urns` read 0 for them after the cut-over, including in emission snapshots. Their clisBNB balances, delegation and rates do not change. Sigma can deposit again; today the CDP whitelist keeps it redeem-only.
 - **CDP dust** (every other account with slisBNB in the CDP) is not handled. Its slisBNB stays in the CDP and cannot be withdrawn through the provider:
   - `release` reverts with `insufficient deposit`, `withdrawLeftover` reverts, and `provide` reverts with `not a served account`.
-  - Its `userDeposit` is 0, so `isUserLpSynced` reads false while it still holds clisBNB, and `syncUserLp` (permissionless, also called by the re-sync bot) burns that clisBNB. That is about 0.15 clisBNB over all dust accounts.
+  - Its clisBNB is left as is: `_syncLp` returns early and `isUserLpSynced` reads true for any account other than the three, so `syncUserLp` (permissionless) reverts with `already synced` and burns nothing.
   - The Core Admin Safe can return their `ink` with `Vat.grab` + `GemJoin.exit` straight to the user. This must happen before any `removeCollateralType(slisBNB)`.
 
 ## Migration process

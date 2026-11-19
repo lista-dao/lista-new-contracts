@@ -389,6 +389,15 @@ contract ProviderV2Migration is Test {
         _cutover();
         assertEq(p.userDeposit(DUST), 0, "dust has no deposit here");
         uint256 pb = IERC20M(SLISBNB).balanceOf(PROVIDER);
+        uint256 lp = IProv(PROVIDER).userLp(DUST);
+        uint256 rlp = IProv(PROVIDER).userReservedLp(DUST);
+        require(lp > 0, "dust account holds no clisBNB; pick another");
+        // anyone calling syncUserLp must not burn the dust account's clisBNB
+        assertTrue(IProv(PROVIDER).isUserLpSynced(DUST), "dust reads synced");
+        vm.expectRevert(bytes("already synced"));
+        p.syncUserLp(DUST);
+        assertEq(IProv(PROVIDER).userLp(DUST), lp, "dust clisBNB kept");
+        assertEq(IProv(PROVIDER).userReservedLp(DUST), rlp, "dust reserve kept");
         vm.startPrank(DUST);
         vm.expectRevert(bytes("insufficient deposit"));
         IProv(PROVIDER).release(DUST, l);
