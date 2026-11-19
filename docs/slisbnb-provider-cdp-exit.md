@@ -80,12 +80,15 @@ Roles were checked on chain: TimeLock `0x07D274a68393E8b8a2CCf19A2ce4Ba351873525
 
 ### 1. Deploy the implementation
 
+With the repo's generic implementation script, which runs the OpenZeppelin upgrade-safety validation and prints the new implementation address:
+
 ```
-forge script script/cdp/DeploySlisBNBProvider.s.sol:DeploySlisBNBProvider \
-  --rpc-url <bsc> --etherscan-api-key <key> --broadcast --verify -vvv
+IMPL_CONTRACT=SlisBNBProvider.sol:SlisBNBProvider \
+forge script script/DeployImpl.s.sol:DeployImplScript \
+  --rpc-url https://bsc-dataseed.binance.org --etherscan-api-key <key> --broadcast --verify -vvv
 ```
 
-`TIMELOCK_SALT` must be set to the next unused Changelog salt. The script prints the `schedule` and `execute` calldata.
+`DEPLOYER_PRIVATE_KEY` is read from the environment. The `schedule` and `execute` transactions are built in the Proposer Safe with the `upgradeToAndCall(impl, migrateFromCdp())` calldata below.
 
 Compare the storage layout before proposing:
 
