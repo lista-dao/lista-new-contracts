@@ -160,6 +160,7 @@ The clisBNB launchpool snapshot only reads provider events and delegation, so it
 
 - The three accounts' slisBNB moves out of the CDP into the provider. clisBNB balances, `userLp`, `userReservedLp`, delegation, sync status and total supply are unchanged to the wei. The allowance to Interaction is revoked.
 - With every Interaction call mocked to revert: Aster asBNB mint/burn, Pendle and Sigma SY deposit/redeem and `delegateAllTo` all work.
+- End-to-end user operations through each integrator, with every Interaction call mocked to revert: a new user deposits 5 slisBNB, withdraws half, then the rest, and an existing holder exits (Aster through `AsBnbMinter`, Pendle and Sigma through their SY). Each step checks the provider's `userDeposit`, the slisBNB paid and the clisBNB minted or burned.
 - Any other account cannot `provide`. `release` above `userDeposit` reverts.
 - `liquidation` (both overloads) and `daoBurn` from the PROXY holders, and `releaseFor`, revert.
 - A CDP dust account cannot `release` or `withdrawLeftover`; its slisBNB stays in the CDP.

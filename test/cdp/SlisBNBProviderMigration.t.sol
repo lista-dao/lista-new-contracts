@@ -188,6 +188,139 @@ contract ProviderV2Migration is Test {
         _inv();
     }
 
+    // ---------- user operations after the cut-over, through each integrator, with the CDP switched off ----------
+
+    // clisBNB minted (or burned) for `amount` slisBNB: holder part plus reserve part
+    function _lpFor(uint256 amount) internal view returns (uint256) {
+        return amount * p.exchangeRate() / 1e18;
+    }
+
+    // clisBNB held by an integrator's delegatee plus lpReserveAddress (they are the same address for Aster)
+    function _clis(address delegatee) internal view returns (uint256) {
+        IERC20M c = IERC20M(CLISBNB);
+        return delegatee == RESERVE ? c.balanceOf(RESERVE) : c.balanceOf(delegatee) + c.balanceOf(RESERVE);
+    }
+
+    function _logStep(string memory step, address integrator, address delegatee, uint256 slis, uint256 clis0) internal {
+        console2.log(step);
+        emit log_named_decimal_uint("    slisBNB moved", slis, 18);
+        emit log_named_decimal_uint("    provider userDeposit after", p.userDeposit(integrator), 18);
+        uint256 c1 = _clis(delegatee);
+        if (c1 >= clis0) emit log_named_decimal_uint("    clisBNB minted (delegatee + reserve)", c1 - clis0, 18);
+        else emit log_named_decimal_uint("    clisBNB burned (delegatee + reserve)", clis0 - c1, 18);
+    }
+
+    function _asterJourney(address u, address holder) internal {
+        IAsBnbMinterM m = IAsBnbMinterM(ASBNB_MINTER);
+        IERC20M asBnb = IERC20M(m.asBnb());
+        address d = dele[0];
+        console2.log("== Aster (AsBnbMinter -> YieldProxy -> provider)");
+        vm.startPrank(u);
+        IERC20M(SLISBNB).approve(ASBNB_MINTER, 5 ether);
+        uint256 dep0 = p.userDeposit(ASTER);
+        uint256 c0 = _clis(d);
+        uint256 got = m.mintAsBnb(5 ether);
+        assertEq(p.userDeposit(ASTER), dep0 + 5 ether, "Aster mint: deposit");
+        assertEq(_clis(d) - c0, _lpFor(5 ether), "Aster mint: clisBNB");
+        _logStep("1. new user mintAsBnb with 5 slisBNB", ASTER, d, 5 ether, c0);
+        emit log_named_decimal_uint("    asBNB received", got, 18);
+
+        asBnb.approve(ASBNB_MINTER, got);
+        uint256[2] memory parts = [got / 2, got - got / 2];
+        string[2] memory labels = ["2. burnAsBnb half (partial withdrawal)", "3. burnAsBnb the rest (full exit)"];
+        for (uint256 i; i < 2; i++) {
+            uint256 s0 = IERC20M(SLISBNB).balanceOf(u);
+            dep0 = p.userDeposit(ASTER);
+            c0 = _clis(d);
+            m.burnAsBnb(parts[i]);
+            uint256 back = IERC20M(SLISBNB).balanceOf(u) - s0;
+            assertGt(back, 0, "Aster burn: slisBNB out");
+            assertEq(dep0 - p.userDeposit(ASTER), back, "Aster burn: deposit");
+            assertApproxEqAbs(c0 - _clis(d), _lpFor(back), 2, "Aster burn: clisBNB");
+            _logStep(labels[i], ASTER, d, back, c0);
+        }
+        assertEq(asBnb.balanceOf(u), 0, "Aster: user fully out");
+        vm.stopPrank();
+
+        // an existing asBNB holder exits
+        deal(address(asBnb), holder, 3 ether);
+        vm.startPrank(holder);
+        asBnb.approve(ASBNB_MINTER, 3 ether);
+        dep0 = p.userDeposit(ASTER);
+        c0 = _clis(d);
+        m.burnAsBnb(3 ether);
+        uint256 out = IERC20M(SLISBNB).balanceOf(holder);
+        vm.stopPrank();
+        assertGt(out, 0, "Aster holder: slisBNB out");
+        assertEq(dep0 - p.userDeposit(ASTER), out, "Aster holder: deposit");
+        _logStep("4. existing holder burnAsBnb 3 asBNB", ASTER, d, out, c0);
+    }
+
+    function _syJourney(string memory name, address sy, address d, address u, address holder) internal {
+        console2.log(string.concat("== ", name, " (clisBNB SY -> provider)"));
+        vm.startPrank(u);
+        IERC20M(SLISBNB).approve(sy, 5 ether);
+        uint256 dep0 = p.userDeposit(sy);
+        uint256 c0 = _clis(d);
+        uint256 sh = ISYM(sy).deposit(u, SLISBNB, 5 ether, 0);
+        assertEq(p.userDeposit(sy), dep0 + 5 ether, "SY deposit: deposit");
+        assertEq(_clis(d) - c0, _lpFor(5 ether), "SY deposit: clisBNB");
+        _logStep("1. new user deposits 5 slisBNB", sy, d, 5 ether, c0);
+        emit log_named_decimal_uint("    SY shares received", sh, 18);
+
+        uint256[2] memory parts = [sh / 2, sh - sh / 2];
+        string[2] memory labels = ["2. redeem half (partial withdrawal)", "3. redeem the rest (full exit)"];
+        for (uint256 i; i < 2; i++) {
+            dep0 = p.userDeposit(sy);
+            c0 = _clis(d);
+            uint256 out = ISYM(sy).redeem(u, parts[i], SLISBNB, 0, false);
+            assertEq(out, parts[i], "SY redeem: 1:1");
+            assertEq(dep0 - p.userDeposit(sy), out, "SY redeem: deposit");
+            assertApproxEqAbs(c0 - _clis(d), _lpFor(out), 2, "SY redeem: clisBNB");
+            _logStep(labels[i], sy, d, out, c0);
+        }
+        assertEq(IERC20M(SLISBNB).balanceOf(u), 10 ether, "SY: user got everything back");
+        vm.stopPrank();
+
+        // an existing SY holder exits
+        deal(sy, holder, 3 ether);
+        dep0 = p.userDeposit(sy);
+        c0 = _clis(d);
+        vm.prank(holder);
+        uint256 got = ISYM(sy).redeem(holder, 3 ether, SLISBNB, 0, false);
+        assertEq(got, 3 ether, "SY holder: 1:1");
+        assertEq(dep0 - p.userDeposit(sy), 3 ether, "SY holder: deposit");
+        _logStep("4. existing holder redeems 3 SY shares", sy, d, got, c0);
+    }
+
+    function test_userOperationsAfterCutover() public {
+        _cutover();
+        _cdpOff(); // any call into the CDP Interaction reverts from here on
+        uint256 bal0 = IERC20M(SLISBNB).balanceOf(PROVIDER);
+        uint256 tot0 = p.totalDeposit();
+        address[3] memory us = [makeAddr("asterUser"), makeAddr("pendleUser"), makeAddr("sigmaUser")];
+        for (uint256 i; i < 3; i++) deal(SLISBNB, us[i], 10 ether);
+
+        _asterJourney(us[0], makeAddr("asterHolder"));
+        _syJourney("Pendle", PENDLE, dele[1], us[1], makeAddr("pendleHolder"));
+        _syJourney("Sigma", SIGMA, dele[2], us[2], makeAddr("sigmaHolder"));
+
+        for (uint256 i; i < 3; i++) assertTrue(IProv(PROVIDER).isUserLpSynced(users[i]) || _syncedAfter(users[i]), "synced");
+        uint256 paidOut = bal0 - IERC20M(SLISBNB).balanceOf(PROVIDER);
+        assertEq(tot0 - p.totalDeposit(), paidOut, "totalDeposit tracks the provider balance");
+        _inv();
+        console2.log("== Summary");
+        emit log_named_decimal_uint("    slisBNB paid out to existing holders (net)", paidOut, 18);
+        emit log_named_decimal_uint("    provider slisBNB balance", IERC20M(SLISBNB).balanceOf(PROVIDER), 18);
+        emit log_named_decimal_uint("    totalDeposit", p.totalDeposit(), 18);
+    }
+
+    // v1 rounds provide and release separately; a wei of drift is settled by syncUserLp (CDP still off)
+    function _syncedAfter(address a) internal returns (bool) {
+        p.syncUserLp(a);
+        return IProv(PROVIDER).isUserLpSynced(a);
+    }
+
     function test_pendleAfterCutover() public {
         _cutover();
         _cdpOff();
