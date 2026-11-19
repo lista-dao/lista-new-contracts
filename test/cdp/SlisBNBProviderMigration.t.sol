@@ -5,7 +5,7 @@ pragma solidity ^0.8.10;
 //   TimeLock: provider.upgradeToAndCall(newImpl, migrateFromCdp())   (Aster / Pendle / Sigma hardcoded)
 // Then: their slisBNB sits in the provider, clisBNB is untouched, integrator flows never touch the CDP,
 // CDP PROXY / migrator paths cannot move funds, and CDP dust accounts behave as before.
-// Run: BSC_RPC=<rpc> forge test --mc ProviderV2Migration -vv
+// Run: forge test --mc ProviderV2Migration -vv
 
 import "forge-std/Test.sol";
 import {SlisBNBProvider} from "../../src/cdp/ceros/provider/SlisBNBProvider.sol";
@@ -74,7 +74,7 @@ contract ProviderV2Migration is Test {
     SlisBNBProvider p = SlisBNBProvider(PROVIDER);
 
     function setUp() public {
-        vm.createSelectFork(vm.envString("BSC_RPC"));
+        vm.createSelectFork("https://bsc-dataseed.binance.org");
         (gemJoin, ilk,,) = I.collaterals(SLISBNB);
         users = [ASTER, PENDLE, SIGMA];
         for (uint256 i; i < 3; i++) {

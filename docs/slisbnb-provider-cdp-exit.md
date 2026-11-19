@@ -156,7 +156,7 @@ The clisBNB launchpool snapshot only reads provider events and delegation, so it
 
 ## Tests
 
-`test/cdp/SlisBNBProviderMigration.t.sol` forks BSC at the latest block (`BSC_RPC`). It runs steps 2–3 with `vm.prank`, without the TimeLock schedule, and checks:
+`test/cdp/SlisBNBProviderMigration.t.sol` forks BSC at the latest block (`https://bsc-dataseed.binance.org`, like the other fork tests in this repo). It runs steps 2–3 with `vm.prank`, without the TimeLock schedule, and checks:
 
 - The three accounts' slisBNB moves out of the CDP into the provider. clisBNB balances, `userLp`, `userReservedLp`, delegation, sync status and total supply are unchanged to the wei. The allowance to Interaction is revoked.
 - With every Interaction call mocked to revert: Aster asBNB mint/burn, Pendle and Sigma SY deposit/redeem and `delegateAllTo` all work.
@@ -170,5 +170,5 @@ The clisBNB launchpool snapshot only reads provider events and delegation, so it
 - `slisBNB.balanceOf(provider) >= totalDeposit` at the end of every flow.
 
 ```
-BSC_RPC=<rpc> forge test --mc ProviderV2Migration -vv
+forge test --mc ProviderV2Migration -vv
 ```
