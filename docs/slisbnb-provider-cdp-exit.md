@@ -39,9 +39,9 @@ Files under `src/cdp/` compile against OpenZeppelin 4.8.3 (`lib/openzeppelin-con
 
 | Function | V1 | Now |
 |---|---|---|
-| `_provideCollateral` | `dao.deposit` | Requires a served account; records `userDeposit` / `totalDeposit`; the slisBNB stays in the provider. clisBNB minting is unchanged. |
-| `_withdrawLp` (used by `release`) | `dao.withdraw` | Deducts `userDeposit` / `totalDeposit`; reverts `insufficient deposit` if short. clisBNB burning is unchanged. |
-| `_syncLp`, `isUserLpSynced` | Reconcile against `dao.locked` | Reconcile against `userDeposit[account]`. Any account other than the three is left as is: `_syncLp` returns early and `isUserLpSynced` reads true |
+| `_provideCollateral` | `dao.deposit` | Requires `migrateFromCdp` to have run and a served account; records `userDeposit` / `totalDeposit`; the slisBNB stays in the provider. clisBNB minting is unchanged. |
+| `_withdrawLp` (used by `release`) | `dao.withdraw` | Requires `migrateFromCdp` to have run. Deducts `userDeposit` / `totalDeposit`; reverts `insufficient deposit` if short. clisBNB burning is unchanged. |
+| `_syncLp`, `isUserLpSynced` | Reconcile against `dao.locked` | Reconcile against `userDeposit[account]`. Any account other than the three, and every account before `migrateFromCdp` has run, is left as is: `_syncLp` returns early and `isUserLpSynced` reads true |
 | `liquidation` (both overloads), `daoBurn`, `releaseFor`, `withdrawLeftover` | Callable by PROXY / the CDP migrator | Revert |
 | `migrateFromCdp()` | none | One-time cut-over, see below |
 
@@ -53,6 +53,7 @@ Files under `src/cdp/` compile against OpenZeppelin 4.8.3 (`lib/openzeppelin-con
 
 - **`liquidation`, `daoBurn` and `releaseFor` must revert.** `liquidation` is an unconditional transfer for `PROXY` (`BaseTokenProvider.sol:245`), and `releaseFor` lets the CDP migrator withdraw for any account. Once the provider holds the slisBNB, either could move all of it. Today `PROXY` is held by the CDP Core Admin Safe `0xAca0ed4651ddA1F43f00363643CFa5EBF8774b37` and Interaction `0xB68443Ee3e828baD1526b3e0Bdf2Dfc6b1975ec4`. The ilk has no debt and no auctions, so nothing legitimate needs these paths.
 - **Zero trust in the CDP.** After the cut-over the provider never calls the CDP. `migrateFromCdp` is the only function that does, once: it counts the provider's actual balance increase, not Interaction's return value, and is `nonReentrant`.
+- **Nothing moves before the migration.** `userDeposit` is filled only by `migrateFromCdp`. If the upgrade were sent as a plain `upgradeTo`, it would read 0 for the three accounts, and the permissionless `syncUserLp` could burn all of their clisBNB. Until `migrateFromCdp` has run (`_getInitializedVersion() < 2`), `_syncLp` does nothing and `provide` / `release` revert with `not migrated`. A later `migrateFromCdp` then works as in the single transaction.
 - **`withdrawLeftover` is disabled.** It paid CDP `free` (`Vat.gem`) balances from old liquidations through the provider, which is CDP dust and not handled here.
 
 ## Effect on users
@@ -167,6 +168,7 @@ The clisBNB launchpool snapshot only reads provider events and delegation, so it
 - Pendle and Sigma still work after 7 days with no oracle update.
 - A served account with nothing in the CDP is skipped. A short delivery by Interaction reverts the whole upgrade.
 - `migrateFromCdp` cannot run twice.
+- An upgrade without `migrateFromCdp` changes nothing: `syncUserLp` burns no clisBNB, `provide` and `release` revert with `not migrated`, and a later `migrateFromCdp` still migrates.
 - `slisBNB.balanceOf(provider) >= totalDeposit` at the end of every flow.
 
 ```

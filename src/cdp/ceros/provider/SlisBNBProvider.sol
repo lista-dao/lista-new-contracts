@@ -124,6 +124,11 @@ contract SlisBNBProvider is BaseTokenProvider {
         return _account == ASTER || _account == PENDLE || _account == SIGMA;
     }
 
+    /// @dev v2: userDeposit is filled only by migrateFromCdp; until it has run, nothing is synced, deposited or released
+    function _migrated() internal view returns (bool) {
+        return _getInitializedVersion() >= 2;
+    }
+
     /**
      * @dev v2: keep the token here and record it; mint lp tokens to delegateTo according to rate
      *
@@ -137,6 +142,7 @@ contract SlisBNBProvider is BaseTokenProvider {
         returns (uint256)
     {
         // v2: the token stays in this contract; only the served accounts can deposit
+        require(_migrated(), "not migrated");
         require(_isServed(_account), "not a served account");
         userDeposit[_account] += _amount;
         totalDeposit += _amount;
@@ -200,6 +206,7 @@ contract SlisBNBProvider is BaseTokenProvider {
      * @dev v2: pay out of this contract's records instead of dao.withdraw
      */
     function _withdrawLp(address _account, uint256 _amount) internal override {
+        require(_migrated(), "not migrated");
         _syncLp(_account);
         require(userDeposit[_account] >= _amount, "insufficient deposit");
         userDeposit[_account] -= _amount;
@@ -244,7 +251,7 @@ contract SlisBNBProvider is BaseTokenProvider {
      * @param _account lp token owner
      */
     function isUserLpSynced(address _account) external view returns (bool) {
-        if (!_isServed(_account)) return true; // v2: CDP dust clisBNB is left as is
+        if (!_isServed(_account) || !_migrated()) return true; // v2: CDP dust clisBNB is left as is; nothing to sync before migration
         uint256 totalTokenBalance = userDeposit[_account];
         uint256 userTotalLp = totalTokenBalance * exchangeRate / RATE_DENOMINATOR;
         uint256 expectUserPart = userTotalLp * userLpRate / RATE_DENOMINATOR;
@@ -259,7 +266,7 @@ contract SlisBNBProvider is BaseTokenProvider {
      * @param _account user address to sync
      */
     function _syncLp(address _account) internal override returns (bool) {
-        if (!_isServed(_account)) return false; // v2: CDP dust clisBNB is left as is
+        if (!_isServed(_account) || !_migrated()) return false; // v2: CDP dust clisBNB is left as is; nothing to sync before migration
         uint256 expectAllLp = userDeposit[_account] * exchangeRate / RATE_DENOMINATOR;
         uint256 expectUserLp = expectAllLp * userLpRate / RATE_DENOMINATOR;
         uint256 expectReserveLp = expectAllLp - expectUserLp;

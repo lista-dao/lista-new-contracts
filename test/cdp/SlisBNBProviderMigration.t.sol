@@ -453,4 +453,42 @@ contract ProviderV2Migration is Test {
         vm.expectRevert(bytes("Initializable: contract is already initialized"));
         p.migrateFromCdp();
     }
+
+    // an upgrade sent without migrateFromCdp changes nothing until the migration runs
+    function test_upgradeWithoutMigrationIsInert() public {
+        IERC20M clis = IERC20M(CLISBNB);
+        uint256 supply0 = clis.totalSupply();
+        uint256 lp0 = IProv(PROVIDER).userLp(ASTER);
+        uint256 rlp0 = IProv(PROVIDER).userReservedLp(ASTER);
+        SlisBNBProvider impl = new SlisBNBProvider();
+        vm.prank(TIMELOCK);
+        p.upgradeTo(address(impl));
+        assertEq(p.userDeposit(ASTER), 0, "not migrated yet");
+
+        // nobody can burn the served accounts' clisBNB
+        assertTrue(IProv(PROVIDER).isUserLpSynced(ASTER), "reads synced");
+        vm.expectRevert(bytes("already synced"));
+        p.syncUserLp(ASTER);
+        assertEq(IProv(PROVIDER).userLp(ASTER), lp0, "userLp kept");
+        assertEq(IProv(PROVIDER).userReservedLp(ASTER), rlp0, "reserve kept");
+        assertEq(clis.totalSupply(), supply0, "supply kept");
+
+        // deposits and withdrawals wait for the migration
+        deal(SLISBNB, ASTER, 1 ether);
+        vm.startPrank(ASTER);
+        IERC20M(SLISBNB).approve(PROVIDER, 1 ether);
+        vm.expectRevert(bytes("not migrated"));
+        p.provide(1 ether);
+        vm.expectRevert(bytes("not migrated"));
+        p.release(ASTER, 1 ether);
+        vm.stopPrank();
+
+        // the migration can still run afterwards
+        vm.prank(TIMELOCK);
+        p.migrateFromCdp();
+        assertEq(p.userDeposit(ASTER), locked0[0], "migrated");
+        assertEq(IProv(PROVIDER).userLp(ASTER), lp0, "userLp kept after migration");
+        assertEq(clis.totalSupply(), supply0, "supply kept after migration");
+        _inv();
+    }
 }
