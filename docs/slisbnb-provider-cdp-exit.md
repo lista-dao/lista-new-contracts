@@ -63,7 +63,7 @@ Files under `src/cdp/` compile against OpenZeppelin 4.8.3 (`lib/openzeppelin-con
   - `release` reverts with `insufficient deposit`, `withdrawLeftover` reverts, and `provide` reverts with `not a served account`.
   - Its clisBNB is left as is: `_syncLp` returns early and `isUserLpSynced` reads true for any account other than the three, so `syncUserLp` (permissionless) reverts with `already synced` and burns nothing.
   - The Core Admin Safe can return it straight to the users: `ink` with `Vat.grab`, `gem` with `Vat.slip`, then `GemJoin.exit` (checked on a fork after the cut-over). This must happen before any `removeCollateralType(slisBNB)`.
-  - Its clisBNB (about 0.15) then has no burn path and stays outstanding.
+  - Its clisBNB (about 0.15) then has no burn path and stays outstanding. This is accepted.
 
 ## Migration process
 
@@ -148,13 +148,6 @@ The clisBNB launchpool snapshot only reads provider events and delegation, so it
 ## Before launch
 
 - Confirm with Aster, Pendle and Sigma that their off-chain systems (back office, reconciliation, dashboards) do not read `Interaction.locked` or `Vat.urns` for these accounts. The Notion design checked their implementation bytecode: none of them calls the CDP directly.
-
-## Open decisions
-
-- **Dust clisBNB.** About 0.15 clisBNB minted for the CDP dust positions cannot be burned after the upgrade, even once the Core Admin Safe has returned their slisBNB. To be accepted explicitly.
-- **Compiler.** V1 was built with 0.8.10 / london. This repo builds with 0.8.24 (cancun is the default for that compiler, and BSC supports it). The storage layout does not depend on the compiler.
-- **Licence.** `src/cdp/ceros/provider/SlisBNBProvider.sol` is derived from GPL-3.0-only V1 and keeps that header. The rest of this repo is MIT.
-- **Audit** before scheduling.
 
 ## Tests
 
