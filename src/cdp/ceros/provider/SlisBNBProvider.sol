@@ -17,7 +17,7 @@ import {BaseTokenProvider} from "./BaseTokenProvider.sol";
  * CDP exit (v2): the provider holds the slisBNB itself instead of depositing it into the CDP.
  * It serves exactly three accounts, hardcoded below. migrateFromCdp() moves their slisBNB out of the CDP
  * once, at upgrade. Amounts and rates do not change, so clisBNB is neither minted nor burned by it.
- * Other accounts (CDP dust) keep their CDP position: reads stay on dao.locked, release reverts.
+ * Other accounts (CDP dust) are not handled: their slisBNB stays in the CDP and cannot be withdrawn here.
  */
 contract SlisBNBProvider is BaseTokenProvider {
     using SafeERC20 for IERC20;
@@ -31,9 +31,9 @@ contract SlisBNBProvider is BaseTokenProvider {
     mapping(address => uint256) public userReservedLp;
     // total reserved lpToken
     uint256 public totalReservedLp;
-    // v2: slisBNB held by this contract per served account (read through userDeposit)
-    mapping(address => uint256) internal _userDeposit;
-    // v2: sum of _userDeposit; invariant: token.balanceOf(this) >= totalDeposit
+    // v2: slisBNB held by this contract per served account
+    mapping(address => uint256) public userDeposit;
+    // v2: sum of userDeposit; invariant: token.balanceOf(this) >= totalDeposit
     uint256 public totalDeposit;
 
     // v2: the only accounts this provider serves; changing the set needs a new implementation
@@ -112,19 +112,11 @@ contract SlisBNBProvider is BaseTokenProvider {
             uint256 before = IERC20(token).balanceOf(address(this));
             dao.withdraw(account, token, amount);
             require(IERC20(token).balanceOf(address(this)) - before == amount, "migrate amount mismatch");
-            _userDeposit[account] = amount;
+            userDeposit[account] = amount;
             totalDeposit += amount;
             emit Migrated(account, amount);
         }
         IERC20(token).safeApprove(address(dao), 0);
-    }
-
-    /**
-     * @dev slisBNB position of an account: what this contract holds for a served account,
-     *      the CDP `locked` balance for anyone else (CDP dust, unchanged from v1)
-     */
-    function userDeposit(address _account) public view returns (uint256) {
-        return _isServed(_account) ? _userDeposit[_account] : dao.locked(token, _account);
     }
 
     function _isServed(address _account) internal pure returns (bool) {
@@ -145,7 +137,7 @@ contract SlisBNBProvider is BaseTokenProvider {
     {
         // v2: the token stays in this contract; only the served accounts can deposit
         require(_isServed(_account), "not a served account");
-        _userDeposit[_account] += _amount;
+        userDeposit[_account] += _amount;
         totalDeposit += _amount;
         uint256 lpAmount = _amount * exchangeRate / RATE_DENOMINATOR;
         uint256 holderLpAmount = lpAmount * userLpRate / RATE_DENOMINATOR;
@@ -208,8 +200,8 @@ contract SlisBNBProvider is BaseTokenProvider {
      */
     function _withdrawLp(address _account, uint256 _amount) internal override {
         _syncLp(_account);
-        require(_userDeposit[_account] >= _amount, "insufficient deposit");
-        _userDeposit[_account] -= _amount;
+        require(userDeposit[_account] >= _amount, "insufficient deposit");
+        userDeposit[_account] -= _amount;
         totalDeposit -= _amount;
         _burnLp(_account, _amount);
     }
@@ -221,16 +213,10 @@ contract SlisBNBProvider is BaseTokenProvider {
 
     /**
      * @dev withdraw leftover collateral from Interaction contract; to support historical liquidated slisBnb urns
+     *      v2: disabled; CDP dust is not handled by this contract
      */
-    function withdrawLeftover() external whenNotPaused nonReentrant {
-        uint256 leftover = dao.free(token, msg.sender);
-        require(leftover > 0, "no leftover");
-        // v2: pay what actually arrived, not what the CDP reports, so the CDP cannot draw on the served deposits
-        uint256 before = IERC20(token).balanceOf(address(this));
-        dao.withdraw(msg.sender, token, leftover);
-        uint256 amount = IERC20(token).balanceOf(address(this)) - before;
-
-        IERC20(token).safeTransfer(msg.sender, amount);
+    function withdrawLeftover() external pure {
+        revert("withdrawLeftover disabled");
     }
 
     /// @dev v2: disabled; the CDP migrator could otherwise pull a served account's slisBNB
@@ -257,7 +243,7 @@ contract SlisBNBProvider is BaseTokenProvider {
      * @param _account lp token owner
      */
     function isUserLpSynced(address _account) external view returns (bool) {
-        uint256 totalTokenBalance = userDeposit(_account);
+        uint256 totalTokenBalance = userDeposit[_account];
         uint256 userTotalLp = totalTokenBalance * exchangeRate / RATE_DENOMINATOR;
         uint256 expectUserPart = userTotalLp * userLpRate / RATE_DENOMINATOR;
         uint256 expectReservePart = userTotalLp - expectUserPart;
@@ -271,7 +257,7 @@ contract SlisBNBProvider is BaseTokenProvider {
      * @param _account user address to sync
      */
     function _syncLp(address _account) internal override returns (bool) {
-        uint256 expectAllLp = userDeposit(_account) * exchangeRate / RATE_DENOMINATOR;
+        uint256 expectAllLp = userDeposit[_account] * exchangeRate / RATE_DENOMINATOR;
         uint256 expectUserLp = expectAllLp * userLpRate / RATE_DENOMINATOR;
         uint256 expectReserveLp = expectAllLp - expectUserLp;
         uint256 reservePart = userReservedLp[_account];

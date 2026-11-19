@@ -20,7 +20,7 @@ Today every `release` calls `Interaction._withdraw`, which calls `poke()`. That 
 
 clisBNB (slisBNBx, `0x4b30fcAA7945fE9fDEFD2895aae539ba102Ed6F6`) is not touched: same amounts, same rates, same delegation. Moving its minting to `SlisBNBxMinter` is left to a later phase.
 
-This follows the phase-1 design in Notion ("CDP slisBNB 退出设计（一期）"), narrowed to the three accounts: they are migrated once at upgrade, and the CDP dust is left where it is.
+This follows the phase-1 design in Notion ("CDP slisBNB 退出设计（一期）"), narrowed to the three accounts: they are migrated once at upgrade. The CDP dust is not handled: it stays in the CDP and nothing of it can be withdrawn through the provider. After the cut-over the provider calls the CDP only inside `migrateFromCdp`.
 
 ## Contract
 
@@ -30,7 +30,7 @@ Files under `src/cdp/` compile against OpenZeppelin 4.8.3 (`lib/openzeppelin-con
 
 **Storage.** The 23 V1 variables keep their slot, offset and type. Two variables are appended after `totalReservedLp`:
 
-1. `_userDeposit` (slot 405): slisBNB held for each served account, read through `userDeposit(address)`.
+1. `userDeposit` (slot 405, public mapping): slisBNB held for each served account.
 2. `totalDeposit` (slot 406): the sum. Invariant: `slisBNB.balanceOf(provider) >= totalDeposit`.
 
 **Served accounts.** Exactly three, hardcoded as `constant`: `ASTER`, `PENDLE` and `SIGMA`. They are in the bytecode, not in storage. Changing the set needs a new implementation through the TimeLock.
@@ -39,31 +39,28 @@ Files under `src/cdp/` compile against OpenZeppelin 4.8.3 (`lib/openzeppelin-con
 
 | Function | V1 | Now |
 |---|---|---|
-| `_provideCollateral` | `dao.deposit` | Requires a served account; records `_userDeposit` / `totalDeposit`; the slisBNB stays in the provider. clisBNB minting is unchanged. |
-| `_withdrawLp` (used by `release`) | `dao.withdraw` | Deducts `_userDeposit` / `totalDeposit`; reverts `insufficient deposit` if short. clisBNB burning is unchanged. |
-| `_syncLp`, `isUserLpSynced` | Reconcile against `dao.locked` | Reconcile against `userDeposit(account)` |
-| `userDeposit(address)` | none | `_userDeposit` for a served account, `dao.locked` for anyone else |
-| `withdrawLeftover` | Pays the amount `dao.withdraw` returns | Pays the provider's actual balance increase |
-| `liquidation` (both overloads), `daoBurn`, `releaseFor` | Callable by PROXY / the CDP migrator | Revert |
+| `_provideCollateral` | `dao.deposit` | Requires a served account; records `userDeposit` / `totalDeposit`; the slisBNB stays in the provider. clisBNB minting is unchanged. |
+| `_withdrawLp` (used by `release`) | `dao.withdraw` | Deducts `userDeposit` / `totalDeposit`; reverts `insufficient deposit` if short. clisBNB burning is unchanged. |
+| `_syncLp`, `isUserLpSynced` | Reconcile against `dao.locked` | Reconcile against `userDeposit[account]` (0 for any account other than the three) |
+| `liquidation` (both overloads), `daoBurn`, `releaseFor`, `withdrawLeftover` | Callable by PROXY / the CDP migrator | Revert |
 | `migrateFromCdp()` | none | One-time cut-over, see below |
 
 `provide`, `release`, `delegateAllTo` and `syncUserLp` are inherited unchanged and go through the functions above.
 
-**`migrateFromCdp()`.** Guarded by `reinitializer(2)`, `DEFAULT_ADMIN` and `nonReentrant`; it takes no arguments. For each served account it reads `amount = dao.locked(slisBNB, account)` and calls `dao.withdraw(account, slisBNB, amount)`. The provider is the registered helio provider, so the slisBNB is paid to the provider. It then checks that the balance increase equals `amount`, records `_userDeposit` and emits `Migrated(account, amount)`. An account with nothing locked is skipped, so an integrator that fully exits during the TimeLock delay does not block execution. Finally it sets the provider's slisBNB allowance to Interaction to 0. V1 approved `type(uint256).max` at initialize, which would otherwise let Interaction pull the slisBNB now held here.
+**`migrateFromCdp()`.** Guarded by `reinitializer(2)`, `DEFAULT_ADMIN` and `nonReentrant`; it takes no arguments. For each served account it reads `amount = dao.locked(slisBNB, account)` and calls `dao.withdraw(account, slisBNB, amount)`. The provider is the registered helio provider, so the slisBNB is paid to the provider. It then checks that the balance increase equals `amount`, records `userDeposit` and emits `Migrated(account, amount)`. An account with nothing locked is skipped, so an integrator that fully exits during the TimeLock delay does not block execution. Finally it sets the provider's slisBNB allowance to Interaction to 0. V1 approved `type(uint256).max` at initialize, which would otherwise let Interaction pull the slisBNB now held here.
 
 ### Why these choices
 
 - **`liquidation`, `daoBurn` and `releaseFor` must revert.** `liquidation` is an unconditional transfer for `PROXY` (`BaseTokenProvider.sol:245`), and `releaseFor` lets the CDP migrator withdraw for any account. Once the provider holds the slisBNB, either could move all of it. Today `PROXY` is held by the CDP Core Admin Safe `0xAca0ed4651ddA1F43f00363643CFa5EBF8774b37` and Interaction `0xB68443Ee3e828baD1526b3e0Bdf2Dfc6b1975ec4`. The ilk has no debt and no auctions, so nothing legitimate needs these paths.
-- **Zero trust in the CDP.** After the cut-over the provider never calls `dao.deposit`, and calls `dao.withdraw` only from `migrateFromCdp` and `withdrawLeftover`. Both count the provider's actual balance increase, not Interaction's return value. Both are `nonReentrant`, so a re-entrant call from Interaction cannot count the same transfer twice.
-- **`withdrawLeftover` stays.** It is how accounts with a CDP `free` (`Vat.gem`) balance from old liquidations get it back.
+- **Zero trust in the CDP.** After the cut-over the provider never calls the CDP. `migrateFromCdp` is the only function that does, once: it counts the provider's actual balance increase, not Interaction's return value, and is `nonReentrant`.
+- **`withdrawLeftover` is disabled.** It paid CDP `free` (`Vat.gem`) balances from old liquidations through the provider, which is CDP dust and not handled here.
 
 ## Effect on users
 
 - **Aster, Pendle, Sigma:** `Interaction.locked` and `Vat.urns` read 0 for them after the cut-over, including in emission snapshots. Their clisBNB balances, delegation and rates do not change. Sigma can deposit again; today the CDP whitelist keeps it redeem-only.
-- **CDP dust** (every other account with slisBNB in the CDP) is out of scope and keeps its CDP position:
-  - `userDeposit`, `isUserLpSynced` and `syncUserLp` still read `dao.locked`, as in V1.
-  - `release` reverts with `insufficient deposit`, and `provide` reverts with `not a served account`.
-  - `withdrawLeftover` still pays out a `free` balance.
+- **CDP dust** (every other account with slisBNB in the CDP) is not handled. Its slisBNB stays in the CDP and cannot be withdrawn through the provider:
+  - `release` reverts with `insufficient deposit`, `withdrawLeftover` reverts, and `provide` reverts with `not a served account`.
+  - Its `userDeposit` is 0, so `isUserLpSynced` reads false while it still holds clisBNB, and `syncUserLp` (permissionless, also called by the re-sync bot) burns that clisBNB. That is about 0.15 clisBNB over all dust accounts.
   - The Core Admin Safe can return their `ink` with `Vat.grab` + `GemJoin.exit` straight to the user. This must happen before any `removeCollateralType(slisBNB)`.
 
 ## Migration process
@@ -162,8 +159,7 @@ The clisBNB launchpool snapshot only reads provider events and delegation, so it
 - With every Interaction call mocked to revert: Aster asBNB mint/burn, Pendle and Sigma SY deposit/redeem and `delegateAllTo` all work.
 - Any other account cannot `provide`. `release` above `userDeposit` reverts.
 - `liquidation` (both overloads) and `daoBurn` from the PROXY holders, and `releaseFor`, revert.
-- A CDP dust account still reads `dao.locked`, keeps its sync status and cannot `release`.
-- `withdrawLeftover` pays only what actually arrived when Interaction over-reports.
+- A CDP dust account cannot `release` or `withdrawLeftover`; its slisBNB stays in the CDP.
 - Pendle and Sigma still work after 7 days with no oracle update.
 - A served account with nothing in the CDP is skipped. A short delivery by Interaction reverts the whole upgrade.
 - `migrateFromCdp` cannot run twice.

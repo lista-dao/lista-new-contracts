@@ -4,7 +4,7 @@ pragma solidity ^0.8.10;
 // Fork simulation of the SlisBNBProvider CDP exit (draft impl, not audited).
 //   TimeLock: provider.upgradeToAndCall(newImpl, migrateFromCdp())   (Aster / Pendle / Sigma hardcoded)
 // Then: their slisBNB sits in the provider, clisBNB is untouched, integrator flows never touch the CDP,
-// CDP PROXY / migrator paths cannot move funds, and CDP dust accounts behave as before.
+// CDP PROXY / migrator paths cannot move funds, and CDP dust cannot be withdrawn here.
 // Run: forge test --mc ProviderV2Migration -vv
 
 import "forge-std/Test.sol";
@@ -249,34 +249,20 @@ contract ProviderV2Migration is Test {
         _inv();
     }
 
-    // CDP dust: reads stay on dao.locked (same as v1), and it cannot draw on the provider's balance
-    function test_cdpDustUnchanged() public {
+    // CDP dust is not handled: none of it can be withdrawn through the provider
+    function test_cdpDustCannotWithdraw() public {
         uint256 l = I.locked(SLISBNB, DUST);
         require(l > 0, "dust account no longer in CDP; pick another");
-        bool s0 = IProv(PROVIDER).isUserLpSynced(DUST);
         _cutover();
-        assertEq(p.userDeposit(DUST), l, "dust reads CDP locked");
-        assertEq(IProv(PROVIDER).isUserLpSynced(DUST), s0, "dust sync status");
-        assertEq(I.locked(SLISBNB, DUST), l, "dust left in CDP");
-        vm.prank(DUST);
+        assertEq(p.userDeposit(DUST), 0, "dust has no deposit here");
+        uint256 pb = IERC20M(SLISBNB).balanceOf(PROVIDER);
+        vm.startPrank(DUST);
         vm.expectRevert(bytes("insufficient deposit"));
         IProv(PROVIDER).release(DUST, l);
-    }
-
-    // withdrawLeftover pays what actually arrived, not what the CDP returns
-    function test_withdrawLeftoverPaysOnlyWhatArrives() public {
-        _cutover();
-        vm.mockCall(address(I), abi.encodeCall(IInteractionM.free, (SLISBNB, user)), abi.encode(uint256(1 ether)));
-        vm.mockCall(
-            address(I),
-            abi.encodeWithSignature("withdraw(address,address,uint256)", user, SLISBNB, 1 ether),
-            abi.encode(uint256(1 ether))
-        );
-        uint256 pb = IERC20M(SLISBNB).balanceOf(PROVIDER);
-        uint256 ub = IERC20M(SLISBNB).balanceOf(user);
-        vm.prank(user);
+        vm.expectRevert(bytes("withdrawLeftover disabled"));
         IProv(PROVIDER).withdrawLeftover();
-        assertEq(IERC20M(SLISBNB).balanceOf(user), ub, "nothing paid");
+        vm.stopPrank();
+        assertEq(I.locked(SLISBNB, DUST), l, "dust left in CDP");
         assertEq(IERC20M(SLISBNB).balanceOf(PROVIDER), pb, "provider untouched");
         _inv();
     }
