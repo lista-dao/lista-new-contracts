@@ -37,6 +37,7 @@ contract SlisBNBProvider is BaseTokenProvider {
     uint256 public totalDeposit;
 
     // v2: the only accounts this provider serves; changing the set needs a new implementation
+    // v2: CDP dust (371 other positions, 0.244 slisBNB in total) is not handled: it stays in the CDP, its clisBNB is left as is, and none of it can be withdrawn here
     address public constant ASTER = 0xE861dd4b0AB6f3a42943e6EF441c3C611CD1bec2; // Aster YieldProxy
     address public constant PENDLE = 0x27FaF900007B4cBa7803000251ec96Bc69ff1BEa; // PendleClisBNBSY
     address public constant SIGMA = 0x8B98563d66B74e5a644BFf78fC72c86bbA847a29; // SigmaClisBNBSY
