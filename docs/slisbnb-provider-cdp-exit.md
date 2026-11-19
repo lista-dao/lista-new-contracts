@@ -6,12 +6,12 @@
 
 ## Why
 
-The CDP has been wound down. The slisBNB ilk has no debt, but about 81,880 slisBNB still sit in the GemJoin, almost all of it from three integrations. That slisBNB is exposed to the wards, upgrade rights and liquidation paths of the Vat, GemJoin and Interaction. The three reach the CDP through the CDP `SlisBNBProvider` proxy `0xfD31e1C5e5571f8E7FE318f80888C1e6da97819b`:
+The CDP has been wound down. The slisBNB ilk has no debt, but about 81,660 slisBNB still sit in the GemJoin, almost all of it from three integrations. That slisBNB is exposed to the wards, upgrade rights and liquidation paths of the Vat, GemJoin and Interaction. The three reach the CDP through the CDP `SlisBNBProvider` proxy `0xfD31e1C5e5571f8E7FE318f80888C1e6da97819b`:
 
-| Integrator | Contract that holds the position | How the provider address is set | slisBNB in the CDP |
+| Integrator | Contract that holds the position | How the provider address is set | slisBNB in the CDP (block 134,454,125) |
 |---|---|---|---|
-| Aster | YieldProxy `0xE861dd4b0AB6f3a42943e6EF441c3C611CD1bec2` | `setSlisBNBProvider` (Aster MANAGER) | 78,346.27 |
-| Pendle | PendleClisBNBSY `0x27FaF900007B4cBa7803000251ec96Bc69ff1BEa` | `constant` | 3,437.43 |
+| Aster | YieldProxy `0xE861dd4b0AB6f3a42943e6EF441c3C611CD1bec2` | `setSlisBNBProvider` (Aster MANAGER) | 78,160.39 |
+| Pendle | PendleClisBNBSY `0x27FaF900007B4cBa7803000251ec96Bc69ff1BEa` | `constant` | 3,402.10 |
 | Sigma | SigmaClisBNBSY `0x8B98563d66B74e5a644BFf78fC72c86bbA847a29` | `immutable` | 96.01 |
 
 Pendle and Sigma cannot point to a new address without redeploying, so the provider is upgraded in place. After the upgrade the provider holds these three accounts' slisBNB itself. The provider address and every method signature stay the same, so the integrators change nothing.
@@ -58,11 +58,12 @@ Files under `src/cdp/` compile against OpenZeppelin 4.8.3 (`lib/openzeppelin-con
 
 ## Effect on users
 
-- **Aster, Pendle, Sigma:** `Interaction.locked` and `Vat.urns` read 0 for them after the cut-over, including in emission snapshots. Their clisBNB balances, delegation and rates do not change. Sigma can deposit again; today the CDP whitelist keeps it redeem-only.
-- **CDP dust** (every other account with slisBNB in the CDP) is not handled. Its slisBNB stays in the CDP and cannot be withdrawn through the provider:
+- **Aster, Pendle, Sigma:** `Interaction.locked` and `Vat.urns` read 0 for them after the cut-over, including in emission snapshots. Their clisBNB balances, delegation and rates do not change. Sigma can deposit again, by decision. The CDP whitelist has kept it redeem-only since 2026-05-08, when `enableWhitelist` ran without Sigma on the list.
+- **CDP dust** (371 other positions, 0.244 slisBNB in total) is not handled. Its slisBNB stays in the CDP and cannot be withdrawn through the provider:
   - `release` reverts with `insufficient deposit`, `withdrawLeftover` reverts, and `provide` reverts with `not a served account`.
   - Its clisBNB is left as is: `_syncLp` returns early and `isUserLpSynced` reads true for any account other than the three, so `syncUserLp` (permissionless) reverts with `already synced` and burns nothing.
-  - The Core Admin Safe can return their `ink` with `Vat.grab` + `GemJoin.exit` straight to the user. This must happen before any `removeCollateralType(slisBNB)`.
+  - The Core Admin Safe can return it straight to the users: `ink` with `Vat.grab`, `gem` with `Vat.slip`, then `GemJoin.exit` (checked on a fork after the cut-over). This must happen before any `removeCollateralType(slisBNB)`.
+  - Its clisBNB (about 0.15) then has no burn path and stays outstanding.
 
 ## Migration process
 
@@ -150,7 +151,7 @@ The clisBNB launchpool snapshot only reads provider events and delegation, so it
 
 ## Open decisions
 
-- **Sigma deposits.** The new code lets Sigma deposit again. Business to confirm.
+- **Dust clisBNB.** About 0.15 clisBNB minted for the CDP dust positions cannot be burned after the upgrade, even once the Core Admin Safe has returned their slisBNB. To be accepted explicitly.
 - **Compiler.** V1 was built with 0.8.10 / london. This repo builds with 0.8.24 (cancun is the default for that compiler, and BSC supports it). The storage layout does not depend on the compiler.
 - **Licence.** `src/cdp/ceros/provider/SlisBNBProvider.sol` is derived from GPL-3.0-only V1 and keeps that header. The rest of this repo is MIT.
 - **Audit** before scheduling.
