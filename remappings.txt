@@ -1,3 +1,5 @@
 @src/=src
 @openzeppelin/contracts/=lib/openzeppelin-contracts-upgradeable/lib/openzeppelin-contracts/contracts/
 @openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/
+src/cdp/:@openzeppelin/contracts/=lib/openzeppelin-contracts-v4/contracts/
+src/cdp/:@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable-v4/contracts/
