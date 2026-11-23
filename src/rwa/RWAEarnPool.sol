@@ -80,6 +80,7 @@ contract RWAEarnPool is
   /* constants */
   bytes32 public constant MANAGER = keccak256("MANAGER"); // manager role
   bytes32 public constant PAUSER = keccak256("PAUSER"); // pauser role
+  bytes32 public constant BOT = keccak256("BOT"); // bot role
   uint256 public constant PRECISION = 1 ether; // precision
   uint256 constant REWARD_DURATION = 1 weeks; // reward duration is 1 week
   uint256 constant MAX_WITHDRAW_FEE_RATE = 0.1 ether; // max withdraw fee rate is 10%
@@ -251,6 +252,45 @@ contract RWAEarnPool is
     userTotalAssets -= amount;
 
     emit RequestWithdraw(msg.sender, receiver, currentBatchId, shares, amount, feeShares);
+  }
+
+  /**
+   * @dev request withdraw on behalf of users during wind-down. Burns each user's whole share balance
+   *      and queues a request to that same user, like `requestWithdraw(0, balanceOf[user], user)`
+   *      without the withdraw fee. Settles through `finishWithdraw` and `claimWithdraw(user, idx)`.
+   * @param users The users to exit; users with no shares are skipped
+   */
+  function withdrawFor(address[] calldata users) external onlyRole(BOT) whenNotPaused nonReentrant {
+    require(depositPaused, "deposit not paused");
+
+    for (uint256 i = 0; i < users.length; i++) {
+      address user = users[i];
+      uint256 shares = balanceOf[user];
+      if (shares == 0) {
+        continue;
+      }
+      uint256 amount = convertToAssets(shares);
+
+      // burn shares from user
+      _burn(user, shares);
+
+      // same batch rule as requestWithdraw
+      uint256 day = block.timestamp / 1 days;
+      if (day > lastDay) {
+        lastDay = day;
+        ++currentBatchId;
+      } else if (currentBatchId == confirmedBatchId) {
+        ++currentBatchId;
+      }
+
+      userWithdrawalRequests[user].push(
+        WithdrawalRequest({ batchId: currentBatchId, amount: amount, withdrawTime: block.timestamp })
+      );
+      totalWithdrawAmountInBatch[currentBatchId] += amount;
+      userTotalAssets -= amount;
+
+      emit RequestWithdraw(user, user, currentBatchId, shares, amount, 0);
+    }
   }
 
   /**
