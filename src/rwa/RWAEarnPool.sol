@@ -258,6 +258,7 @@ contract RWAEarnPool is
    * @dev request withdraw on behalf of users during wind-down. Burns each user's whole share balance
    *      and queues a request to that same user, like `requestWithdraw(0, balanceOf[user], user)`
    *      without the withdraw fee. Settles through `finishWithdraw` and `claimWithdraw(user, idx)`.
+   *      Reverts unless the adapter already holds enough assets to settle every open batch.
    * @param users The users to exit; users with no shares, or whose shares convert to zero assets, are skipped
    */
   function withdrawFor(address[] calldata users) external onlyRole(BOT) whenNotPaused nonReentrant {
@@ -295,6 +296,14 @@ contract RWAEarnPool is
 
       emit RequestWithdraw(user, user, currentBatchId, shares, amount, 0);
     }
+
+    // a batch is confirmed as a whole and in order: the adapter must be able to pay every open batch,
+    // otherwise the users burnt above could not claim until someone covers the shortfall
+    uint256 pending;
+    for (uint256 i = confirmedBatchId + 1; i <= currentBatchId; i++) {
+      pending += totalWithdrawAmountInBatch[i];
+    }
+    require(pending <= withdrawQuota + IERC20(asset).balanceOf(adapter), "insufficient funds to settle");
   }
 
   /**

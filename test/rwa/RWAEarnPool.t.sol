@@ -810,6 +810,9 @@ contract RWAEarnPoolTest is Test {
     users[2] = user2;
     users[3] = user; // duplicate: already exited, skipped
 
+    // the adapter has pulled the interest back from the vault: withdrawFor needs the batch funded up front
+    USD1.mint(adapter, 0.3 ether);
+
     vm.expectEmit(false, false, false, true);
     emit RWAEarnPool.RequestWithdraw(user, user, 1, sharesUser, expectUser, 0);
     vm.prank(bot);
@@ -837,7 +840,6 @@ contract RWAEarnPoolTest is Test {
     assertLe(batchTotal, 3.3 ether, "never more than deposits + interest");
 
     // settle through the normal adapter path, then the BOT claims on the users' behalf
-    USD1.mint(adapter, 1 ether); // interest the adapter would have pulled back from the vault
     vm.startPrank(adapter);
     USD1.approve(address(earnPool), type(uint256).max);
     earnPool.finishWithdraw(batchTotal);
@@ -862,6 +864,7 @@ contract RWAEarnPoolTest is Test {
     depositToEarnPool(user2, 1 ether);
     vm.prank(adapter);
     earnPool.notifyInterest(0.5 ether);
+    USD1.mint(adapter, 0.5 ether); // the interest, back from the vault
     skip(7 days);
     vm.prank(manager);
     earnPool.setDepositPaused(true);
@@ -937,5 +940,90 @@ contract RWAEarnPoolTest is Test {
     earnPool.claimWithdraw(user, 0);
     assertEq(USD1.balanceOf(feeReceiver), 0.1 ether, "fee receiver paid in the asset");
     assertEq(USD1.balanceOf(user), 0.9 ether, "user paid net of the fee");
+  }
+
+  function test_withdrawFor_revertsWhenAdapterCannotFundTheBatch() public {
+    address bot = _grantBot();
+    address whale = makeAddr("whale");
+    USD1.mint(user, 1 ether);
+    USD1.mint(whale, 100 ether);
+    depositToEarnPool(user, 1 ether);
+    depositToEarnPool(whale, 100 ether);
+    vm.prank(manager);
+    earnPool.setDepositPaused(true);
+
+    // the adapter only holds the small holder's assets
+    vm.prank(adapter);
+    USD1.transfer(makeAddr("elsewhere"), 100 ether);
+
+    address[] memory users = new address[](2);
+    users[0] = user;
+    users[1] = whale;
+
+    // listing the whale would leave the whole batch, the small holder included, unable to settle
+    vm.prank(bot);
+    vm.expectRevert("insufficient funds to settle");
+    earnPool.withdrawFor(users);
+    assertEq(earnPool.balanceOf(user), 1 ether, "user shares untouched");
+    assertEq(earnPool.balanceOf(whale), 100 ether, "whale shares untouched");
+    assertEq(earnPool.currentBatchId(), 0, "no batch opened");
+
+    // the funded holder alone goes through, settles and is paid
+    vm.prank(bot);
+    earnPool.withdrawFor(_one(user));
+    vm.startPrank(adapter);
+    USD1.approve(address(earnPool), type(uint256).max);
+    earnPool.finishWithdraw(1 ether);
+    vm.stopPrank();
+    assertEq(earnPool.confirmedBatchId(), earnPool.currentBatchId(), "batch confirmed");
+    earnPool.claimWithdraw(user, 0);
+    assertEq(USD1.balanceOf(user), 1 ether, "user paid");
+    assertEq(earnPool.balanceOf(whale), 100 ether, "whale still a shareholder");
+  }
+
+  function test_withdrawFor_countsOpenBatchesAndParkedQuota() public {
+    address bot = _grantBot();
+    address whale = makeAddr("whale");
+    USD1.mint(user, 1 ether);
+    USD1.mint(whale, 100 ether);
+    depositToEarnPool(user, 1 ether);
+    depositToEarnPool(whale, 100 ether);
+    vm.prank(manager);
+    earnPool.setDepositPaused(true);
+
+    // the whale requests by itself while the adapter only holds 61: its batch stays open
+    vm.startPrank(adapter);
+    USD1.transfer(makeAddr("elsewhere"), 40 ether);
+    USD1.approve(address(earnPool), type(uint256).max);
+    vm.stopPrank();
+    vm.prank(whale);
+    earnPool.requestWithdraw(0, 100 ether, whale);
+    skip(1 days);
+
+    // the user would queue behind that open batch: refused, even though 1 alone is covered
+    vm.prank(bot);
+    vm.expectRevert("insufficient funds to settle");
+    earnPool.withdrawFor(_one(user));
+
+    // funds already parked in the pool as quota count too: 60 parked + 1 on the adapter is still short of 101
+    vm.prank(adapter);
+    earnPool.finishWithdraw(60 ether);
+    assertEq(earnPool.confirmedBatchId(), 0, "whale batch still open");
+    assertEq(earnPool.withdrawQuota(), 60 ether, "parked quota");
+    vm.prank(bot);
+    vm.expectRevert("insufficient funds to settle");
+    earnPool.withdrawFor(_one(user));
+
+    // once the shortfall is on the adapter, the user is queued and both batches settle in order
+    USD1.mint(adapter, 40 ether);
+    vm.prank(bot);
+    earnPool.withdrawFor(_one(user));
+    vm.prank(adapter);
+    earnPool.finishWithdraw(41 ether);
+    assertEq(earnPool.confirmedBatchId(), earnPool.currentBatchId(), "both batches confirmed");
+    earnPool.claimWithdraw(whale, 0);
+    earnPool.claimWithdraw(user, 0);
+    assertEq(USD1.balanceOf(whale), 100 ether, "whale paid");
+    assertEq(USD1.balanceOf(user), 1 ether, "user paid");
   }
 }
