@@ -258,7 +258,7 @@ contract RWAEarnPool is
    * @dev request withdraw on behalf of users during wind-down. Burns each user's whole share balance
    *      and queues a request to that same user, like `requestWithdraw(0, balanceOf[user], user)`
    *      without the withdraw fee. Settles through `finishWithdraw` and `claimWithdraw(user, idx)`.
-   * @param users The users to exit; users with no shares are skipped
+   * @param users The users to exit; users with no shares, or whose shares convert to zero assets, are skipped
    */
   function withdrawFor(address[] calldata users) external onlyRole(BOT) whenNotPaused nonReentrant {
     require(depositPaused, "deposit not paused");
@@ -270,6 +270,10 @@ contract RWAEarnPool is
         continue;
       }
       uint256 amount = convertToAssets(shares);
+      // dust that rounds down to zero assets: nothing to pay out
+      if (amount == 0) {
+        continue;
+      }
 
       // burn shares from user
       _burn(user, shares);

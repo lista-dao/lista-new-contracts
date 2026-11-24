@@ -9,6 +9,8 @@ import "../../src/mock/MockERC20.sol";
 import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 contract RWAEarnPoolTest is Test {
+  using stdStorage for StdStorage;
+
   RWAEarnPool earnPool;
   MockERC20 USD1;
   address admin;
@@ -736,6 +738,46 @@ contract RWAEarnPoolTest is Test {
     vm.prank(bot);
     vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
     earnPool.withdrawFor(_one(user));
+  }
+
+  function test_withdrawFor_skipsDustThatRoundsToZero() public {
+    address bot = _grantBot();
+    address dustUser = makeAddr("dustUser");
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+    vm.prank(user);
+    earnPool.transfer(dustUser, 1);
+    vm.prank(manager);
+    earnPool.setDepositPaused(true);
+
+    // put the share price below 1, which the pool never does on its own, so that 1 wei of shares is worth 0
+    stdstore.target(address(earnPool)).sig("userTotalAssets()").checked_write(0.5 ether);
+    assertEq(earnPool.convertToAssets(1), 0, "dust rounds to zero");
+    uint256 batchBefore = earnPool.currentBatchId();
+
+    // a list of nothing but dust changes nothing
+    vm.prank(bot);
+    earnPool.withdrawFor(_one(dustUser));
+    assertEq(earnPool.balanceOf(dustUser), 1, "dust shares not burnt");
+    assertEq(earnPool.getUserWithdrawalRequests(dustUser).length, 0, "no empty request");
+    assertEq(earnPool.currentBatchId(), batchBefore, "no batch opened");
+
+    // next to a real holder, the dust is skipped and the holder is exited as usual
+    address[] memory users = new address[](2);
+    users[0] = dustUser;
+    users[1] = user;
+    uint256 expectUser = earnPool.convertToAssets(1 ether - 1);
+    vm.prank(bot);
+    earnPool.withdrawFor(users);
+
+    assertEq(earnPool.balanceOf(dustUser), 1, "dust shares still there");
+    assertEq(earnPool.getUserWithdrawalRequests(dustUser).length, 0, "still no request");
+    assertEq(earnPool.balanceOf(user), 0, "user exited");
+    RWAEarnPool.WithdrawalRequest[] memory r = earnPool.getUserWithdrawalRequests(user);
+    assertEq(r.length, 1, "user request");
+    assertEq(r[0].amount, expectUser, "user amount");
+    assertEq(earnPool.currentBatchId(), batchBefore + 1, "one batch for the real request");
+    assertEq(earnPool.totalWithdrawAmountInBatch(batchBefore + 1), expectUser, "batch holds only the real request");
   }
 
   function test_withdrawFor_exitsEveryUser_noFee_skipsEmpty() public {
