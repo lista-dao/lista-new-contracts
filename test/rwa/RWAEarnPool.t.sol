@@ -9,6 +9,8 @@ import "../../src/mock/MockERC20.sol";
 import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 contract RWAEarnPoolTest is Test {
+  using stdStorage for StdStorage;
+
   RWAEarnPool earnPool;
   MockERC20 USD1;
   address admin;
@@ -665,5 +667,363 @@ contract RWAEarnPoolTest is Test {
     earnPool.setDepositPaused(false);
     depositToEarnPool(user, 1 ether);
     assertEq(earnPool.balanceOf(user), 1 ether, "user shares after redeposit");
+  }
+
+  /* ---------------- wind-down: BOT withdrawFor ---------------- */
+
+  function _grantBot() private returns (address bot) {
+    bot = makeAddr("bot");
+    bytes32 botRole = earnPool.BOT(); // read before the prank: a staticcall would consume it
+    vm.prank(admin);
+    earnPool.grantRole(botRole, bot);
+  }
+
+  function _one(address a) private pure returns (address[] memory users) {
+    users = new address[](1);
+    users[0] = a;
+  }
+
+  function test_withdrawFor_onlyBot() public {
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+    vm.prank(manager);
+    earnPool.setDepositPaused(true);
+
+    // neither a random caller, the manager nor the admin may force exits
+    vm.expectRevert();
+    earnPool.withdrawFor(_one(user));
+    vm.prank(manager);
+    vm.expectRevert();
+    earnPool.withdrawFor(_one(user));
+    vm.prank(admin);
+    vm.expectRevert();
+    earnPool.withdrawFor(_one(user));
+    assertEq(earnPool.balanceOf(user), 1 ether, "user shares untouched");
+  }
+
+  function test_withdrawFor_requiresDepositPaused() public {
+    address bot = _grantBot();
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+
+    vm.prank(bot);
+    vm.expectRevert("deposit not paused");
+    earnPool.withdrawFor(_one(user));
+  }
+
+  function test_withdrawFor_emptyOrShareLessList_isNoop() public {
+    address bot = _grantBot();
+    vm.prank(manager);
+    earnPool.setDepositPaused(true);
+    uint256 batchBefore = earnPool.currentBatchId();
+
+    vm.startPrank(bot);
+    earnPool.withdrawFor(new address[](0));
+    earnPool.withdrawFor(_one(makeAddr("empty")));
+    vm.stopPrank();
+
+    assertEq(earnPool.currentBatchId(), batchBefore, "no batch opened for nothing");
+    assertEq(earnPool.getUserWithdrawalRequests(makeAddr("empty")).length, 0, "no request queued");
+  }
+
+  function test_withdrawFor_revertsWhenPaused() public {
+    address bot = _grantBot();
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+    vm.prank(manager);
+    earnPool.setDepositPaused(true);
+    vm.prank(pauser);
+    earnPool.pause();
+
+    vm.prank(bot);
+    vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
+    earnPool.withdrawFor(_one(user));
+  }
+
+  function test_withdrawFor_skipsDustThatRoundsToZero() public {
+    address bot = _grantBot();
+    address dustUser = makeAddr("dustUser");
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+    vm.prank(user);
+    earnPool.transfer(dustUser, 1);
+    vm.prank(manager);
+    earnPool.setDepositPaused(true);
+
+    // put the share price below 1, which the pool never does on its own, so that 1 wei of shares is worth 0
+    stdstore.target(address(earnPool)).sig("userTotalAssets()").checked_write(0.5 ether);
+    assertEq(earnPool.convertToAssets(1), 0, "dust rounds to zero");
+    uint256 batchBefore = earnPool.currentBatchId();
+
+    // a list of nothing but dust changes nothing
+    vm.prank(bot);
+    earnPool.withdrawFor(_one(dustUser));
+    assertEq(earnPool.balanceOf(dustUser), 1, "dust shares not burnt");
+    assertEq(earnPool.getUserWithdrawalRequests(dustUser).length, 0, "no empty request");
+    assertEq(earnPool.currentBatchId(), batchBefore, "no batch opened");
+
+    // next to a real holder, the dust is skipped and the holder is exited as usual
+    address[] memory users = new address[](2);
+    users[0] = dustUser;
+    users[1] = user;
+    uint256 expectUser = earnPool.convertToAssets(1 ether - 1);
+    vm.prank(bot);
+    earnPool.withdrawFor(users);
+
+    assertEq(earnPool.balanceOf(dustUser), 1, "dust shares still there");
+    assertEq(earnPool.getUserWithdrawalRequests(dustUser).length, 0, "still no request");
+    assertEq(earnPool.balanceOf(user), 0, "user exited");
+    RWAEarnPool.WithdrawalRequest[] memory r = earnPool.getUserWithdrawalRequests(user);
+    assertEq(r.length, 1, "user request");
+    assertEq(r[0].amount, expectUser, "user amount");
+    assertEq(earnPool.currentBatchId(), batchBefore + 1, "one batch for the real request");
+    assertEq(earnPool.totalWithdrawAmountInBatch(batchBefore + 1), expectUser, "batch holds only the real request");
+  }
+
+  function test_withdrawFor_exitsEveryUser_noFee_skipsEmpty() public {
+    address bot = _grantBot();
+    address user2 = makeAddr("user2");
+    address empty = makeAddr("empty");
+    USD1.mint(user, 1 ether);
+    USD1.mint(user2, 2 ether);
+    depositToEarnPool(user, 1 ether);
+    depositToEarnPool(user2, 2 ether);
+
+    // accrue interest so shares != assets, and switch on a withdraw fee that must NOT apply
+    vm.prank(adapter);
+    earnPool.notifyInterest(0.3 ether);
+    skip(7 days);
+    vm.startPrank(manager);
+    earnPool.setWithdrawFeeRate(0.1 ether);
+    earnPool.setFeeReceiver(feeReceiver);
+    earnPool.setDepositPaused(true);
+    vm.stopPrank();
+
+    uint256 sharesUser = earnPool.balanceOf(user);
+    uint256 sharesUser2 = earnPool.balanceOf(user2);
+    uint256 expectUser = earnPool.convertToAssets(sharesUser);
+    assertGt(expectUser, 1 ether, "user is owed principal + interest");
+
+    address[] memory users = new address[](4);
+    users[0] = user;
+    users[1] = empty; // no shares: skipped, not reverted
+    users[2] = user2;
+    users[3] = user; // duplicate: already exited, skipped
+
+    // the adapter has pulled the interest back from the vault: withdrawFor needs the batch funded up front
+    USD1.mint(adapter, 0.3 ether);
+
+    vm.expectEmit(false, false, false, true);
+    emit RWAEarnPool.RequestWithdraw(user, user, 1, sharesUser, expectUser, 0);
+    vm.prank(bot);
+    earnPool.withdrawFor(users);
+
+    // all shares burnt, nothing skimmed to the fee receiver
+    assertEq(earnPool.balanceOf(user), 0, "user shares");
+    assertEq(earnPool.balanceOf(user2), 0, "user2 shares");
+    assertEq(earnPool.balanceOf(feeReceiver), 0, "no fee shares on forced exit");
+    assertEq(earnPool.totalSupply(), 0, "totalSupply");
+    assertLe(earnPool.userTotalAssets(), 2, "userTotalAssets drained up to rounding dust");
+
+    // one request each, in the same batch, addressed to the user themself
+    RWAEarnPool.WithdrawalRequest[] memory r1 = earnPool.getUserWithdrawalRequests(user);
+    RWAEarnPool.WithdrawalRequest[] memory r2 = earnPool.getUserWithdrawalRequests(user2);
+    assertEq(r1.length, 1, "user request count (duplicate ignored)");
+    assertEq(r2.length, 1, "user2 request count");
+    assertEq(earnPool.getUserWithdrawalRequests(empty).length, 0, "empty user has no request");
+    assertEq(r1[0].amount, expectUser, "user request amount");
+    assertApproxEqAbs(r2[0].amount, 2 * expectUser, 2, "user2 holds twice the shares");
+    assertEq(r1[0].batchId, earnPool.currentBatchId(), "user batch");
+    assertEq(r2[0].batchId, earnPool.currentBatchId(), "user2 batch");
+    uint256 batchTotal = earnPool.totalWithdrawAmountInBatch(earnPool.currentBatchId());
+    assertEq(batchTotal, r1[0].amount + r2[0].amount, "batch total");
+    assertLe(batchTotal, 3.3 ether, "never more than deposits + interest");
+
+    // settle through the normal adapter path, then the BOT claims on the users' behalf
+    vm.startPrank(adapter);
+    USD1.approve(address(earnPool), type(uint256).max);
+    earnPool.finishWithdraw(batchTotal);
+    vm.stopPrank();
+    assertEq(earnPool.confirmedBatchId(), earnPool.currentBatchId(), "batch confirmed");
+
+    vm.startPrank(bot);
+    earnPool.claimWithdraw(user, 0);
+    earnPool.claimWithdraw(user2, 0);
+    vm.stopPrank();
+    assertEq(USD1.balanceOf(user), r1[0].amount, "user received principal + interest");
+    assertEq(USD1.balanceOf(user2), r2[0].amount, "user2 received principal + interest");
+    assertEq(USD1.balanceOf(bot), 0, "bot received nothing");
+  }
+
+  function test_withdrawFor_matchesUserRequestWithdraw_whenNoFee() public {
+    address bot = _grantBot();
+    address user2 = makeAddr("user2");
+    USD1.mint(user, 1 ether);
+    USD1.mint(user2, 1 ether);
+    depositToEarnPool(user, 1 ether);
+    depositToEarnPool(user2, 1 ether);
+    vm.prank(adapter);
+    earnPool.notifyInterest(0.5 ether);
+    USD1.mint(adapter, 0.5 ether); // the interest, back from the vault
+    skip(7 days);
+    vm.prank(manager);
+    earnPool.setDepositPaused(true);
+
+    // user exits themself, bot exits user2 in the same block: same payout up to rounding, same batch
+    vm.prank(user);
+    earnPool.requestWithdraw(0, 1 ether, user);
+    vm.prank(bot);
+    earnPool.withdrawFor(_one(user2));
+
+    RWAEarnPool.WithdrawalRequest[] memory r1 = earnPool.getUserWithdrawalRequests(user);
+    RWAEarnPool.WithdrawalRequest[] memory r2 = earnPool.getUserWithdrawalRequests(user2);
+    assertApproxEqAbs(r1[0].amount, r2[0].amount, 1, "same payout");
+    assertEq(r1[0].batchId, r2[0].batchId, "same batch");
+  }
+
+  function test_withdrawFor_keepsEarlierRequests() public {
+    address bot = _grantBot();
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+    vm.prank(manager);
+    earnPool.setDepositPaused(true);
+
+    // the user asked for part of it and never claimed; the bot exits the rest
+    vm.prank(user);
+    earnPool.requestWithdraw(0, 0.4 ether, user);
+    vm.prank(bot);
+    earnPool.withdrawFor(_one(user));
+
+    RWAEarnPool.WithdrawalRequest[] memory r = earnPool.getUserWithdrawalRequests(user);
+    assertEq(r.length, 2, "old request kept, new one appended");
+    assertEq(r[0].amount, 0.4 ether, "old request");
+    assertEq(r[1].amount, 0.6 ether, "forced request covers the rest");
+    assertEq(earnPool.balanceOf(user), 0, "no shares left");
+
+    vm.startPrank(adapter);
+    USD1.approve(address(earnPool), type(uint256).max);
+    earnPool.finishWithdraw(1 ether);
+    vm.stopPrank();
+
+    // anyone can claim both for the user; claiming idx 0 moves the last request into its place
+    earnPool.claimWithdraw(user, 0);
+    earnPool.claimWithdraw(user, 0);
+    assertEq(USD1.balanceOf(user), 1 ether, "user received everything");
+    assertEq(earnPool.getUserWithdrawalRequests(user).length, 0, "no requests left");
+  }
+
+  function test_withdrawFor_exitsTheFeeReceiver() public {
+    address bot = _grantBot();
+    USD1.mint(user, 1 ether);
+    depositToEarnPool(user, 1 ether);
+    vm.startPrank(manager);
+    earnPool.setWithdrawFeeRate(0.1 ether);
+    earnPool.setFeeReceiver(feeReceiver);
+    earnPool.setDepositPaused(true);
+    vm.stopPrank();
+
+    // a user exit leaves fee shares on the fee receiver, which may be a contract that cannot request
+    vm.prank(user);
+    earnPool.requestWithdraw(0, 1 ether, user);
+    assertEq(earnPool.balanceOf(feeReceiver), 0.1 ether, "fee shares");
+
+    vm.prank(bot);
+    earnPool.withdrawFor(_one(feeReceiver));
+    assertEq(earnPool.balanceOf(feeReceiver), 0, "fee shares burnt");
+    assertEq(earnPool.totalSupply(), 0, "totalSupply");
+
+    vm.startPrank(adapter);
+    USD1.approve(address(earnPool), type(uint256).max);
+    earnPool.finishWithdraw(1 ether);
+    vm.stopPrank();
+    earnPool.claimWithdraw(feeReceiver, 0);
+    earnPool.claimWithdraw(user, 0);
+    assertEq(USD1.balanceOf(feeReceiver), 0.1 ether, "fee receiver paid in the asset");
+    assertEq(USD1.balanceOf(user), 0.9 ether, "user paid net of the fee");
+  }
+
+  function test_withdrawFor_revertsWhenAdapterCannotFundTheBatch() public {
+    address bot = _grantBot();
+    address whale = makeAddr("whale");
+    USD1.mint(user, 1 ether);
+    USD1.mint(whale, 100 ether);
+    depositToEarnPool(user, 1 ether);
+    depositToEarnPool(whale, 100 ether);
+    vm.prank(manager);
+    earnPool.setDepositPaused(true);
+
+    // the adapter only holds the small holder's assets
+    vm.prank(adapter);
+    USD1.transfer(makeAddr("elsewhere"), 100 ether);
+
+    address[] memory users = new address[](2);
+    users[0] = user;
+    users[1] = whale;
+
+    // listing the whale would leave the whole batch, the small holder included, unable to settle
+    vm.prank(bot);
+    vm.expectRevert("insufficient funds to settle");
+    earnPool.withdrawFor(users);
+    assertEq(earnPool.balanceOf(user), 1 ether, "user shares untouched");
+    assertEq(earnPool.balanceOf(whale), 100 ether, "whale shares untouched");
+    assertEq(earnPool.currentBatchId(), 0, "no batch opened");
+
+    // the funded holder alone goes through, settles and is paid
+    vm.prank(bot);
+    earnPool.withdrawFor(_one(user));
+    vm.startPrank(adapter);
+    USD1.approve(address(earnPool), type(uint256).max);
+    earnPool.finishWithdraw(1 ether);
+    vm.stopPrank();
+    assertEq(earnPool.confirmedBatchId(), earnPool.currentBatchId(), "batch confirmed");
+    earnPool.claimWithdraw(user, 0);
+    assertEq(USD1.balanceOf(user), 1 ether, "user paid");
+    assertEq(earnPool.balanceOf(whale), 100 ether, "whale still a shareholder");
+  }
+
+  function test_withdrawFor_countsOpenBatchesAndParkedQuota() public {
+    address bot = _grantBot();
+    address whale = makeAddr("whale");
+    USD1.mint(user, 1 ether);
+    USD1.mint(whale, 100 ether);
+    depositToEarnPool(user, 1 ether);
+    depositToEarnPool(whale, 100 ether);
+    vm.prank(manager);
+    earnPool.setDepositPaused(true);
+
+    // the whale requests by itself while the adapter only holds 61: its batch stays open
+    vm.startPrank(adapter);
+    USD1.transfer(makeAddr("elsewhere"), 40 ether);
+    USD1.approve(address(earnPool), type(uint256).max);
+    vm.stopPrank();
+    vm.prank(whale);
+    earnPool.requestWithdraw(0, 100 ether, whale);
+    skip(1 days);
+
+    // the user would queue behind that open batch: refused, even though 1 alone is covered
+    vm.prank(bot);
+    vm.expectRevert("insufficient funds to settle");
+    earnPool.withdrawFor(_one(user));
+
+    // funds already parked in the pool as quota count too: 60 parked + 1 on the adapter is still short of 101
+    vm.prank(adapter);
+    earnPool.finishWithdraw(60 ether);
+    assertEq(earnPool.confirmedBatchId(), 0, "whale batch still open");
+    assertEq(earnPool.withdrawQuota(), 60 ether, "parked quota");
+    vm.prank(bot);
+    vm.expectRevert("insufficient funds to settle");
+    earnPool.withdrawFor(_one(user));
+
+    // once the shortfall is on the adapter, the user is queued and both batches settle in order
+    USD1.mint(adapter, 40 ether);
+    vm.prank(bot);
+    earnPool.withdrawFor(_one(user));
+    vm.prank(adapter);
+    earnPool.finishWithdraw(41 ether);
+    assertEq(earnPool.confirmedBatchId(), earnPool.currentBatchId(), "both batches confirmed");
+    earnPool.claimWithdraw(whale, 0);
+    earnPool.claimWithdraw(user, 0);
+    assertEq(USD1.balanceOf(whale), 100 ether, "whale paid");
+    assertEq(USD1.balanceOf(user), 1 ether, "user paid");
   }
 }
