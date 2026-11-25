@@ -43,7 +43,7 @@ interface IMultiSend {
  *    is allowlisted (emergency; never for swapOwner).
  *  - Config: Safe settings (guard, modules, fallback handler, adding owners, lowering threshold) and loosening
  *    guard lists: 2 auditors + 24h from the second approval, no bypass.
- * Owners alone can replace an auditor or change the guard after a 7-day escape delay; only the Safe can cancel it. Gas refunds and delegatecalls other than to the constructor-fixed targets are always blocked.
+ * Owners alone (no executor, no auditor) can replace an auditor or change the guard after a 7-day escape delay; only the Safe can cancel it. Gas refunds and delegatecalls other than to the constructor-fixed targets are always blocked.
  */
 contract SafeGuard is BaseTransactionGuard {
   using EnumerableSet for EnumerableSet.AddressSet;
@@ -380,13 +380,15 @@ contract SafeGuard is BaseTransactionGuard {
     bytes memory,
     address msgSender
   ) external override {
-    if (_executors[msg.sender].length() != 0) {
-      require(_executors[msg.sender].contains(msgSender), "SafeGuard: NotExecutor");
-    }
     // Safe pays (gasUsed + baseGas) * gasPrice of gasToken to refundReceiver when gasPrice > 0. Never allow it.
     require(gasPrice == 0, "SafeGuard: NoRefund");
     if (operation == Enum.Operation.DelegateCall) {
       require(delegateAllowed[to], "SafeGuard: DelegateCallBlocked");
+    }
+    // the escape hatch needs the owners only: no executor, no auditor
+    if (value == 0 && operation == Enum.Operation.Call && _exempt(to, data)) return;
+    if (_executors[msg.sender].length() != 0) {
+      require(_executors[msg.sender].contains(msgSender), "SafeGuard: NotExecutor");
     }
     if (_auditors[msg.sender].length() == 0) return;
 
@@ -401,7 +403,6 @@ contract SafeGuard is BaseTransactionGuard {
       gasToken == address(0) &&
       refundReceiver == address(0)
     ) return;
-    if (value == 0 && operation == Enum.Operation.Call && _exempt(to, data)) return;
 
     bytes32 hash = encodeTransactionData(
       to,
@@ -431,7 +432,7 @@ contract SafeGuard is BaseTransactionGuard {
     );
   }
 
-  /// @dev Escape calls on this guard, and a matured escape `setGuard` on the Safe, need no auditor approval.
+  /// @dev Escape calls on this guard, and a matured escape `setGuard` on the Safe, need neither an executor nor an auditor.
   function _exempt(address to, bytes calldata data) private returns (bool) {
     if (data.length < 4) return false;
     bytes4 sel = bytes4(data[:4]);

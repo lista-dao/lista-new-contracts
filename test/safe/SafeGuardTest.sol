@@ -628,6 +628,26 @@ contract SGTest is Test {
     _exec(_onGuard(abi.encodeCall(SafeGuard.cancelEscape, (bytes32(0)))));
   }
 
+  function test_escapeNeedsNoExecutor() public {
+    // every executor lost: the owners still reach the escape hatch
+    _execAs(stranger, _onGuard(abi.encodeCall(SafeGuard.proposeAuditorReplacement, (auditorA, target))));
+    _execAs(stranger, _onGuard(abi.encodeCall(SafeGuard.proposeGuardChange, (address(0)))));
+    _execAs(stranger, _onGuard(abi.encodeCall(SafeGuard.cancelEscape, (bytes32(0)))));
+
+    vm.prank(address(safe));
+    guard.proposeGuardChange(address(0));
+    vm.warp(block.timestamp + 7 days);
+    _execAs(stranger, _self(abi.encodeWithSignature("setGuard(address)", address(0))));
+    assertEq(guard.escapeEta(address(safe), guard.guardEscapeId(address(0))), 0);
+
+    // anything else still needs an executor
+    vm.expectRevert(bytes("SafeGuard: NotExecutor"));
+    _execAs(stranger, _self(""));
+    bytes memory padded = abi.encodePacked(abi.encodeCall(SafeGuard.proposeGuardChange, (address(0))), uint8(0));
+    vm.expectRevert(bytes("SafeGuard: NotExecutor"));
+    _execAs(stranger, _onGuard(padded));
+  }
+
   function test_escapeExemptionIsExact() public {
     _execReverts(_onGuard(abi.encodeCall(SafeGuard.removeAuditor, (auditorA))), "SafeGuard: NotApproved");
     bytes memory padded = abi.encodePacked(abi.encodeCall(SafeGuard.proposeGuardChange, (address(0))), uint8(0));
