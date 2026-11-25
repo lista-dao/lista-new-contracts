@@ -13,6 +13,11 @@ import {BaseTokenProvider} from "./BaseTokenProvider.sol";
  * @dev In comparison to BaseLpTokenProvider, SlisBNBLpProvider has two major differences:
  * 1. token to lpToken rate is not 1:1 and modifiable
  * 2. user's lpToken will be minted to itself(delegatee) and lpReserveAddress according to userLpRate
+ *
+ * CDP exit (v2): the provider holds the slisBNB itself instead of depositing it into the CDP.
+ * It serves exactly three accounts, hardcoded below. migrateFromCdp() moves their slisBNB out of the CDP
+ * once, at upgrade. Amounts and rates do not change, so clisBNB is neither minted nor burned by it.
+ * Other accounts (CDP dust) are not handled: their slisBNB stays in the CDP and cannot be withdrawn here.
  */
 contract SlisBNBProvider is BaseTokenProvider {
     using SafeERC20 for IERC20;
@@ -26,6 +31,16 @@ contract SlisBNBProvider is BaseTokenProvider {
     mapping(address => uint256) public userReservedLp;
     // total reserved lpToken
     uint256 public totalReservedLp;
+    // v2: slisBNB held by this contract per served account
+    mapping(address => uint256) public userDeposit;
+    // v2: sum of userDeposit; invariant: token.balanceOf(this) >= totalDeposit
+    uint256 public totalDeposit;
+
+    // v2: the only accounts this provider serves; changing the set needs a new implementation
+    // v2: CDP dust (371 other positions, 0.244 slisBNB in total) is not handled: it stays in the CDP, its clisBNB is left as is, and none of it can be withdrawn here
+    address public constant ASTER = 0xE861dd4b0AB6f3a42943e6EF441c3C611CD1bec2; // Aster YieldProxy
+    address public constant PENDLE = 0x27FaF900007B4cBa7803000251ec96Bc69ff1BEa; // PendleClisBNBSY
+    address public constant SIGMA = 0x8B98563d66B74e5a644BFf78fC72c86bbA847a29; // SigmaClisBNBSY
 
     /**
      * Events
@@ -34,6 +49,7 @@ contract SlisBNBProvider is BaseTokenProvider {
     event ChangeExchangeRate(uint128 rate);
     event ChangeUserLpRate(uint128 rate);
     event ChangeLpReserveAddress(address newAddress);
+    event Migrated(address indexed account, uint256 amount);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -83,7 +99,38 @@ contract SlisBNBProvider is BaseTokenProvider {
     }
 
     /**
-     * @dev deposit token to dao, mint lp tokens to delegateTo according to rate
+     * @dev v2 cut-over, run once through upgradeToAndCall by DEFAULT_ADMIN (TimeLock).
+     *      Moves each served account's whole CDP `locked` slisBNB into this contract. Only the balance delta
+     *      is trusted. An account with nothing locked is skipped, so an integrator that fully exits during
+     *      the TimeLock delay does not block execution. The slisBNB allowance to the CDP is revoked.
+     */
+    function migrateFromCdp() external reinitializer(2) onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+        address[3] memory accounts = [ASTER, PENDLE, SIGMA];
+        for (uint256 i = 0; i < 3; i++) {
+            address account = accounts[i];
+            uint256 amount = dao.locked(token, account);
+            if (amount == 0) continue;
+            uint256 before = IERC20(token).balanceOf(address(this));
+            dao.withdraw(account, token, amount);
+            require(IERC20(token).balanceOf(address(this)) - before == amount, "migrate amount mismatch");
+            userDeposit[account] = amount;
+            totalDeposit += amount;
+            emit Migrated(account, amount);
+        }
+        IERC20(token).safeApprove(address(dao), 0);
+    }
+
+    function _isServed(address _account) internal pure returns (bool) {
+        return _account == ASTER || _account == PENDLE || _account == SIGMA;
+    }
+
+    /// @dev v2: userDeposit is filled only by migrateFromCdp; until it has run, nothing is synced, deposited or released
+    function _migrated() internal view returns (bool) {
+        return _getInitializedVersion() >= 2;
+    }
+
+    /**
+     * @dev v2: keep the token here and record it; mint lp tokens to delegateTo according to rate
      *
      * @param _account account who deposit token
      * @param _holder lp token holder
@@ -94,9 +141,11 @@ contract SlisBNBProvider is BaseTokenProvider {
         override
         returns (uint256)
     {
-        // all deposit data will be recorded on behalf of `_account`
-        // lpTokenHolder can be account or delegateTo
-        dao.deposit(_account, token, _amount);
+        // v2: the token stays in this contract; only the served accounts can deposit
+        require(_migrated(), "not migrated");
+        require(_isServed(_account), "not a served account");
+        userDeposit[_account] += _amount;
+        totalDeposit += _amount;
         uint256 lpAmount = _amount * exchangeRate / RATE_DENOMINATOR;
         uint256 holderLpAmount = lpAmount * userLpRate / RATE_DENOMINATOR;
         if (holderLpAmount > 0) {
@@ -153,6 +202,18 @@ contract SlisBNBProvider is BaseTokenProvider {
         }
     }
 
+    /**
+     * @dev v2: pay out of this contract's records instead of dao.withdraw
+     */
+    function _withdrawLp(address _account, uint256 _amount) internal override {
+        require(_migrated(), "not migrated");
+        _syncLp(_account);
+        require(userDeposit[_account] >= _amount, "insufficient deposit");
+        userDeposit[_account] -= _amount;
+        totalDeposit -= _amount;
+        _burnLp(_account, _amount);
+    }
+
     function syncUserLp(address _account) external {
         bool synced = _syncLp(_account);
         require(synced, "already synced");
@@ -160,30 +221,28 @@ contract SlisBNBProvider is BaseTokenProvider {
 
     /**
      * @dev withdraw leftover collateral from Interaction contract; to support historical liquidated slisBnb urns
+     *      v2: disabled; CDP dust is not handled by this contract
      */
-    function withdrawLeftover() external whenNotPaused nonReentrant {
-        uint256 leftover = dao.free(token, msg.sender);
-        require(leftover > 0, "no leftover");
-        uint256 amount = dao.withdraw(msg.sender, token, leftover);
-
-        IERC20(token).safeTransfer(msg.sender, amount);
+    function withdrawLeftover() external pure {
+        revert("withdrawLeftover disabled");
     }
 
-    function releaseFor(address _account, uint256 _amount)
-        external
-        whenNotPaused
-        nonReentrant
-        returns (uint256)
-    {
-        address _migrator = dao.migrator();
-        require(_migrator != address(0), "migrator not set");
-        require(msg.sender == _migrator, "only migrator can call");
-        require(_amount > 0, "zero withdrawal amount");
+    /// @dev v2: disabled; the CDP migrator could otherwise pull a served account's slisBNB
+    function releaseFor(address, uint256) external pure returns (uint256) {
+        revert("releaseFor disabled");
+    }
 
-        _withdrawLp(_account, _amount);
-        IERC20(token).safeTransfer(_migrator, _amount);
-        emit Withdrawal(_account, _migrator, _amount);
-        return _amount;
+    /// @dev v2: disabled; PROXY holders (Interaction, CDP Core Admin Safe) could otherwise move the slisBNB held here
+    function liquidation(address, uint256) public pure override {
+        revert("liquidation disabled");
+    }
+
+    function liquidation(address, address, uint256, bytes memory, bool) external pure override {
+        revert("liquidation disabled");
+    }
+
+    function daoBurn(address, uint256) external pure override {
+        revert("daoBurn disabled");
     }
 
     /**
@@ -192,7 +251,8 @@ contract SlisBNBProvider is BaseTokenProvider {
      * @param _account lp token owner
      */
     function isUserLpSynced(address _account) external view returns (bool) {
-        uint256 totalTokenBalance = dao.locked(token, _account);
+        if (!_isServed(_account) || !_migrated()) return true; // v2: CDP dust clisBNB is left as is; nothing to sync before migration
+        uint256 totalTokenBalance = userDeposit[_account];
         uint256 userTotalLp = totalTokenBalance * exchangeRate / RATE_DENOMINATOR;
         uint256 expectUserPart = userTotalLp * userLpRate / RATE_DENOMINATOR;
         uint256 expectReservePart = userTotalLp - expectUserPart;
@@ -206,7 +266,8 @@ contract SlisBNBProvider is BaseTokenProvider {
      * @param _account user address to sync
      */
     function _syncLp(address _account) internal override returns (bool) {
-        uint256 expectAllLp = dao.locked(token, _account) * exchangeRate / RATE_DENOMINATOR;
+        if (!_isServed(_account) || !_migrated()) return false; // v2: CDP dust clisBNB is left as is; nothing to sync before migration
+        uint256 expectAllLp = userDeposit[_account] * exchangeRate / RATE_DENOMINATOR;
         uint256 expectUserLp = expectAllLp * userLpRate / RATE_DENOMINATOR;
         uint256 expectReserveLp = expectAllLp - expectUserLp;
         uint256 reservePart = userReservedLp[_account];
