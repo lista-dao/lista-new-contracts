@@ -1,6 +1,5 @@
 pragma solidity 0.8.24;
 import { Enum } from "../../src/safe/libraries/Enum.sol";
-import { console } from "forge-std/console.sol";
 import { SafeGuard } from "../../src/safe/SafeGuard.sol";
 
 /// @notice More details at https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/utils/introspection/IERC165.sol
@@ -64,6 +63,11 @@ contract GnosisSafeMock {
   bytes32 internal constant GUARD_STORAGE_SLOT = 0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8;
   bytes32 private constant SAFE_TX_TYPEHASH = 0xbb8310d486368db6bd6f849402fdd73ad53d316b5a4b2644ad6efe0f941286d8;
   uint256 public nonce;
+  uint256 public threshold = 2;
+
+  function getThreshold() external view returns (uint256) {
+    return threshold;
+  }
 
   function setGuard(address guard) external {
     if (guard != address(0) && !ITransactionGuard(guard).supportsInterface(type(ITransactionGuard).interfaceId))
